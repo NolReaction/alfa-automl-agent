@@ -4,6 +4,7 @@ import csv
 from contextlib import closing
 import http.client
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 import tempfile
 import threading
@@ -58,6 +59,35 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(data["target"], "label")
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_page_assets_are_local_and_served_with_correct_types(self):
+        class Assets(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.paths = []
+
+            def handle_starttag(self, tag, attributes):
+                attrs = dict(attributes)
+                if tag == "script" and "src" in attrs:
+                    self.paths.append((attrs["src"], "javascript"))
+                if tag == "link" and attrs.get("rel") == "stylesheet":
+                    self.paths.append((attrs["href"], "text/css"))
+
+        status, headers, body = self.request("/")
+        self.assertEqual(status, 200)
+        self.assertIn("script-src 'self'", headers["Content-Security-Policy"])
+        assets = Assets()
+        assets.feed(body.decode("utf-8"))
+        self.assertEqual(len(assets.paths), 2)
+        for path, mime in assets.paths:
+            self.assertTrue(path.startswith("/") and not path.startswith("//"))
+            status, headers, content = self.request(path)
+            self.assertEqual(status, 200, path)
+            self.assertIn(mime, headers["Content-Type"])
+            self.assertTrue(content)
+        status, _, body = self.request("/", method="HEAD")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"")
 
     def test_remote_origins_dns_rebinding_and_mutations_are_rejected(self):
         for headers in [{"Host": "evil.example"}, {"Origin": "https://evil.example"},
