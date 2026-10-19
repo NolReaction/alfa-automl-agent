@@ -46,6 +46,8 @@ def validate_predictions(task_dir: Path) -> dict:
         samples = [
             path for path in task_dir.rglob("sample_submission.csv")
             if ".agent_runs" not in path.relative_to(task_dir).parts and path.is_file()
+            and not any(part.startswith(".offline-baseline-")
+                        for part in path.relative_to(task_dir).parts)
         ]
         if len(samples) != 1:
             return {"valid": False, "errors": [

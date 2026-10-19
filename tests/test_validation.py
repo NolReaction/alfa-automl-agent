@@ -38,6 +38,8 @@ class ValidationTests(unittest.TestCase):
             root = Path(directory)
             make_task(root)
             write_csv(root / ".agent_runs" / "old" / "sample_submission.csv", [["ignored"]])
+            write_csv(root / ".offline-baseline-interrupted" / "inputs" / "sample_submission.csv",
+                      [["unfinished temporary baseline"]])
             write_csv(root / "submission.csv", [["row_key", "answer"], ["a", "1.5"], ["b", "-2e3"]])
             self.assertEqual(validate_predictions(root), {"valid": True, "errors": []})
 
