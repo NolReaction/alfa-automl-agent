@@ -211,6 +211,7 @@ data/
 runs/
 delivery/
 submission.csv
+baseline_metrics.json
 *.joblib
 *.pkl
 *.pickle
