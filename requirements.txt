@@ -1,0 +1,12 @@
+# Initial subset of the packages listed by the organizers.
+numpy==1.26.4
+scipy==1.12.0
+pandas==2.2.3
+scikit-learn==1.5.2
+joblib==1.4.2
+threadpoolctl==3.6.0
+openai==1.68.2
+httpx==0.28.1
+pydantic==2.10.6
+tqdm==4.67.1
+python-dotenv==1.0.1

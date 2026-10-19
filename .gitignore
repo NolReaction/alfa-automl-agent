@@ -205,6 +205,19 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Local hackathon datasets, generated experiments, and outputs
+data/
+.agent_runs/
+runs/
+delivery/
+submission.csv
+*.joblib
+*.pkl
+*.pickle
+*.cbm
+.env.*
+!.env.example
+
 # Ruff stuff:
 .ruff_cache/
 
