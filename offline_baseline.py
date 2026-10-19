@@ -101,7 +101,7 @@ def load_data(data_dir: Path):
     for name in features:
         if name not in metadata.index or roles[name] != "feature":
             raise ValueError(f"Feature {name!r} is not declared with role=feature in the dictionary")
-        if dtypes[name] not in {"numeric", "category"}:
+        if dtypes[name] not in {"numeric", "category", "binary"}:
             raise ValueError(f"Unsupported dtype for feature {name!r}: {dtypes[name]!r}")
     if len(train) < 2 or test.empty:
         raise ValueError("Need at least two training rows and one test row")
@@ -115,7 +115,7 @@ def load_data(data_dir: Path):
         raise ValueError("Regression target must contain finite numeric values only")
     if classification and y.nunique() < 2:
         raise ValueError("Classification requires at least two target classes")
-    numeric = [name for name in features if dtypes[name] == "numeric"]
+    numeric = [name for name in features if dtypes[name] in {"numeric", "binary"}]
     categorical = [name for name in features if dtypes[name] == "category"]
     return train, test, columns, id_column, target, y, features, numeric, categorical, classification
 
