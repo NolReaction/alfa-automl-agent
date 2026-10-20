@@ -90,7 +90,7 @@ class ResourceMonitorTests(unittest.TestCase):
         root.descendants = [parent, detached]
         parent.descendants = [detached]
         with patch("agent.resources.psutil.Process", return_value=root), \
-                patch("agent.resources.os.getpgid", return_value=999):
+                patch("agent.resources.os.getpgid", return_value=999, create=True):
             monitor = ProcessTreeMonitor(FakePopen(root), max_memory_bytes=100)
             self.assertFalse(monitor.sample())
             first = monitor.summary()
@@ -115,7 +115,7 @@ class ResourceMonitorTests(unittest.TestCase):
         descendant = FakeProcess(101, created=101)
         root.descendants = [descendant]
         with patch("agent.resources.psutil.Process", return_value=root), \
-                patch("agent.resources.os.getpgid", return_value=999):
+                patch("agent.resources.os.getpgid", return_value=999, create=True):
             monitor = ProcessTreeMonitor(FakePopen(root))
             monitor.sample()
             root.descendants = []
@@ -138,7 +138,7 @@ class ResourceMonitorTests(unittest.TestCase):
     def test_unavailable_inspection_returns_none_instead_of_fake_zero(self):
         root = FakeProcess(100)
         with patch("agent.resources.psutil.Process", side_effect=psutil.AccessDenied(100)), \
-                patch("agent.resources.os.getpgid", return_value=999):
+                patch("agent.resources.os.getpgid", return_value=999, create=True):
             monitor = ProcessTreeMonitor(FakePopen(root))
             self.assertFalse(monitor.sample())
             report = monitor.summary()
@@ -154,7 +154,7 @@ class ResourceMonitorTests(unittest.TestCase):
         launched = FakeProcess(100)
         other_namespace_process = FakeProcess(100, parent=-1)
         with patch("agent.resources.psutil.Process", return_value=other_namespace_process), \
-                patch("agent.resources.os.getpgid", return_value=999):
+                patch("agent.resources.os.getpgid", return_value=999, create=True):
             monitor = ProcessTreeMonitor(FakePopen(launched))
             monitor.sample()
             self.assertEqual(monitor.summary()["tracked_processes"], 0)
@@ -166,7 +166,7 @@ class ResourceMonitorTests(unittest.TestCase):
         launched = FakeProcess(100)
         with patch("agent.resources._namespace_matches", return_value=False), \
                 patch("agent.resources.psutil.Process") as inspect_pid, \
-                patch("agent.resources.os.getpgid", return_value=999):
+                patch("agent.resources.os.getpgid", return_value=999, create=True):
             monitor = ProcessTreeMonitor(FakePopen(launched))
             monitor.sample()
             monitor.terminate()

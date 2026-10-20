@@ -38,7 +38,10 @@ class ResearchValidation:
     """Keep expected rows/answers in the parent, never reload them from LLM files."""
 
     def __init__(self, task_path: Path):
-        self.task_path = Path(task_path)
+        # TaskSpec resolves its paths too. Use the same canonical spelling for
+        # the parent before computing data-relative paths (notably Windows
+        # RUNNER~1 versus runneradmin, but also relative paths and symlink aliases).
+        self.task_path = Path(task_path).resolve()
         self.task_text = self.task_path.read_text(encoding="utf-8-sig")
         self.task_dir = self.task_path.parent
         self.spec = load_task(self.task_path)
