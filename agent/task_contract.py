@@ -21,6 +21,14 @@ _ALIASES = (
     ("Macro F1", r"(?:macro[\s_-]*(?:averaged[\s_-]*)?f[\s_-]*1(?:[\s_-]*score)?"
      r"|f[\s_-]*1[\s_-]+macro)"),
     ("RMSE", r"(?:rmse|root\s+mean\s+squared\s+error)"),
+    ("Weighted F1", r"(?:weighted[\s_-]*(?:averaged[\s_-]*)?f[\s_-]*1(?:[\s_-]*score)?"
+     r"|f[\s_-]*1[\s_-]+weighted)"),
+    ("Accuracy", r"accuracy(?:[\s_-]*score)?"),
+    ("ROC AUC", r"roc[\s_-]*auc(?:[\s_-]*score)?"),
+    ("LogLoss", r"(?:log[\s_-]*loss|logarithmic\s+loss|cross[\s_-]*entropy)"),
+    ("MAE", r"(?:mae|mean\s+absolute\s+error)"),
+    ("MSE", r"(?:mse|mean\s+squared\s+error)"),
+    ("R2", r"(?:r[\s_-]*(?:2|²|\^2)(?:[\s_-]*score)?|coefficient\s+of\s+determination)"),
 )
 _METRIC_TOKEN = re.compile(
     r"\b(?:rmse|rmsle|mse|mae|mape|smape|msle|r2|auc|roc[\s_-]*auc|"
@@ -58,7 +66,7 @@ def _description_lines(text: str) -> list[str]:
     return lines
 
 
-def _metric_value(value: str) -> str:
+def _metric_value(value: str, *, expanded=False) -> str:
     value = re.sub(r"^(?:\s*[:=—–-]\s*)+", "", value).strip()
     value = re.sub(r"^(?:is|является|выбрана)\s+", "", value, flags=re.IGNORECASE)
     # A later sentence may explain secondary metrics; it is not the declaration.
@@ -67,6 +75,8 @@ def _metric_value(value: str) -> str:
         matched = re.match(rf"{alias}(?![\w])", declaration, flags=re.IGNORECASE)
         if matched is None:
             continue
+        if not expanded and name not in {"RMSE", "Macro F1"}:
+            raise ValueError("Unsupported primary metric for the legacy baseline. " + _FORMAT)
         remainder = declaration[matched.end():]
         # Permit the standard expanded name with its acronym in parentheses.
         if name == "RMSE":
@@ -78,15 +88,9 @@ def _metric_value(value: str) -> str:
     raise ValueError("Unsupported or unrecognized primary metric in task.md. " + _FORMAT)
 
 
-def validate_task_metric(task_text: str, classification: bool) -> dict:
-    """Resolve an explicitly declared supported metric, otherwise fail clearly.
-
-    Supplementary lines such as ``Additional metrics: Accuracy, Weighted F1``
-    are ignored. Multiple primary/evaluation declarations must agree, including
-    declarations appearing in different Markdown sections.
-    """
-    if not isinstance(task_text, str) or type(classification) is not bool:
-        raise ValueError("Task description must be text and classification must be a boolean.")
+def _declared_metric(task_text: str, *, expanded=False) -> str:
+    if not isinstance(task_text, str):
+        raise ValueError("Task description must be text")
     lines = _description_lines(task_text)
     declarations = []
     for index, line in enumerate(lines):
@@ -96,15 +100,39 @@ def validate_task_metric(task_text: str, classification: bool) -> dict:
         value = match["value"].strip()
         if not value.strip(":=—–- "):
             value = next((item for item in lines[index + 1:] if item), "")
-        declarations.append(_metric_value(value))
+        declarations.append(_metric_value(value, expanded=expanded))
     if not declarations:
         raise ValueError("Missing explicit primary metric declaration in task.md. " + _FORMAT)
     if len(set(declarations)) != 1:
         raise ValueError("Conflicting primary metric declarations in task.md. " + _FORMAT)
+    return declarations[0]
+
+
+def parse_task_metric(task_text: str):
+    """Resolve the expanded trusted registry from an explicit primary declaration.
+
+    Unqualified F1/AUC remain ambiguous. This parser never executes metric code
+    supplied in the task or chooses a metric by guessing the target dtype.
+    """
+    from agent.metrics import get_metric
+
+    return get_metric(_declared_metric(task_text, expanded=True))
+
+
+def validate_task_metric(task_text: str, classification: bool) -> dict:
+    """Resolve an explicitly declared supported metric, otherwise fail clearly.
+
+    Supplementary lines such as ``Additional metrics: Accuracy, Weighted F1``
+    are ignored. Multiple primary/evaluation declarations must agree, including
+    declarations appearing in different Markdown sections.
+    """
+    if not isinstance(task_text, str) or type(classification) is not bool:
+        raise ValueError("Task description must be text and classification must be a boolean.")
+    declared = _declared_metric(task_text)
     expected = "Macro F1" if classification else "RMSE"
-    if declarations[0] != expected:
+    if declared != expected:
         raise ValueError(
-            f"Task declares {declarations[0]}, but this offline "
+            f"Task declares {declared}, but this offline "
             f"{'classification' if classification else 'regression'} mode supports {expected}."
         )
     return {"name": expected, "higher_is_better": classification, "source": "task.md"}

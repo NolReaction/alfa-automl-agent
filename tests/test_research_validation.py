@@ -172,9 +172,20 @@ class ResearchValidationTests(unittest.TestCase):
         self.assertEqual(read_hypothesis(self.root), "A new preprocessing choice may reduce RMSE.")
 
     def test_unsupported_metric_is_not_silently_scored_as_rmse(self):
-        self.task.write_text("Primary metric: MAE\n", encoding="utf-8")
+        self.task.write_text("Primary metric: SMAPE\n", encoding="utf-8")
         with self.assertRaises(ValueError):
             ResearchValidation(self.task)
+
+    def test_mae_and_r2_use_their_own_metric_direction(self):
+        for metric, direction in (("MAE", False), ("R2", True)):
+            with self.subTest(metric=metric):
+                self.task.write_text(f"Primary metric: {metric}\n", encoding="utf-8")
+                gate = ResearchValidation(self.task)
+                path, _ = self.evidence(gate)
+                result = gate.evaluate(path, self.root)
+                self.assertEqual(result["name"], metric)
+                self.assertEqual(result["higher_is_better"], direction)
+                self.assertAlmostEqual(result["value"], 1 if metric == "R2" else 0)
 
 
 if __name__ == "__main__":

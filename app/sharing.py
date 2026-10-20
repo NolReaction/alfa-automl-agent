@@ -27,9 +27,9 @@ MAX_RECORD_BYTES = 128 * 1024
 MAX_TREE_NODES = 400_000
 MAX_SAFE_INTEGER = (1 << 53) - 1
 FINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
-ACTIONS = {"baseline", "extra_trees", "automl", "agent"}
+ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl", "agent"}
 AGENT_STATUSES = {"running", "completed", "fallback", "failed"}
-AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "host_metric_unsupported", "unknown"}
+AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "host_metric_unsupported", "repeated_failures", "unknown"}
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _RECORD_FILE = re.compile(r"([0-9a-f]{64})\.json\Z")
@@ -150,7 +150,7 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         raise ValueError("У отчёта некорректный идентификатор.")
     if (not isinstance(raw.get("action"), str) or raw["action"] not in ACTIONS
             or not isinstance(raw.get("status"), str) or raw["status"] not in FINAL_STATUSES):
-        raise ValueError("Можно передавать только завершённые запуски baseline, extra_trees, automl или agent.")
+        raise ValueError("Можно передавать только завершённые запуски разрешённых рецептов.")
     if _hash(raw.get("dataset_fingerprint"), "dataset_fingerprint") != fingerprint:
         raise ValueError("Отчёт относится к другим данным. Скачайте одинаковую версию задачи и экспортируйте заново.")
     output_valid = raw.get("output_valid")
@@ -176,7 +176,7 @@ def _summary(raw: dict, fingerprint: str) -> dict:
     if "model_config" in raw:
         from app.model_config import validate_model_config
 
-        if raw["action"] not in {"baseline", "extra_trees", "automl"}:
+        if raw["action"] not in {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"}:
             raise ValueError("Параметры модели доступны только для локальных рецептов.")
         model_config = validate_model_config(raw["model_config"],
                                              action=None if raw["action"] == "automl" else raw["action"])
@@ -196,14 +196,23 @@ def _summary(raw: dict, fingerprint: str) -> dict:
                     "timed_out": "Превышен лимит времени попытки",
                     "skipped": "Попытка пропущена",
                 }.get(candidate["status"], "Попытка завершилась с ошибкой")
+            if candidate.get("resources", {}).get("unavailable_reason"):
+                candidate["resources"]["unavailable_reason"] = "Измерение ресурсов недоступно"
         result["search"] = search
+        from app.model_config import winner_feature_evidence
+        result.update(winner_feature_evidence(raw, search))
+    if "feature_config" in raw or "component_feature_configs" in raw:
+        from app.model_config import winner_feature_evidence
+        if raw["action"] != "automl" or "search" not in result:
+            raise ValueError("Настройки признаков доступны только с отчётом автоподбора.")
+        result.update(winner_feature_evidence(raw, result["search"]))
     if (raw["action"] == "automl" and raw["status"] == "completed"
             and ("search" not in result or "model_config" not in result or result["metric"] is None)):
         raise ValueError("У завершённого автоподбора нужны попытки, параметры победителя и метрика.")
     if "classification_diagnostics" in raw:
         from agent.diagnostics import validate_classification_diagnostics
 
-        if (raw["action"] not in {"baseline", "extra_trees", "automl"}
+        if (raw["action"] not in {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"}
                 or result["metric"] is None or result["metric"]["name"] != "Macro F1"
                 or result["metric"]["higher_is_better"] is not True
                 or not result["split"] or "validation_rows" not in result["split"]):

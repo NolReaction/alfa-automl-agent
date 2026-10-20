@@ -37,7 +37,7 @@ class ModelConfigTests(unittest.TestCase):
 
     def test_form_options_have_typed_values_and_are_independent_copies(self):
         options = model_options("classification")
-        self.assertEqual(set(options), {"baseline", "extra_trees"})
+        self.assertEqual(set(options), {"baseline", "extra_trees", "catboost", "lightgbm", "linear"})
         for definition in options.values():
             self.assertEqual(set(definition["defaults"]), {field["name"] for field in definition["fields"]})
             self.assertTrue(all(type(field["nullable"]) is bool for field in definition["fields"]))

@@ -62,8 +62,14 @@ class OfflineArchiveTests(unittest.TestCase):
             self.assertGreater(report["search"]["completed"], 0)
             candidates = report["search"]["candidates"]
             winner = next(candidate for candidate in candidates if candidate["selected"])
-            values = [candidate["metric"] for candidate in candidates if candidate["status"] == "completed"]
+            values = [candidate["metric"] for candidate in candidates
+                      if candidate["status"] == "completed" and candidate["metric"] is not None
+                      and candidate.get("rejection_reason") not in {"refit_failed", "invalid_evidence", "insufficient_budget"}
+                      and not (candidate["model"] == "FixedBlend" and candidate.get("rejection_reason") == "not_improved")]
             self.assertEqual(winner["metric"], min(values))
+            self.assertGreaterEqual(report["search"]["selection_completed"], 1)
+            self.assertLessEqual(report["search"]["verified"], 5)
+            self.assertTrue((reports[0].parent / "checkpoint.json").is_file())
 
 
 if __name__ == "__main__":

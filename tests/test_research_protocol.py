@@ -145,6 +145,16 @@ class ResearchProtocolTests(unittest.TestCase):
                 replay = next(item for item in messages if item.get("tool_calls"))
                 self.assertIsInstance(replay["tool_calls"][0]["function"]["arguments"], str)
 
+    def test_unknown_or_inconsistent_finish_reason_never_executes_code(self):
+        message = {"role": "assistant", "content": None,
+                   "tool_calls": [tool_call(arguments=json.dumps({"code": "print('must not run')"}))]}
+        for finish in ("content_filter", "unknown", "stop"):
+            with self.subTest(finish=finish):
+                result = self.run_case([completion(message, finish=finish)])
+                self.assert_preserved_fallback(result, "api_error")
+        result = self.run_case([completion(finish="tool_calls")])
+        self.assert_preserved_fallback(result, "api_error")
+
     def test_invalid_call_id_rejects_the_whole_envelope_before_any_execution(self):
         valid = tool_call("valid-first", json.dumps({"code": "print('must not run')"}))
         for identifier in (None, ""):

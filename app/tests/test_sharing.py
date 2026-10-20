@@ -267,6 +267,92 @@ class SharingTests(unittest.TestCase):
                     self.store.import_reports("regression", FINGERPRINT, envelope)
         self.assertFalse((self.root / ".workspace").exists())
 
+    def test_expanded_search_preserves_inner_scores_negative_r2_and_features(self):
+        from agent.features import normalize_feature_config
+        config = make_model_config("linear", "regression")
+        features = normalize_feature_config({"missing_indicators": True})
+        winner = {"id": "linear", "label": "Ridge", "model": "Ridge", "status": "completed",
+                  "metric": -0.2, "selected": True, "elapsed_seconds": 2.0, "error": None,
+                  "selection_metric": -0.1, "verification_metric": -0.2, "phase": "refit",
+                  "model_config": config, "feature_config": features,
+                  "rejection_reason": None, "resources": {"available": False, "unavailable_reason": "private path"},
+                  "durations": {"fit_seconds": 0.2}}
+        inner_only = {**winner, "id": "inner", "selected": False, "metric": None,
+                      "verification_metric": None, "phase": "selection", "selection_metric": 0.8,
+                      "rejection_reason": "not_selected"}
+        search = {"status": "completed", "phase": "finished", "planned": 16, "completed": 2,
+                  "selection_completed": 2, "verified": 1, "best_candidate": "linear",
+                  "validation_reason": "Внешняя проверка отделена от подбора", "candidates": [winner, inner_only]}
+        original = job(action="automl", model="Ridge", model_config=config, feature_config=features,
+                       metric={"name": "R2", "value": -0.2, "higher_is_better": True}, search=search)
+        envelope = self.envelope(original)
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        saved, = self.store.list("regression")
+        self.assertEqual(saved["feature_config"], features)
+        self.assertEqual(saved["search"]["candidates"][1]["selection_metric"], 0.8)
+        self.assertIsNone(saved["search"]["candidates"][1]["metric"])
+        self.assertNotIn("private path", json.dumps(saved))
+        for mutate in (
+            lambda row: row["search"]["candidates"][0]["resources"].update(command="execute"),
+            lambda row: row["search"]["candidates"][0]["feature_config"].update(path="secret"),
+            lambda row: row["search"].update(verified=2),
+            lambda row: row["feature_config"].update(signed_log=True),
+            lambda row: row["search"]["candidates"][1].update(selected=True),
+        ):
+            changed = deepcopy(envelope)
+            mutate(changed["reports"][0])
+            with self.assertRaises(ValueError):
+                self.store.import_reports("regression", FINGERPRINT, changed)
+
+    def test_fixed_blend_has_bounded_components_and_retains_features(self):
+        from agent.features import normalize_feature_config
+        component = make_model_config("linear", "regression")
+        config = {"model": "FixedBlend", "parameters": {"weight": 0.5, "components": [component, component]}}
+        features = normalize_feature_config()
+        row = {"id": "blend", "label": "Среднее двух моделей", "model": "FixedBlend", "status": "completed",
+               "metric": 43.25, "selected": True, "elapsed_seconds": 1, "error": None,
+               "model_config": config, "feature_config": features, "component_feature_configs": [features, features]}
+        search = {"status": "completed", "planned": 1, "completed": 1, "best_candidate": "blend",
+                  "validation_reason": "Проверка", "candidates": [row]}
+        original = job(action="automl", model="FixedBlend", model_config=config, search=search,
+                       feature_config=features, component_feature_configs=[features, features])
+        envelope = self.envelope(original)
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        saved, = self.store.list("regression")
+        self.assertEqual(saved["model_config"], config)
+        self.assertEqual(saved["component_feature_configs"], [features, features])
+        invalid = deepcopy(envelope)
+        invalid["reports"][0]["model_config"]["parameters"]["weight"] = 0.7
+        with self.assertRaises(ValueError):
+            self.store.import_reports("regression", FINGERPRINT, invalid)
+
+    def test_rejected_blend_does_not_become_eligible_after_component_refit_fails(self):
+        ridge = make_model_config("linear", "regression")
+        trees = make_model_config("extra_trees", "regression")
+        blend = {"model": "FixedBlend", "parameters": {"weight": 0.5, "components": [trees, ridge]}}
+        base = {"label": "Проверенная модель", "elapsed_seconds": 1, "error": None,
+                "status": "completed", "selected": False}
+        summary = {"status": "completed", "planned": 3, "completed": 2,
+                   "best_candidate": "fallback", "validation_reason": "Отложенная проверка",
+                   "candidates": [
+                       {**base, "id": "strongest", "model": "ExtraTreesRegressor", "model_config": trees,
+                        "metric": 1.0, "status": "failed", "rejection_reason": "refit_failed"},
+                       {**base, "id": "fallback", "model": "Ridge", "model_config": ridge,
+                        "metric": 2.0, "selected": True},
+                       {**base, "id": "blend", "model": "FixedBlend", "model_config": blend,
+                        "metric": 1.5, "rejection_reason": "not_improved"},
+                   ]}
+        metric = {"name": "RMSE", "value": 2.0, "higher_is_better": False}
+        self.assertEqual(validate_search_summary(summary, metric=metric, model="Ridge"), summary)
+        # The exemption is specific to a rejected blend; it must not hide a
+        # better eligible individual model or a blend that passed selection.
+        for model, config, reason in (("Ridge", ridge, "not_improved"),
+                                      ("FixedBlend", blend, None)):
+            forged = deepcopy(summary)
+            forged["candidates"][2].update(model=model, model_config=config, rejection_reason=reason)
+            with self.assertRaisesRegex(ValueError, "лучшую проверочную метрику"):
+                validate_search_summary(forged, metric=metric, model="Ridge")
+
     def test_search_progress_can_be_valid_before_first_winner_but_not_final(self):
         summary = search_summary(status="running", completed=0, best_candidate=None)
         for row in summary["candidates"]:

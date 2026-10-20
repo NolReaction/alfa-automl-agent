@@ -20,18 +20,18 @@ import threading
 import time
 from uuid import uuid4
 
-from app.profiling import DataCatalog, _metric
+from app.profiling import DataCatalog, _task_semantics
 from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
-from app.model_config import make_model_config, validate_model_config
+from app.model_config import make_model_config, validate_model_config, model_task_type, winner_feature_evidence, feature_evidence
 from app.file_io import replace_file
 from app.search_summary import validate_search_summary
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ACTIONS = {"baseline", "extra_trees", "automl", "agent", "prepare"}
-OFFLINE_ACTIONS = {"baseline", "extra_trees", "automl"}
+ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl", "agent", "prepare"}
+OFFLINE_ACTIONS = ACTIONS - {"agent", "prepare"}
 ACTIVE = {"queued", "running"}
 JOB_ID = re.compile(r"[0-9a-f]{32}\Z")
 API_FIELDS = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
@@ -46,8 +46,8 @@ MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
@@ -434,6 +434,14 @@ class JobManager:
             try:
                 validate_search_summary(job["search"], metric=job.get("metric"), model=job.get("model"),
                                         allow_running=job["status"] != "completed")
+                winner_feature_evidence(job, job["search"])
+            except ValueError:
+                return False
+        if "feature_config" in job or "component_feature_configs" in job:
+            if job["action"] != "automl" or "search" not in job:
+                return False
+            try:
+                winner_feature_evidence(job, job["search"])
             except ValueError:
                 return False
         if "classification_diagnostics" in job:
@@ -489,6 +497,12 @@ class JobManager:
                     allow_running=job["status"] != "completed")
             except ValueError:
                 summary.pop("search")
+        if "feature_config" in summary or "component_feature_configs" in summary:
+            try:
+                summary.update(feature_evidence(summary, model=summary.get("model")))
+            except ValueError:
+                summary.pop("feature_config", None)
+                summary.pop("component_feature_configs", None)
         if "classification_diagnostics" in summary:
             try:
                 summary["classification_diagnostics"] = validate_classification_diagnostics(
@@ -550,10 +564,10 @@ class JobManager:
 
     def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None):
         if not isinstance(action, str) or action not in ACTIONS:
-            raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, automl, agent и prepare.")
+            raise ValueError("Неизвестный рецепт запуска.")
         if validation is not None and action not in OFFLINE_ACTIONS:
             raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
-        if model_params is not None and action not in {"baseline", "extra_trees"}:
+        if model_params is not None and action not in OFFLINE_ACTIONS - {"automl"}:
             raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
         if model_params is not None and not isinstance(model_params, dict):
             raise ValueError("Параметры модели должны быть объектом.")
@@ -591,12 +605,9 @@ class JobManager:
                 if action in OFFLINE_ACTIONS:
                     _, inputs = self.catalog._inputs(task_folder)
                     metadata, _, _, task_type = self.catalog._metadata(inputs)
-                    expected = {"regression": "RMSE", "classification": "Macro F1"}.get(task_type)
-                    if expected is None:
-                        raise ValueError("Локальные рецепты поддерживают числовую регрессию и классификацию. Для другой задачи запустите агента.")
-                    declared = _metric(self.catalog.task_text(task_id))["name"]
-                    if declared not in {"Не определена", expected}:
-                        raise ValueError(f"Этот рецепт оценивает {expected}, а в задаче указана {declared}. Для этой метрики запустите агента.")
+                    from agent.task_spec import load_task
+                    spec = load_task(task_folder / "task.md")
+                    task_type = spec.metric.task_type
                     if validation["strategy"] == "time":
                         if task_type != "regression":
                             raise ValueError("Хронологическая валидация доступна для регрессии.")
@@ -851,6 +862,10 @@ class JobManager:
                 or not _valid_split(split) or not isinstance(evidence.get("model"), str)
                 or not isinstance(evidence.get("comparison_key"), str)):
             raise ValueError("Неполный отчёт о локальной валидации.")
+        from agent.task_spec import load_task
+        spec = load_task(folder / "task" / "task.md")
+        if metric["name"] != spec.metric.name or metric["higher_is_better"] != spec.metric.higher_is_better:
+            raise ValueError("Метрика отчёта не соответствует основной метрике задачи.")
         requested_validation = _job_validation(job["action"], job.get("validation"))
         if (requested_validation["strategy"] != "auto"
                 and split.get("strategy", "random") != requested_validation["strategy"]
@@ -872,12 +887,11 @@ class JobManager:
             reported_config = validate_model_config(evidence.get("model_config"))
             if evidence["model"] != reported_config["model"]:
                 raise ValueError("Модель победителя не совпадает с параметрами отчёта.")
-            task_type = "classification" if metric["higher_is_better"] else "regression"
-            from app.model_config import model_options
-            if reported_config["model"] not in {option["model"] for option in model_options(task_type).values()}:
+            if model_task_type(reported_config) != spec.metric.task_type:
                 raise ValueError("Модель победителя не соответствует типу задачи.")
             search = validate_search_summary(evidence.get("search"), metric=metric, model=evidence["model"])
-            job.update(model_config=reported_config, search=search)
+            job.update(model_config=reported_config, search=search,
+                       **winner_feature_evidence(evidence, search))
         job.update(model=evidence["model"], metric=metric, split=split,
                    comparison_key=evidence["comparison_key"])
         if "classification_diagnostics" in evidence:
@@ -986,6 +1000,7 @@ class JobManager:
                 task = catalog.resolve("task")
                 _, inputs = catalog._inputs(task)
                 _, id_column, target, task_type = catalog._metadata(inputs)
+                task_type, _ = _task_semantics(catalog.task_text("task"), task_type)
                 if task_type != "classification":
                     raise ValueError("Диагностика предназначена для классификации.")
                 identity = {"id_column": id_column, "target_column": target, "ids": ids, "actuals": actual}

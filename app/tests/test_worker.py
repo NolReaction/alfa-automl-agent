@@ -36,7 +36,7 @@ class WorkerTests(unittest.TestCase):
     def make_source(self, classification=False):
         source = self.root / ("classification" if classification else "regression")
         source.mkdir()
-        (source / "task.md").write_text("Synthetic test task", encoding="utf-8")
+        (source / "task.md").write_text("Primary metric: " + ("Macro F1" if classification else "RMSE"), encoding="utf-8")
         inputs = source / "nested" / "participants"
         write_csv(inputs / "data_dictionary.csv", [
             ["feature", "role", "dtype"],
@@ -156,6 +156,29 @@ class WorkerTests(unittest.TestCase):
                 current = {str(path.relative_to(source)): path.read_bytes()
                            for path in source.rglob("*") if path.is_file()}
                 self.assertEqual(current, original)
+
+    def test_registry_metrics_use_correct_predictions_and_direction(self):
+        from agent.task_spec import load_task, score_holdout
+        for metric_name, classification in (("MAE", False), ("MSE", False), ("R2", False),
+                                            ("Weighted F1", True), ("Accuracy", True),
+                                            ("LogLoss", True), ("ROC AUC", True)):
+            with self.subTest(metric=metric_name):
+                source = self.make_source(classification)
+                (source / "task.md").write_text("Primary metric: " + metric_name + ("\nPositive class: Positive\n" if classification else "\n"), encoding="utf-8")
+                path, job_dir, staged = self.make_config(source, "linear", metric_name.replace(" ", "-"))
+                config = worker.load_config(path)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = worker.run_job(config)
+                spec = load_task(staged / "task.md")
+                held = pd.read_csv(job_dir / "holdout_predictions.csv", dtype=str, keep_default_na=False)
+                independently_scored = score_holdout(job_dir / "holdout_predictions.csv", spec, held["id"].tolist(), held["actual"].tolist())
+                self.assertAlmostEqual(result["metric"]["value"], independently_scored)
+                self.assertEqual(result["metric"]["name"], metric_name)
+                self.assertEqual(result["metric"]["higher_is_better"], metric_name in {"R2", "Weighted F1", "Accuracy", "ROC AUC"})
+                if metric_name in {"LogLoss", "ROC AUC"}:
+                    output = pd.read_csv(staged / "submission.csv")
+                    self.assertTrue(output["answer"].between(0, 1).all())
+                shutil.rmtree(source)
 
     def test_config_refuses_unrecognized_recipe_and_paths_outside_job(self):
         source = self.make_source()

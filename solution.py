@@ -19,7 +19,8 @@ from agent.research import run_agent
 from validation import validate_predictions
 
 
-REQUIRED_PACKAGES = ("openai", "dotenv", "numpy", "pandas", "sklearn")
+REQUIRED_PACKAGES = ("openai", "dotenv", "numpy", "pandas", "sklearn", "catboost",
+                     "lightgbm", "optuna", "psutil")
 
 
 def select_mode(requested: str) -> str:
@@ -28,7 +29,7 @@ def select_mode(requested: str) -> str:
         return requested
     present = [name for name in API_FIELDS if os.environ.get(name, "").strip()]
     if not present:
-        print("No API settings supplied: offline fallback (fixed recipes; no LLM research).", flush=True)
+        print("No API settings supplied: offline fallback (budgeted AutoML; no LLM research).", flush=True)
         return "offline"
     missing = [name for name in API_FIELDS if name not in present]
     if missing:
@@ -45,7 +46,7 @@ def check_setup() -> bool:
     with tempfile.TemporaryDirectory() as directory:
         folder = Path(directory)
         result = run_python(
-            "import numpy, pandas, sklearn, openai; print('python-child-ok')",
+            "import numpy, pandas, sklearn, openai, catboost, lightgbm, optuna, psutil; print('python-child-ok')",
             folder, folder / "runs", 1, 30,
         )
     worker_ok = result["exit_code"] == 0 and "python-child-ok" in result["stdout"]
@@ -66,7 +67,7 @@ def main() -> int:
     parser.add_argument("task", nargs="?", default="task.md")
     parser.add_argument("--mode", choices=("auto", "offline", "llm"), default="auto",
                         help="auto (default): use supplied competition API, otherwise offline fallback; "
-                             "offline: fixed recipes without API; llm: Qwen research with local .env support")
+                             "offline: budgeted AutoML without API; llm: Qwen research with local .env support")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Offline environment check; no API calls")
     mode.add_argument("--check-api", action="store_true", help="Make one short request to the configured API")

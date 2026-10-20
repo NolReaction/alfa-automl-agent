@@ -226,29 +226,29 @@ def _quality(train: pd.DataFrame, test: pd.DataFrame, metadata: pd.DataFrame,
 
 
 def _metric(text: str) -> dict:
-    """Report an explicitly named metric; dtype alone does not identify it."""
-    definitions = (
-        (r"\bmacro[\s_-]*f1\b|\bf1[\s_-]*macro\b", "Macro F1", True),
-        (r"\bweighted[\s_-]*f1\b", "Weighted F1", True),
-        (r"\bRMSE\b", "RMSE", False),
-        (r"\bMAE\b", "MAE", False),
-        (r"\bMSE\b", "MSE", False),
-        (r"\bROC[\s_-]*AUC\b", "ROC AUC", True),
-        (r"\bAccuracy\b", "Accuracy", True),
-        (r"\blog[\s_-]*loss\b", "Log loss", False),
-    )
-    lines = [line for line in text.splitlines() if re.search(r"метрик|metric", line, re.I)]
-    primary = [line for line in lines if re.search(r"основн|primary|main", line, re.I)]
-    for candidates in ([primary] if primary else [lines]):
-        found = {}
-        for line in candidates:
-            for pattern, name, direction in definitions:
-                if re.search(pattern, line, re.I):
-                    found[name] = direction
-        if len(found) == 1:
-            name, direction = next(iter(found.items()))
-            return {"name": name, "higher_is_better": direction}
-    return {"name": "Не определена", "higher_is_better": None}
+    """Use the shared explicit metric contract without inferring from dtype."""
+    from agent.task_contract import parse_task_metric
+    try:
+        spec = parse_task_metric(text)
+    except ValueError:
+        return {"name": "Не определена", "higher_is_better": None}
+    return {"name": spec.name, "higher_is_better": spec.higher_is_better}
+
+
+def _task_semantics(text: str, fallback: str):
+    from agent.task_contract import parse_task_metric
+    try:
+        spec = parse_task_metric(text)
+        return spec.task_type, spec.prediction_kind
+    except ValueError:
+        return fallback, None
+
+
+def _sample_columns_valid(columns, id_column, target, prediction_kind):
+    if prediction_kind == "probabilities":
+        return len(columns) >= 2 and id_column in columns and len(columns) == len(set(columns))
+    return len(columns) == 2 and set(columns) == {id_column, target}
+
 
 
 class DataCatalog:
@@ -339,12 +339,13 @@ class DataCatalog:
                 try:
                     _, paths = self._inputs(folder)
                     _, id_column, target, task_type = self._metadata(paths)
+                    task_type, prediction_kind = _task_semantics(self.task_text(task_id), task_type)
                     train_header = _header(paths["train.csv"])
                     test_header = _header(paths["test.csv"])
                     sample_header = _header(paths["sample_submission.csv"])
                     if id_column not in train_header or target not in train_header or id_column not in test_header:
                         raise ValueError("Заявленные id/target отсутствуют в таблицах.")
-                    if sample_header != [id_column, target] and set(sample_header) != {id_column, target}:
+                    if not _sample_columns_valid(sample_header, id_column, target, prediction_kind):
                         raise ValueError("Столбцы sample_submission.csv не совпадают с id/target.")
                     signature = self._signature(paths, folder)
                     old_error = self._errors.get(task_id)
@@ -442,12 +443,13 @@ class DataCatalog:
 
     def _build(self, task_id: str, folder: Path, paths: dict[str, Path]) -> tuple[dict, dict]:
         metadata, id_column, target, task_type = self._metadata(paths)
+        task_type, prediction_kind = _task_semantics(self.task_text(task_id), task_type)
         train = _read(paths["train.csv"])
         test = _read(paths["test.csv"])
         sample_header = _header(paths["sample_submission.csv"])
         if id_column not in train or target not in train or id_column not in test:
             raise ValueError("Заявленные id/target отсутствуют в таблицах.")
-        if len(sample_header) != 2 or set(sample_header) != {id_column, target}:
+        if not _sample_columns_valid(sample_header, id_column, target, prediction_kind):
             raise ValueError("Столбцы sample_submission.csv не совпадают с id/target.")
         if target in test or set(train.columns) - {target} != set(test.columns):
             raise ValueError("Признаки train.csv и test.csv не совпадают.")
@@ -475,7 +477,8 @@ class DataCatalog:
             info = {"name": name, "role": role, "dtype": dtype, "description": description,
                     "missing_count": count, "missing_percent": round(percent, 4), "unique_count": unique_count}
             columns.append(info)
-            distribution, stats, invalid = _distribution(train[name], dtype, target=name == target)
+            distribution_dtype = "category" if name == target and task_type == "classification" else dtype
+            distribution, stats, invalid = _distribution(train[name], distribution_dtype, target=name == target)
             details[name] = {**info, "stats": stats, "distribution": distribution}
             if invalid:
                 warnings.append(f"{name}: {invalid} непустых значений не являются конечными числами; они исключены из числовой статистики.")

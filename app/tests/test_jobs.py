@@ -108,7 +108,7 @@ class JobTests(unittest.TestCase):
         completed = [row for row in search["candidates"] if row["status"] == "completed"]
         self.assertEqual(search["completed"], len(completed))
         self.assertGreaterEqual(len(completed), 2)
-        self.assertEqual(result["metric"]["value"], min(row["metric"] for row in completed))
+        self.assertEqual(result["metric"]["value"], min(row["metric"] for row in completed if row["metric"] is not None and row.get("rejection_reason") not in {"refit_failed", "invalid_evidence", "insufficient_budget"}))
         selected = next(row for row in completed if row["selected"])
         self.assertEqual(selected["id"], search["best_candidate"])
         self.assertEqual(selected["model"], result["model_config"]["model"])
@@ -459,9 +459,43 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             other.start("example", "baseline")
 
-    def test_recipe_refuses_a_different_declared_metric(self):
-        (self.task / "task.md").write_text("Основная метрика: MAE", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "RMSE"):
+    def test_supported_metric_and_linear_recipe_survive_restore(self):
+        (self.task / "task.md").write_text("Основная метрика: R2", encoding="utf-8")
+        result = self.wait(self.manager.start("example", "linear"))
+        self.assertEqual(result["status"], "completed", result.get("error"))
+        self.assertEqual(result["metric"]["name"], "R2")
+        self.assertIs(result["metric"]["higher_is_better"], True)
+        self.assertEqual(result["model"], "Ridge")
+        self.manager.close()
+        restored = JobManager(self.data, self.state, self.catalog)
+        self.addCleanup(restored.close)
+        saved = restored.detail("example", result["id"])["job"]
+        self.assertEqual(saved["metric"], result["metric"])
+        self.assertEqual(saved["model_config"], result["model_config"])
+
+    def test_logloss_numeric_labels_and_probability_output_survive_restore(self):
+        (self.task / "task.md").write_text("Primary metric: LogLoss", encoding="utf-8")
+        inputs = self.task / "nested" / "participants"
+        csv_file(inputs / "train.csv", [["id", "x", "answer"]] + [
+            [f"train-{n:03}", n % 2, n % 2] for n in range(80)])
+        csv_file(inputs / "sample_submission.csv", [["id", "0", "1"], ["NA", 0.5, 0.5], ["001", 0.5, 0.5]])
+        result = self.wait(self.manager.start("example", "linear"))
+        self.assertEqual(result["status"], "completed", result.get("error"))
+        self.assertEqual(result["metric"]["name"], "LogLoss")
+        self.assertIs(result["metric"]["higher_is_better"], False)
+        self.assertEqual(result["model"], "LogisticRegression")
+        with self.manager.artifact("example", result["id"]).open() as stream:
+            output = list(csv.reader(stream))
+        self.assertEqual(output[0], ["id", "0", "1"])
+        self.assertAlmostEqual(sum(map(float, output[1][1:])), 1.0)
+        self.manager.close()
+        restored = JobManager(self.data, self.state, self.catalog)
+        self.addCleanup(restored.close)
+        self.assertEqual(restored.detail("example", result["id"])["job"]["metric"], result["metric"])
+
+    def test_recipe_refuses_unknown_primary_metric(self):
+        (self.task / "task.md").write_text("Основная метрика: custom_score", encoding="utf-8")
+        with self.assertRaises(ValueError):
             self.manager.start("example", "baseline")
         self.assertEqual(self.manager.list(), [])
 

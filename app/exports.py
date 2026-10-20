@@ -98,7 +98,7 @@ def _readable_report(report: dict) -> bytes:
     def text(value):
         return escape(str(value if value is not None else "—"), quote=True)
 
-    action = {"baseline": "Стартовая модель", "extra_trees": "ExtraTrees",
+    action = {"baseline": "Стартовая модель", "extra_trees": "ExtraTrees", "catboost": "CatBoost", "lightgbm": "LightGBM", "linear": "Линейная модель",
               "automl": "Автоподбор моделей", "agent": "Исследование с Qwen"}.get(report["action"], "Эксперимент")
     fallback = report.get("agent_status") == "fallback"
     status = "Резервный CSV: исследование не завершилось штатно" if fallback else "Запуск завершён"
@@ -143,6 +143,12 @@ def _readable_report(report: dict) -> bytes:
         parameters = []
         for name, value in model_config["parameters"].items():
             field = fields.get(name, {})
+            if model_config["model"] == "FixedBlend" and name == "components":
+                parameters.append("Модели: " + " + ".join(item["model"] for item in value))
+                continue
+            if model_config["model"] == "FixedBlend" and name == "weight":
+                parameters.append("Вес каждой модели: 50 %")
+                continue
             selected = next((option for option in field.get("options", [])
                              if option["value"] == value), None)
             if selected is not None:
@@ -176,17 +182,27 @@ def _readable_report(report: dict) -> bytes:
         for candidate in search["candidates"]:
             value = candidate.get("metric")
             score = format(value, ".6g") if isinstance(value, (int, float)) else "—"
+            selection = candidate.get("selection_metric")
+            selection_score = format(selection, ".6g") if isinstance(selection, (int, float)) else "—"
+            resources = candidate.get("resources", {})
+            memory = resources.get("peak_rss_bytes")
+            memory_text = f"{memory / (1024 * 1024):.1f} МБ" if isinstance(memory, (int, float)) else "—"
             state = "Победитель" if candidate.get("selected") else states.get(candidate["status"], candidate["status"])
-            explanation = f'<small>{text(candidate["error"])}</small>' if candidate.get("error") else ""
+            reason = {"timeout": "Лимит времени", "memory_limit": "Лимит памяти",
+                      "execution_failed": "Ошибка обучения", "invalid_evidence": "Проверка не пройдена",
+                      "not_selected": "Не прошёл отбор", "not_improved": "Без улучшения",
+                      "insufficient_budget": "Не хватило времени", "refit_failed": "Ошибка финального обучения",
+                      "optional_dependency_unavailable": "Библиотека не установлена"}.get(candidate.get("rejection_reason"))
+            explanation = "".join(f"<small>{text(note)}</small>" for note in (reason, candidate.get("error")) if note)
             candidate_rows.append(
                 f'<tr><td>{text(candidate["label"])}<small>{text(candidate["model"])}</small></td>'
-                f'<td>{text(score)}</td><td>{text(state)}{explanation}</td>'
-                f'<td>{text(candidate["elapsed_seconds"])} с</td></tr>')
+                f'<td>{text(selection_score)}</td><td>{text(score)}</td><td>{text(state)}{explanation}</td>'
+                f'<td>{text(candidate["elapsed_seconds"])} с</td><td>{text(memory_text)}</td></tr>')
         ending = ("Лимит времени: сохранён лучший завершённый результат."
                   if search["status"] == "time_limit" else "Сохранён лучший завершённый результат.")
         search_html = (f'<section><h2>Попытки автоподбора</h2><p>{text(ending)}</p>'
-                       f'<p>{text(search["validation_reason"])}</p><div class="table-scroll"><table>'
-                       '<thead><tr><th>Модель</th><th>Метрика</th><th>Результат</th><th>Время</th></tr></thead>'
+                       f'<p>Подбор измеряется внутри обучающей части; проверка — на отложенных строках.</p><p>{text(search["validation_reason"])}</p><div class="table-scroll"><table>'
+                       '<thead><tr><th>Модель</th><th>Подбор</th><th>Проверка</th><th>Результат</th><th>Время</th><th>Пик RAM</th></tr></thead>'
                        f'<tbody>{"".join(candidate_rows)}</tbody></table></div></section>')
     diagnostics_html = ""
     diagnostics = report.get("classification_diagnostics")

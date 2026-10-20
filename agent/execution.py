@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import signal
+import math
 import subprocess
 import sys
+import time
+
+from agent.resources import DEFAULT_MEMORY_LIMIT_BYTES, POLL_SECONDS, ProcessTreeMonitor
 
 
 def child_environment() -> dict[str, str]:
@@ -24,28 +27,14 @@ def child_environment() -> dict[str, str]:
         "OMP_NUM_THREADS": "8",
         "OPENBLAS_NUM_THREADS": "8",
         "MKL_NUM_THREADS": "8",
+        "NUMEXPR_NUM_THREADS": "8",
+        "VECLIB_MAXIMUM_THREADS": "8",
     })
     return env
 
 
-def stop_process_tree(process: subprocess.Popen) -> None:
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=5, check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if process.poll() is None:
-            process.kill()
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    process.wait()
+def stop_process_tree(process: subprocess.Popen, tracker: ProcessTreeMonitor | None = None) -> None:
+    (tracker if tracker is not None else ProcessTreeMonitor(process)).terminate()
 
 
 def tail(path: Path, limit: int = 12000) -> str:
@@ -55,15 +44,25 @@ def tail(path: Path, limit: int = 12000) -> str:
 
 
 def run_python(code: str, task_dir: Path, run_dir: Path, step: int,
-               timeout: float = 1800) -> dict:
+               timeout: float = 1800, *,
+               max_memory_bytes: int | None = DEFAULT_MEMORY_LIMIT_BYTES) -> dict:
     if not isinstance(code, str) or not code.strip():
         return {"error": "code must be a non-empty string"}
+    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        return {"error": "timeout must be a positive finite number"}
+    if max_memory_bytes is not None and (
+        isinstance(max_memory_bytes, bool) or not isinstance(max_memory_bytes, int)
+        or max_memory_bytes <= 0
+    ):
+        return {"error": "max_memory_bytes must be a positive integer or None"}
     run_dir.mkdir(parents=True, exist_ok=True)
     script = run_dir / f"experiment_{step:03d}.py"
     stdout_path = script.with_suffix(".stdout.txt")
     stderr_path = script.with_suffix(".stderr.txt")
     script.write_text(code, encoding="utf-8")
     timed_out = False
+    memory_limit_exceeded = False
+    started = time.monotonic()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(
             [sys.executable, "-u", "-c",
@@ -73,12 +72,33 @@ def run_python(code: str, task_dir: Path, run_dir: Path, step: int,
             stdout=stdout, stderr=stderr, start_new_session=os.name != "nt",
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
         )
+        tracker = ProcessTreeMonitor(process, max_memory_bytes=max_memory_bytes)
         try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            stop_process_tree(process)
-    return {
+            while True:
+                exceeded = tracker.sample()
+                if process.poll() is not None:
+                    break
+                if exceeded:
+                    memory_limit_exceeded = True
+                    break
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    process.wait(timeout=min(POLL_SECONDS, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            # Clean up tracked descendants even when their root exits normally.
+            stopped = tracker.terminate()
+    result = {
         "stdout": tail(stdout_path), "stderr": tail(stderr_path),
         "exit_code": process.returncode, "timed_out": timed_out,
+        "memory_limit_exceeded": memory_limit_exceeded,
+        "elapsed_seconds": round(time.monotonic() - started, 6),
+        "resources": tracker.summary(),
     }
+    if not stopped:
+        result["error"] = "Experiment processes could not be fully stopped within the cleanup deadline"
+    return result

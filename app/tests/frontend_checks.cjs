@@ -300,6 +300,71 @@ const cases = {
     const grouped = get("comparisonGroups")([current, job({ id: "manual", metric: { name: "Macro F1", value: 0.5, higher_is_better: true } })]);
     assert.equal(grouped.length, 1);
     assert.equal(grouped[0].best.id, current.id, "The measured search result participates in existing comparison groups");
+    cases.expanded_search();
+  },
+  expanded_search() {
+    const actions = ["baseline", "extra_trees", "catboost", "lightgbm", "linear"];
+    setup({
+      ...profile, task_type: "regression", metric: { name: "R2", higher_is_better: true },
+      model_options: Object.fromEntries(actions.map(action => [action, schema])),
+    });
+    assert.deepEqual(
+      plain(get("launchRecipeOptions")(get("currentProfile")()).map(row => row[0])),
+      ["automl", ...actions, "agent"],
+      "All five advertised model recipes must be available in the launch dialog",
+    );
+    for (const action of ["catboost", "lightgbm", "linear"]) {
+      const payload = plain(get("launchPayload")({
+        task_id: "case", action, author: "", hypothesis: "", minutes: 20,
+        validation: { strategy: "time", time_column: "x" }, model_params: { depth: 4 },
+      }));
+      assert.equal(payload.action, action);
+      assert.deepEqual(payload.validation, { strategy: "time", time_column: "x" });
+      assert.deepEqual(payload.model_params, { depth: 4 });
+    }
+    const candidates = Array.from({ length: 21 }, (_, index) => ({
+      id: `candidate-${index}`, label: `candidate-${index}`, model: "Ridge", phase: "selection",
+      status: "completed", metric: null, verification_metric: null, selection_metric: -2,
+      selected: false, elapsed_seconds: 1, error: null,
+    }));
+    Object.assign(candidates[0], {
+      metric: -3, verification_metric: -3, selected: true, phase: "seed",
+      resources: { available: true, peak_rss_bytes: 1024 * 1024 },
+    });
+    Object.assign(candidates[1], {
+      selection_metric: 0.99,
+      feature_config: { missing_indicators: true, rare_min_count: 0, date_columns: ["date"], text_columns: [], signed_log: false },
+    });
+    Object.assign(candidates[2], {
+      status: "failed", selection_metric: null, rejection_reason: "memory_limit",
+      error: '<img src=x onerror="evil()">', resources: { available: false, peak_rss_bytes: null },
+    });
+    const current = job({
+      action: "automl", metric: { name: "R2", value: -3, higher_is_better: true },
+      search: { status: "completed", phase: "finished", planned: 21, completed: 20,
+        best_candidate: "candidate-0", candidates },
+    });
+    const html = get("autoSearchView")(current);
+    assert.match(html, /candidate-20/, "The complete 20-model plus ensemble report must remain visible");
+    assert.match(html, /R2/);
+    assert.match(html, /class="metric-cell">-3</);
+    assert.doesNotMatch(html, /Macro F1|RMSE/, "Metric direction must not imply the task type");
+    assert.match(html, /candidate-1<[^]*?metric-cell">0,99<\/td><td class="metric-cell">—/);
+    assert.match(html, /Подбор завершён/);
+    assert.equal((html.match(/search-selected/g) || []).length, 1);
+    assert.match(html, /1 МБ/);
+    assert.match(html, /Не измерялось/);
+    assert.match(html, /Лимит памяти/);
+    assert.match(html, /Индикаторы пропусков/);
+    assert.match(html, /Даты/);
+    assert.match(html, /&lt;img src=x onerror=&quot;evil\(\)&quot;&gt;/);
+    assert.doesNotMatch(html, /<img|onerror="evil\(\)"/);
+    current.search.best_candidate = "candidate-1";
+    candidates[0].selected = false;
+    candidates[1].selected = true;
+    const invalidWinner = get("autoSearchView")(current);
+    assert.doesNotMatch(invalidWinner, /search-selected|Лучший вариант сохранён|>Выбран</,
+      "An inner-only metric cannot be displayed as the verified winner even if selected is claimed");
   },
   automl_progress() {
     setup();

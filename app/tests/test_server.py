@@ -26,7 +26,7 @@ class ServerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         task = self.root / "case"
         task.mkdir()
-        (task / "task.md").write_text("Classification. Metric: Macro F1", encoding="utf-8")
+        (task / "task.md").write_text("Classification.\nPrimary metric: Macro F1", encoding="utf-8")
         records = {
             "data_dictionary.csv": [["feature", "role", "dtype"], ["id", "id", "category"],
                                     ["feature", "feature", "binary"], ["label", "target", "category"]],
@@ -255,7 +255,7 @@ class ServerTests(unittest.TestCase):
             status, _, response = self.request("/api/tasks/case/profile")
         self.assertEqual(status, 200, response)
         options = json.loads(response)["model_options"]
-        self.assertEqual(set(options), {"baseline", "extra_trees"})
+        self.assertEqual(set(options), {"baseline", "extra_trees", "catboost", "lightgbm", "linear"})
         self.assertEqual(options["baseline"]["model"], "RandomForestClassifier")
         self.assertEqual(options["extra_trees"]["model"], "ExtraTreesClassifier")
         self.assertIn("n_estimators", options["baseline"]["defaults"])
