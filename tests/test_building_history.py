@@ -1,11 +1,17 @@
 import copy
 import math
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import pandas as pd
 
 from agent.building_history import FEATURES, HistoryEncoder
+import experiment_regression_history as experiment
+
+HISTORY = list(FEATURES)
 
 
 KEY = ["state", "kind", "area", "built", "elevation"]
@@ -288,6 +294,170 @@ class SyntheticCycleTests(unittest.TestCase):
 
         self.assertGreater(history_valid["history_present"].mean(), 0.9)
         self.assertLess(error_history, error_plain / 2)  # the planted building level is learned only through history
+
+
+def make_task(root: Path) -> Path:
+    """A small regression task in the layout offline_baseline reads: train years 1-5, test year 6, text ids with zeros."""
+    rng = np.random.default_rng(1)
+    n = 120
+    buildings = pd.DataFrame({
+        "State_Factor": rng.choice(["State_1", "State_2"], n), "building_class": rng.choice(["Commercial", "Residential"], n),
+        "facility_type": rng.choice(["Office", "Retail", "School"], n), "floor_area": 5000.0 + 91.5 * np.arange(n),
+        "year_built": 1940.0 + np.arange(n) % 70, "ELEVATION": (np.arange(n) % 6) * 1.5, "level": rng.uniform(20, 200, n)})
+    frames = []
+    for year in range(1, 7):
+        part = buildings[rng.random(n) < 0.7].copy()
+        part["Year_Factor"] = float(year)
+        part["temp"] = rng.normal(size=len(part))
+        part["site_eui"] = part["level"] + rng.normal(scale=3.0, size=len(part))
+        frames.append(part.drop(columns="level"))
+    everything = pd.concat(frames, ignore_index=True)
+    everything.insert(0, "id", [f"{i:05d}" for i in range(len(everything))])
+    train, test = everything[everything["Year_Factor"] < 6], everything[everything["Year_Factor"] == 6]
+    inputs = Path(root) / "regression" / "participants"
+    inputs.mkdir(parents=True)
+    train.to_csv(inputs / "train.csv", index=False)
+    test.drop(columns="site_eui").to_csv(inputs / "test.csv", index=False)
+    pd.DataFrame({"id": test["id"], "site_eui": 0.0}).to_csv(inputs / "sample_submission.csv", index=False)
+    roles = [("id", "id", "category"), ("site_eui", "target", "numeric"), ("Year_Factor", "feature", "numeric"),
+             ("State_Factor", "feature", "category"), ("building_class", "feature", "category"),
+             ("facility_type", "feature", "category"), ("floor_area", "feature", "numeric"),
+             ("year_built", "feature", "numeric"), ("ELEVATION", "feature", "numeric"), ("temp", "feature", "numeric")]
+    pd.DataFrame(roles, columns=["feature", "role", "dtype"]).to_csv(inputs / "data_dictionary.csv", index=False)
+    return inputs
+
+
+class ExperimentTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.inputs = make_task(Path(self.directory.name))
+
+    def run_experiment(self, name: str = "out", years=(3, 4, 5)) -> tuple[dict, Path]:
+        out = Path(self.directory.name) / name
+        return experiment.run_experiment(self.inputs, out, years=years), out
+
+    @staticmethod
+    def predictions(out: Path, year: int) -> pd.DataFrame:
+        return pd.read_csv(out / f"predictions_year{year}.csv", dtype={"id": str})
+
+    def test_matrix_files_metrics_and_independent_recomputation(self):
+        summary, out = self.run_experiment()
+
+        self.assertEqual(sorted(path.name for path in out.iterdir()), [
+            "input_hashes.json", "metrics.csv", "metrics.json", "predictions_year3.csv", "predictions_year4.csv",
+            "predictions_year5.csv"])
+        names = [name for name, *_ in experiment.VARIANTS] + [name for name, _ in experiment.BLENDS]
+        self.assertEqual(len(names), 10)
+        for year in (3, 4, 5):
+            table = self.predictions(out, year)
+            train = pd.read_csv(self.inputs / "train.csv", dtype={"id": str})
+            expected_ids = train.loc[train["Year_Factor"] == year, "id"].tolist()
+            self.assertEqual(table["id"].tolist(), expected_ids)  # text ids, leading zeros kept, same rows for all variants
+            self.assertTrue(table["id"].str.startswith("0").all())
+            records = {r["variant"]: r for r in summary["records"] if r["year"] == year}
+            self.assertEqual(sorted(records), sorted(names))
+            for name in names:
+                error = table["y_true"] - table[name]
+                self.assertAlmostEqual(math.sqrt((error ** 2).mean()), records[name]["errors"]["all"]["rmse"], places=9)
+                has = table["history_present"] == 1
+                self.assertAlmostEqual(math.sqrt((error[has] ** 2).mean()), records[name]["errors"]["history"]["rmse"], places=9)
+            for name, source in experiment.BLENDS:
+                expected = np.where(table["history_present"] == 1, 0.5 * table[source] + 0.5 * table["history_mean"].fillna(0),
+                                    table[source])
+                np.testing.assert_allclose(table[name], expected)
+                rows_without = table["history_present"] == 0
+                pd.testing.assert_series_equal(table.loc[rows_without, name], table.loc[rows_without, source], check_names=False)
+            fold = next(f for f in summary["folds"] if f["year"] == year)
+            self.assertEqual(fold["fit_rows"], int((train["Year_Factor"] < year).sum()))
+            self.assertEqual(fold["validation_rows"], len(expected_ids))
+        combined = {c["variant"]: c["all"]["rmse"] for c in summary["combined"]}
+        for name in names:
+            sse = sum(((self.predictions(out, y)["y_true"] - self.predictions(out, y)[name]) ** 2).sum() for y in (3, 4, 5))
+            rows = sum(len(self.predictions(out, y)) for y in (3, 4, 5))
+            self.assertAlmostEqual(combined[name], math.sqrt(sse / rows), places=9)  # sqrt(sum SSE / sum N)
+        yearly = [next(r for r in summary["records"] if r["variant"] == "et_all" and r["year"] == y)["errors"]["all"]["rmse"]
+                  for y in (3, 4, 5)]
+        self.assertNotAlmostEqual(combined["et_all"], sum(yearly) / 3, places=6)  # not a mean of yearly RMSE
+
+    def test_fixed_models_features_and_history_columns(self):
+        summary, _ = self.run_experiment(years=(4,))
+        records = {r["variant"]: r for r in summary["records"]}
+
+        hgb, extra = records["hgb_all"]["parameters"], records["et_all"]["parameters"]
+        self.assertEqual((hgb["max_iter"], hgb["max_leaf_nodes"], hgb["learning_rate"], hgb["random_state"]), (150, 31, 0.1, 42))
+        self.assertEqual((extra["n_estimators"], extra["min_samples_leaf"], extra["max_depth"], extra["max_features"],
+                          extra["random_state"], extra["n_jobs"]), (200, 1, None, 1.0, 42, 8))
+        self.assertIn("Year_Factor", records["hgb_all"]["features"])
+        self.assertNotIn("Year_Factor", records["hgb_no_period"]["features"])
+        self.assertEqual(records["hgb_no_period_history"]["features"], [*records["hgb_no_period"]["features"], *HISTORY])
+        self.assertEqual(records["et_no_period_history"]["features"], [*records["et_no_period"]["features"], *HISTORY])
+        self.assertFalse(set(HISTORY) & set(records["et_all"]["features"]))
+
+    def test_changing_validation_answers_changes_no_prediction_and_no_history(self):
+        _, first = self.run_experiment("first")
+        train = pd.read_csv(self.inputs / "train.csv", dtype=str, keep_default_na=False)
+        late = train["Year_Factor"].astype(float) == 5
+        train.loc[late, "site_eui"] = (train.loc[late, "site_eui"].astype(float) * 3 + 777).astype(str)
+        train.to_csv(self.inputs / "train.csv", index=False)
+
+        _, second = self.run_experiment("second")
+
+        a, b = self.predictions(first, 5), self.predictions(second, 5)
+        self.assertFalse(np.allclose(a["y_true"], b["y_true"]))
+        pd.testing.assert_frame_equal(a.drop(columns="y_true"), b.drop(columns="y_true"))  # models and history never saw them
+        for year in (3, 4):
+            pd.testing.assert_frame_equal(self.predictions(first, year), self.predictions(second, year))
+
+    def test_every_fold_is_fitted_on_strictly_earlier_years_only(self):
+        summary, _ = self.run_experiment(years=(3, 5))
+
+        self.assertEqual([fold["fit_years"] for fold in summary["folds"]], [[1, 2], [1, 2, 3, 4]])
+
+    def test_input_files_changed_during_the_run_are_detected(self):
+        original = experiment.run_year
+
+        def tamper(*args, **kwargs):
+            with open(self.inputs / "sample_submission.csv", "ab") as file:
+                file.write(b"x")
+            return original(*args, **kwargs)
+
+        with mock.patch.object(experiment, "run_year", tamper), self.assertRaisesRegex(RuntimeError, "Input files changed"):
+            experiment.run_experiment(self.inputs, Path(self.directory.name) / "out", years=(5,))
+
+        self.assertFalse((Path(self.directory.name) / "out").exists())
+
+    def test_output_folder_inside_the_input_folder_is_refused(self):
+        before = {path.name: path.read_bytes() for path in self.inputs.iterdir()}
+
+        for target in (self.inputs, self.inputs / "results"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "inside the input folder"):
+                experiment.run_experiment(self.inputs, target)
+
+        self.assertEqual({path.name: path.read_bytes() for path in self.inputs.iterdir()}, before)
+
+    def test_text_ids_with_leading_zeros_survive_writing(self):
+        path = Path(self.directory.name) / "ids.csv"
+        table = pd.DataFrame({"id": ["007", "010", "100"], "value": [1.0, 2.0, 3.0]})
+
+        experiment.write_file(path, lambda file: table.to_csv(file, index=False, lineterminator="\n"))
+
+        self.assertEqual(pd.read_csv(path, dtype={"id": str})["id"].tolist(), ["007", "010", "100"])
+
+    def test_failed_file_write_keeps_the_previous_file(self):
+        path = Path(self.directory.name) / "metrics.json"
+        path.write_text("old", encoding="utf-8")
+
+        def failing(file):
+            file.write("partial")
+            raise OSError("disk full")
+
+        with self.assertRaises(OSError):
+            experiment.write_file(path, failing)
+
+        self.assertEqual(path.read_text(encoding="utf-8"), "old")
+        self.assertEqual([item.name for item in Path(self.directory.name).iterdir() if item.name.startswith("metrics")],
+                         ["metrics.json"])
 
 
 if __name__ == "__main__":
