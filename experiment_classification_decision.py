@@ -37,7 +37,8 @@ from sklearn.preprocessing import OneHotEncoder
 from threadpoolctl import threadpool_limits
 
 from agent.classification_decision import fit_decision_rule, predict_with_rule
-from classification_decision_cases import CASE_DEFINITIONS, SEEDS, make_case, validate_splits
+from classification_decision_cases import (CASE_DEFINITIONS, SEEDS, make_case, validate_splits,
+                                           case_definitions, suite_seeds, calibration_partition)
 
 ROOT = Path(__file__).resolve().parent
 MODEL_CONFIG = {
@@ -96,7 +97,8 @@ def environment_versions():
                ("numpy", "pandas", "scikit-learn", "scipy", "joblib", "threadpoolctl")}}
 
 
-def prepare(output_dir=None, public_task=None):
+def prepare(output_dir=None, public_task=None, *, suite="pilot"):
+    definitions, seeds = case_definitions(suite), suite_seeds(suite)
     if output_dir is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output_dir = ROOT / "data/experiments/classification_decision" / f"{stamp}-{uuid4().hex[:8]}"
@@ -108,24 +110,34 @@ def prepare(output_dir=None, public_task=None):
     if has_public and output_dir.is_relative_to(public_task.parent):
         raise ValueError("Outputs must be outside the public task input directory.")
     plan = {
-        "format": "classification-decision-preregistration", "version": 1,
+        "format": "classification-decision-preregistration", "version": 1, "suite": suite,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_sha256": source_hashes(has_public), "model": MODEL_CONFIG,
         "model_seed": "scenario seed; public seed 42", "decision_options": RULE_OPTIONS,
-        "generators": CASE_DEFINITIONS, "seeds": list(SEEDS),
+        "generators": definitions, "seeds": list(seeds),
         "preprocessing": "fit-only numeric median + categorical most_frequent + onehot(ignore unknown)",
-        "synthetic_cases": [{"name": name, "seed": seed} for name in CASE_DEFINITIONS for seed in SEEDS],
+        "synthetic_cases": [{"name": name, "seed": seed} for name in definitions for seed in seeds],
         "public": {"status": "planned" if has_public else "skipped_missing_data",
                    "task": str(public_task), "folds": [0, 1, 2],
                    "input_sha256": public_input_hashes(public_task) if has_public else {}},
         "resources": {"cpu_threads": 8, "per_case_wall_seconds": CASE_TIMEOUT_SECONDS,
-                      "planned_workers": len(CASE_DEFINITIONS) * len(SEEDS) + (3 if has_public else 0),
-                      "total_worker_timeout_budget_seconds": CASE_TIMEOUT_SECONDS * (len(CASE_DEFINITIONS) * len(SEEDS) + (3 if has_public else 0)),
+                      "planned_workers": len(definitions) * len(seeds) + (3 if has_public else 0),
+                      "total_worker_timeout_budget_seconds": CASE_TIMEOUT_SECONDS * (len(definitions) * len(seeds) + (3 if has_public else 0)),
                       "memory_limit_bytes": MEMORY_LIMIT_BYTES,
                       "memory_enforcement": "RLIMIT_AS where supported, otherwise reported unavailable"},
         "no_refit": True, "audit_not_used_for_selection": True, "api_calls": 0,
         "environment": environment_versions(),
     }
+    if suite == "guarded":
+        from agent.classification_decision import DEFAULT_GUARD_OPTIONS
+        plan["guarded_method"] = {
+            "options": dict(DEFAULT_GUARD_OPTIONS), "multiplier_grid": [0.8, 1.0, 1.25],
+            "bounds": [0.8, 1.25],
+            "calibration_partition": "60% tuning / 40% selection; raw groups seed+2 or forward time",
+            "selection": "one tuning-only candidate; gate then identity fallback; no full-calibration refit",
+            "comparisons": ["control", "legacy", "guarded"],
+            "audit_history": "fresh seeds; method designed after the pilot audit results",
+        }
     plan["plan_sha256"] = json_hash(plan)
     output_dir.mkdir(parents=True, exist_ok=False)
     write_json(output_dir / "preregistration.json", plan)
@@ -198,7 +210,7 @@ def _public_case(plan, fold):
     fit, cal = development[fitting], development[calibration]
     # Validate raw values, not transformed/prepared values.
     integrity = validate_splits(train[features], fit, cal, audit)
-    return {"name": f"public_fold{fold}", "seed": 42, "frame": frame,
+    return {"name": f"public_fold{fold}", "seed": 42, "frame": frame, "raw_frame": train[features],
             "labels": np.asarray(y, dtype=str), "ids": train[id_column].astype(str).to_numpy(),
             "classes": sorted(set(y.tolist())), "fit_rows": fit, "calibration_rows": cal,
             "audit_rows": audit, "split": {"strategy": "grouped", "outer": outer, **integrity}}
@@ -232,7 +244,9 @@ def run_case(output_dir, spec):
     started = time.monotonic()
     plan = load_plan(output_dir)
     memory_start = memory_state(enforce=True)
-    case = _public_case(plan, spec["fold"]) if "fold" in spec else make_case(spec["name"], spec["seed"])
+    suite = plan.get("suite", "pilot")
+    case = (_public_case(plan, spec["fold"]) if "fold" in spec
+            else make_case(spec["name"], spec["seed"], suite=suite))
     name, seed = case["name"], case["seed"]
     directory = output_dir / f"{name}-{seed}"
     directory.mkdir(exist_ok=False)
@@ -263,18 +277,42 @@ def run_case(output_dir, spec):
     # The model emits sorted classes; pass the exact actual probability order.
     tuning_started = time.monotonic()
     rule = fit_decision_rule(calibration_probabilities, y[cal], model_classes, options=RULE_OPTIONS)
+    guarded_rule = None
+    partition_record = None
+    if suite == "guarded":
+        from agent.classification_decision import fit_guarded_decision_rule
+        tuning_rows, selection_rows, partition_metadata = calibration_partition(case)
+        guarded_rule = fit_guarded_decision_rule(
+            calibration_probabilities, y[cal], model_classes,
+            tuning_rows=tuning_rows, selection_rows=selection_rows,
+            options=plan["guarded_method"]["options"],
+        )
+        partition_record = {
+            "tuning_rows": tuning_rows.tolist(), "selection_rows": selection_rows.tolist(),
+            "metadata": partition_metadata,
+            "supports": {part: {label: int(np.count_nonzero(y[cal][rows] == label)) for label in classes}
+                         for part, rows in (("tuning", tuning_rows), ("selection", selection_rows))},
+        }
+        write_json(directory / "calibration_partitions.json", partition_record)
     tuning_seconds = time.monotonic() - tuning_started
     joblib.dump(pipeline, directory / "frozen_model.joblib", compress=3)
     calibration_frame = pd.DataFrame({"id": ids[cal], "actual": y[cal]})
     for index, label in enumerate(model_classes):
         calibration_frame[f"probability_{index}"] = calibration_probabilities[:, index]
+    if guarded_rule is not None:
+        partitions = np.empty(len(cal), dtype=object)
+        partitions[tuning_rows], partitions[selection_rows] = "tuning", "selection"
+        calibration_frame["partition"] = partitions
     calibration_frame.to_csv(directory / "calibration_probabilities.csv", index=False)
+    configuration = {"model": {**MODEL_CONFIG, "random_state": seed}, "decision": RULE_OPTIONS}
+    if guarded_rule is not None:
+        configuration.update(guarded_method=plan["guarded_method"],
+                             calibration_partition=partition_record["metadata"])
     frozen = {
         "case": name, "seed": seed, "classes": model_classes, "model_config": {**MODEL_CONFIG, "random_state": seed},
         "model_sha256": file_hash(directory / "frozen_model.joblib"), "rule": rule,
         "rule_sha256": json_hash(rule), "plan_sha256": plan["plan_sha256"],
-        "configuration_sha256": json_hash({"model": {**MODEL_CONFIG, "random_state": seed},
-                                             "decision": RULE_OPTIONS}),
+        "configuration_sha256": json_hash(configuration),
         "source_sha256": file_hash(directory / "source.csv"), "source_metadata_columns": source_columns,
         "split_sha256": json_hash(splits),
         "calibration_sha256": file_hash(directory / "calibration_probabilities.csv"),
@@ -283,6 +321,12 @@ def run_case(output_dir, spec):
         "supports": supports, "split": case["split"],
         "frozen_before_audit": datetime.now(timezone.utc).isoformat(), "api_calls": 0,
     }
+    if guarded_rule is not None:
+        frozen.update(
+            suite=suite, guarded_rule=guarded_rule, guarded_rule_sha256=json_hash(guarded_rule),
+            calibration_partitions=partition_record,
+            calibration_partitions_sha256=file_hash(directory / "calibration_partitions.json"),
+        )
     write_json(directory / "frozen.json", frozen)
     frozen_hash = file_hash(directory / "frozen.json")
     # Audit labels first enter scoring only after the configuration/rule snapshot.
@@ -291,10 +335,20 @@ def run_case(output_dir, spec):
         probabilities = pipeline.predict_proba(frame.iloc[audit])
     control = np.asarray(model_classes)[np.argmax(probabilities, axis=1)]
     candidate = predict_with_rule(probabilities, model_classes, rule)
-    scores = {"control": diagnostics(y[audit], control, classes),
-              "candidate": diagnostics(y[audit], candidate, classes)}
+    guarded = None
+    if guarded_rule is None:
+        scores = {"control": diagnostics(y[audit], control, classes),
+                  "candidate": diagnostics(y[audit], candidate, classes)}
+    else:
+        guarded = predict_with_rule(probabilities, model_classes, guarded_rule["rule"])
+        scores = {"control": diagnostics(y[audit], control, classes),
+                  "legacy": diagnostics(y[audit], candidate, classes),
+                  "guarded": diagnostics(y[audit], guarded, classes)}
     predicted_frame = pd.DataFrame({"id": ids[audit], "actual": y[audit],
                                     "control": control, "candidate": candidate})
+    if guarded is not None:
+        predicted_frame["legacy"] = candidate
+        predicted_frame["guarded"] = guarded
     for index, _ in enumerate(model_classes):
         predicted_frame[f"probability_{index}"] = probabilities[:, index]
     predicted_frame.to_csv(directory / "audit_predictions.csv", index=False)
@@ -302,7 +356,11 @@ def run_case(output_dir, spec):
             or file_hash(directory / "frozen_model.joblib") != frozen["model_sha256"]
             or json_hash(rule) != frozen["rule_sha256"]):
         raise ValueError("Frozen experiment artifacts changed during audit.")
-    difference = scores["candidate"]["macro_f1"] - scores["control"]["macro_f1"]
+    if guarded_rule is not None and (json_hash(guarded_rule) != frozen["guarded_rule_sha256"]
+            or file_hash(directory / "calibration_partitions.json") != frozen["calibration_partitions_sha256"]):
+        raise ValueError("Guarded rule or calibration partitions changed during audit.")
+    decision_name = "guarded" if guarded_rule is not None else "candidate"
+    difference = scores[decision_name]["macro_f1"] - scores["control"]["macro_f1"]
     memory_end = memory_state()
     for key in ("memory_limit_enforced", "enforced_virtual_memory_bytes", "enforcement_unavailable_reason"):
         if key in memory_start:
@@ -324,6 +382,18 @@ def run_case(output_dir, spec):
                       "memory_limit_bytes": MEMORY_LIMIT_BYTES, **memory_end},
         "api_calls": 0,
     }
+    if guarded_rule is not None:
+        legacy_difference = scores["legacy"]["macro_f1"] - scores["control"]["macro_f1"]
+        result.update(
+            suite=suite, guarded_rule=guarded_rule, calibration_partitions=partition_record,
+            legacy_delta_macro_f1=legacy_difference,
+            legacy_outcome=("win" if legacy_difference > 1e-12 else "loss" if legacy_difference < -1e-12 else "tie"),
+        )
+        result["hashes"].update(
+            guarded_rule=frozen["guarded_rule_sha256"],
+            calibration_partitions=frozen["calibration_partitions_sha256"],
+            legacy_predictions=json_hash(candidate.tolist()), guarded_predictions=json_hash(guarded.tolist()),
+        )
     write_json(directory / "result.json", result)
     return result
 
@@ -339,6 +409,9 @@ def run_prepared(output_dir):
         specs += [{"fold": fold} for fold in plan["public"]["folds"]]
     report = {"version": 1, "status": "running", "plan_sha256": plan["plan_sha256"],
               "api_calls": 0, "public": plan["public"], "results": [], "counts": {"win": 0, "tie": 0, "loss": 0}}
+    if plan.get("suite", "pilot") == "guarded":
+        report["suite"] = "guarded"
+        report["legacy_counts"] = {"win": 0, "tie": 0, "loss": 0}
     started = time.monotonic()
     for index, spec in enumerate(specs):
         print(f"[{index + 1}/{len(specs)}] {spec}", flush=True)
@@ -353,6 +426,8 @@ def run_prepared(output_dir):
             result = json.loads((output_dir / name / "result.json").read_text(encoding="utf-8"))
             report["results"].append(result)
             report["counts"][result["outcome"]] += 1
+            if "legacy_counts" in report:
+                report["legacy_counts"][result["legacy_outcome"]] += 1
         except (subprocess.TimeoutExpired, RuntimeError) as error:
             report["results"].append({"spec": spec, "status": "failed", "error": str(error)})
         write_json(output_dir / "report.json", report)
@@ -366,13 +441,14 @@ def run_prepared(output_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--suite", choices=("pilot", "guarded"))
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--public-task", type=Path)
     parser.add_argument("--run-prepared", type=Path)
     parser.add_argument("--worker", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.run_prepared:
-        if args.prepare_only or args.output_dir or args.public_task:
+        if args.prepare_only or args.output_dir or args.public_task or args.suite:
             parser.error("--run-prepared cannot be combined with preparation options")
         if args.worker is not None:
             plan = load_plan(args.run_prepared)
@@ -385,7 +461,7 @@ def main():
         return 0 if report["status"] == "completed" else 1
     if args.worker is not None:
         parser.error("--worker requires --run-prepared")
-    output, _ = prepare(args.output_dir, args.public_task)
+    output, _ = prepare(args.output_dir, args.public_task, suite=args.suite or "pilot")
     print(f"Prepared: {output}", flush=True)
     if args.prepare_only:
         return 0

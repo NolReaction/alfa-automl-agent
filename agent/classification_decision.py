@@ -29,6 +29,18 @@ DEFAULT_OPTIONS = {
     "min_samples": 100,
     "min_class_count": 10,
 }
+DEFAULT_GUARD_OPTIONS = {
+    "regularization": 0.01,
+    "min_selection_gain": 0.01,
+    "max_selection_class_f1_drop": 0.02,
+    "min_tuning_samples": 100,
+    "min_tuning_class_count": 5,
+    "min_selection_samples": 60,
+    "min_selection_class_count": 5,
+    "max_rounds": 2,
+    "max_candidates": 128,
+}
+_GUARD_GRID = (0.8, 1.0, 1.25)
 _SCORE_TOLERANCE = 1e-12
 _DIAGNOSTIC_KEYS = {
     "n_samples", "class_counts", "candidates_evaluated", "rounds_completed",
@@ -224,6 +236,214 @@ def fit_decision_rule(probabilities, calibration_labels, classes, *, options=Non
                        selected_score=current_score)
     rule["multipliers"] = list(current)
     return rule
+
+
+def _guard_options(options):
+    if options is not None and not isinstance(options, dict):
+        raise ValueError("Guard options must be a dictionary")
+    options = {} if options is None else options
+    if not set(options) <= set(DEFAULT_GUARD_OPTIONS):
+        raise ValueError("Unknown guarded decision-rule options")
+    result = {**DEFAULT_GUARD_OPTIONS, **options}
+    for name in ("regularization", "min_selection_gain", "max_selection_class_f1_drop"):
+        result[name] = _number(result[name], name)
+        if not 0 <= result[name] <= 1:
+            raise ValueError(f"{name} must be in [0, 1]")
+    for name, maximum in (("max_rounds", 10), ("max_candidates", 4096),
+                          ("min_tuning_samples", 1_000_000_000),
+                          ("min_tuning_class_count", 1_000_000_000),
+                          ("min_selection_samples", 1_000_000_000),
+                          ("min_selection_class_count", 1_000_000_000)):
+        if type(result[name]) is not int or not 1 <= result[name] <= maximum:
+            raise ValueError(f"{name} must be an integer in [1, {maximum}]")
+    return result
+
+
+def _partition_rows(values, n_rows, name):
+    try:
+        raw = np.asarray(values, dtype=object)
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"{name} must be a one-dimensional integer sequence") from error
+    if raw.ndim != 1 or any(isinstance(value, (bool, np.bool_))
+                            or not isinstance(value, (int, np.integer)) for value in raw):
+        raise ValueError(f"{name} must be a one-dimensional integer sequence")
+    rows = [int(value) for value in raw]
+    if len(set(rows)) != len(rows) or any(not 0 <= value < n_rows for value in rows):
+        raise ValueError(f"{name} contains repeated or out-of-range rows")
+    return np.asarray(rows, dtype=np.int64)
+
+
+def _regularized_candidate(matrix, labels, classes, config):
+    # A standard v1 identity rule supplies the exact backward-compatible
+    # prediction schema and the same support validation as the original API.
+    candidate_options = {
+        "multiplier_grid": list(_GUARD_GRID), "multiplier_min": 0.8,
+        "multiplier_max": 1.25, "max_rounds": config["max_rounds"],
+        "max_candidates": config["max_candidates"],
+        "min_samples": config["min_tuning_samples"],
+        "min_class_count": config["min_tuning_class_count"],
+    }
+    identity = fit_decision_rule(matrix, labels, classes,
+                                 options={**candidate_options, "max_candidates": 1})
+    candidate = {**identity, "classes": list(identity["classes"]),
+                 "multipliers": list(identity["multipliers"]),
+                 "options": _options(candidate_options),
+                 "diagnostics": dict(identity["diagnostics"])}
+    if candidate["diagnostics"]["fallback_reason"] is not None:
+        return identity, candidate, None, 0.0
+    positions = {label: index for index, label in enumerate(classes)}
+    actual = np.asarray([positions[label] for label in labels], dtype=np.int64)
+    current = tuple(1.0 for _ in classes)
+    control = candidate["diagnostics"]["control_score"]
+    cache = {current: (control, control)}
+    current_objective = control
+    rounds, stop, exhausted = 0, "max_rounds", False
+    for round_index in range(config["max_rounds"]):
+        before = current
+        for column in range(len(classes)):
+            best, best_objective = current, current_objective
+            anchor = current
+            for value in _GUARD_GRID:
+                multipliers = anchor[:column] + (value,) + anchor[column + 1:]
+                if multipliers not in cache:
+                    if len(cache) >= config["max_candidates"]:
+                        exhausted = True
+                        break
+                    predictions = (matrix * np.asarray(multipliers)).argmax(axis=1)
+                    score = _macro_f1(actual, predictions, len(classes))
+                    penalty = config["regularization"] * sum(abs(math.log(x)) for x in multipliers)
+                    cache[multipliers] = score, score - penalty
+                objective = cache[multipliers][1]
+                if _better(objective, multipliers, best_objective, best):
+                    best, best_objective = multipliers, objective
+            current, current_objective = best, best_objective
+            if exhausted:
+                break
+        if exhausted:
+            stop = "candidate_budget"
+            break
+        rounds = round_index + 1
+        if current == before:
+            stop = "no_improvement"
+            break
+    candidate["multipliers"] = list(current)
+    candidate["diagnostics"].update(
+        candidates_evaluated=len(cache), rounds_completed=rounds,
+        stop_reason=stop, selected_score=cache[current][0],
+    )
+    penalty = config["regularization"] * sum(abs(math.log(x)) for x in current)
+    return identity, candidate, current_objective, penalty
+
+
+def _class_f1(actual, predicted, n_classes):
+    confusion = np.bincount(actual * n_classes + predicted,
+                            minlength=n_classes * n_classes).reshape(n_classes, n_classes)
+    denominator = confusion.sum(axis=0) + confusion.sum(axis=1)
+    return np.divide(2.0 * confusion.diagonal(), denominator,
+                     out=np.zeros(n_classes), where=denominator != 0)
+
+
+def fit_guarded_decision_rule(probabilities, calibration_labels, classes, *,
+                              tuning_rows, selection_rows, options=None):
+    """Tune one regularized candidate, then admit it on untouched selection.
+
+    Row indices refer to the supplied calibration matrix; both partitions must
+    be explicit, disjoint, unique, and together cover every row. Passing two
+    empty partitions denotes an unavailable safe split and returns identity.
+    No split policy is inferred: the host must preserve raw groups and forward
+    time, and exclude both parts from model/preprocessing fitting.
+
+    The fixed multiplier grid is [0.8, 1, 1.25]. Tuning maximizes Macro F1 minus
+    ``regularization * sum(abs(log(multipliers)))``. Exactly one candidate is
+    selected using tuning rows only. Selection can accept that candidate or
+    return identity; it never changes its multipliers or causes a full-data
+    retune. Defaults require a 0.01 selection Macro F1 gain and at most 0.02
+    F1 loss for every class. This is an empirical safeguard, not a confidence
+    bound or a guarantee that external performance cannot decline.
+
+    The finite JSON wrapper preserves both ``candidate_rule`` and chosen
+    ``rule``. Both use the existing v1 schema; apply the chosen rule with
+    ``predict_with_rule(p, prediction_classes, wrapper["rule"])``. Existing
+    v1 fit/predict APIs, schemas and defaults are unchanged.
+    """
+    classes = _classes(classes)
+    matrix = _probabilities(probabilities, len(classes))
+    labels = _strings(calibration_labels, "calibration_labels")
+    if len(labels) != len(matrix) or not set(labels) <= set(classes):
+        raise ValueError("Calibration labels and probability rows/classes do not match")
+    config = _guard_options(options)
+    tuning = _partition_rows(tuning_rows, len(matrix), "tuning_rows")
+    selection = _partition_rows(selection_rows, len(matrix), "selection_rows")
+    unavailable = not len(tuning) and not len(selection)
+    if not unavailable:
+        joined = np.concatenate((tuning, selection))
+        if len(joined) != len(matrix) or not np.array_equal(np.sort(joined), np.arange(len(matrix))):
+            raise ValueError("Tuning and selection must be disjoint and cover every calibration row")
+    tuning_labels = [labels[index] for index in tuning]
+    # Candidate construction intentionally precedes every selection-target
+    # support/score calculation. Selection targets cannot influence the search.
+    identity, candidate, objective, penalty = _regularized_candidate(
+        matrix[tuning], tuning_labels, classes, config)
+    positions = {label: index for index, label in enumerate(classes)}
+    selection_actual = np.asarray([positions[labels[index]] for index in selection], dtype=np.int64)
+    selection_counts = np.bincount(selection_actual, minlength=len(classes)).tolist()
+    tuning_diagnostics = candidate["diagnostics"]
+    diagnostics = {
+        "accepted": False, "reason": None,
+        "tuning_rows": len(tuning), "selection_rows": len(selection),
+        "tuning_class_counts": list(tuning_diagnostics["class_counts"]),
+        "selection_class_counts": selection_counts,
+        "tuning_control_score": tuning_diagnostics["control_score"],
+        "tuning_candidate_score": tuning_diagnostics["selected_score"],
+        "tuning_candidate_objective": objective, "regularization_cost": penalty,
+        "selection_control_score": None, "selection_candidate_score": None,
+        "selection_macro_f1_gain": None, "selection_class_f1_changes": None,
+        "candidates_evaluated": tuning_diagnostics["candidates_evaluated"],
+        "rounds_completed": tuning_diagnostics["rounds_completed"],
+        "stop_reason": tuning_diagnostics["stop_reason"],
+    }
+    if len(selection):
+        selection_matrix = matrix[selection]
+        control_f1 = _class_f1(selection_actual, selection_matrix.argmax(axis=1), len(classes))
+        predicted = (selection_matrix * np.asarray(candidate["multipliers"])).argmax(axis=1)
+        candidate_f1 = _class_f1(selection_actual, predicted, len(classes))
+        changes = candidate_f1 - control_f1
+        gain = float(candidate_f1.mean() - control_f1.mean())
+        diagnostics.update(selection_control_score=float(control_f1.mean()),
+                           selection_candidate_score=float(candidate_f1.mean()),
+                           selection_macro_f1_gain=gain,
+                           selection_class_f1_changes=changes.tolist())
+    reason = None
+    if unavailable:
+        reason = "unavailable_partitions"
+    elif tuning_diagnostics["fallback_reason"] is not None:
+        reason = "tuning_" + tuning_diagnostics["fallback_reason"]
+    elif min(selection_counts) == 0:
+        reason = "selection_missing_class"
+    elif len(selection) < config["min_selection_samples"]:
+        reason = "selection_insufficient_samples"
+    elif min(selection_counts) < config["min_selection_class_count"]:
+        reason = "selection_insufficient_class_support"
+    elif all(value == 1.0 for value in candidate["multipliers"]):
+        reason = "identity_on_tuning"
+    if reason is None:
+        if gain + _SCORE_TOLERANCE < config["min_selection_gain"]:
+            reason = "selection_gain_below_minimum"
+        elif float(changes.min()) + _SCORE_TOLERANCE < -config["max_selection_class_f1_drop"]:
+            reason = "selection_class_drop"
+        else:
+            reason = "accepted"
+            diagnostics["accepted"] = True
+    diagnostics["reason"] = reason
+    result = {
+        "version": 1, "kind": "guarded_macro_f1", "classes": classes,
+        "rule": candidate if diagnostics["accepted"] else identity,
+        "candidate_rule": candidate, "options": config,
+        "partitions": {"tuning_rows": tuning.tolist(), "selection_rows": selection.tolist()},
+        "diagnostics": diagnostics,
+    }
+    _finite_json(result)
+    return result
 
 
 def _finite_json(value, depth=0):

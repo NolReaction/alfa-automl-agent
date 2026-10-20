@@ -14,6 +14,7 @@ import pandas as pd
 from sklearn.metrics import f1_score
 
 from agent.classification_decision import fit_decision_rule, predict_with_rule
+import agent.classification_decision as decision
 import classification_decision_cases as cases
 import experiment_classification_decision as experiment
 
@@ -388,6 +389,358 @@ class ClassificationDecisionProtocolTests(unittest.TestCase):
         self.assertEqual(captures[0]["hashes"]["candidate_predictions"],
                          captures[1]["hashes"]["candidate_predictions"])
         self.assertNotEqual(captures[0]["scores"], captures[1]["scores"])
+
+
+class GuardedClassificationDecisionTests(unittest.TestCase):
+    CLASSES = ["01", "NA", "class c"]
+
+    def fixture(self, *, adverse_selection=False):
+        tuning_p = np.asarray([[.75, .15, .1]] * 108
+                              + [[.49, .46, .05]] * 36 + [[.3, .1, .6]] * 36)
+        tuning_y = np.asarray(["01"] * 108 + ["NA"] * 36 + ["class c"] * 36)
+        selection_p = np.asarray([[.75, .15, .1]] * 60
+                                 + [[.49, .46, .05]] * 20
+                                 + [[.1, .8, .1]] * 20 + [[.3, .1, .6]] * 20)
+        selection_y = (["01"] * 80 + ["NA"] * 20 + ["class c"] * 20
+                       if adverse_selection else ["01"] * 60 + ["NA"] * 40 + ["class c"] * 20)
+        return (np.concatenate((tuning_p, selection_p)),
+                np.concatenate((tuning_y, selection_y)), np.arange(180), np.arange(180, 300))
+
+    def fit_fixture(self, *, adverse_selection=False, options=None):
+        probabilities, labels, tuning, selection = self.fixture(adverse_selection=adverse_selection)
+        return decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning,
+            selection_rows=selection, options=options)
+
+    def test_independent_positive_selection_admits_fixed_candidate(self):
+        probabilities, labels, tuning, selection = self.fixture()
+        result = self.fit_fixture()
+        self.assertTrue(result["diagnostics"]["accepted"])
+        self.assertEqual(result["diagnostics"]["reason"], "accepted")
+        self.assertNotEqual(result["rule"]["multipliers"], [1., 1., 1.])
+        self.assertEqual(result["rule"], result["candidate_rule"])
+        predicted = predict_with_rule(probabilities[selection], self.CLASSES, result["rule"])
+        np.testing.assert_array_equal(predicted, labels[selection])
+        self.assertGreaterEqual(result["diagnostics"]["selection_macro_f1_gain"], .01)
+        self.assertGreaterEqual(min(result["diagnostics"]["selection_class_f1_changes"]), -.02)
+        self.assertTrue(set(result["candidate_rule"]["multipliers"]) <= {.8, 1., 1.25})
+
+    def test_adverse_selection_returns_exact_identity(self):
+        probabilities, labels, tuning, selection = self.fixture(adverse_selection=True)
+        result = self.fit_fixture(adverse_selection=True)
+        self.assertFalse(result["diagnostics"]["accepted"])
+        self.assertEqual(result["diagnostics"]["reason"], "selection_gain_below_minimum")
+        self.assertEqual(result["rule"]["multipliers"], [1., 1., 1.])
+        self.assertNotEqual(result["candidate_rule"]["multipliers"], [1., 1., 1.])
+        np.testing.assert_array_equal(
+            predict_with_rule(probabilities, self.CLASSES, result["rule"]),
+            np.asarray(self.CLASSES)[probabilities.argmax(axis=1)])
+
+    def test_selection_answers_only_accept_or_reject_never_reoptimize_candidate(self):
+        accepted, rejected = self.fit_fixture(), self.fit_fixture(adverse_selection=True)
+        self.assertEqual(accepted["candidate_rule"], rejected["candidate_rule"])
+        self.assertEqual(accepted["diagnostics"]["tuning_candidate_objective"],
+                         rejected["diagnostics"]["tuning_candidate_objective"])
+        self.assertTrue(accepted["diagnostics"]["accepted"])
+        self.assertFalse(rejected["diagnostics"]["accepted"])
+        # Even impossible selection support must not alter the tuned candidate.
+        probabilities, labels, tuning, selection = self.fixture()
+        labels[selection] = "01"
+        missing = decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning, selection_rows=selection)
+        self.assertEqual(missing["candidate_rule"], accepted["candidate_rule"])
+        self.assertEqual(missing["diagnostics"]["reason"], "selection_missing_class")
+
+    def test_per_class_guard_can_reject_despite_positive_macro_gain(self):
+        probabilities, labels, tuning, selection = self.fixture()
+        probabilities[selection] = np.asarray([[.75, .15, .1]] * 60
+                                              + [[.49, .46, .05]] * 30
+                                              + [[.1, .8, .1]] * 10 + [[.3, .1, .6]] * 20)
+        labels[selection] = ["01"] * 77 + ["NA"] * 23 + ["class c"] * 20
+        result = decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning, selection_rows=selection)
+        self.assertGreater(result["diagnostics"]["selection_macro_f1_gain"], .01)
+        self.assertLess(min(result["diagnostics"]["selection_class_f1_changes"]), -.02)
+        self.assertFalse(result["diagnostics"]["accepted"])
+        self.assertEqual(result["diagnostics"]["reason"], "selection_class_drop")
+        self.assertEqual(result["rule"]["multipliers"], [1., 1., 1.])
+
+    def test_regularization_discards_a_tiny_tuning_gain(self):
+        probabilities, labels, tuning, selection = self.fixture()
+        probabilities[tuning] = np.asarray([[.75, .15, .1]] * 60
+                                           + [[.49, .46, .05]] * 5
+                                           + [[.1, .8, .1]] * 55 + [[.3, .1, .6]] * 60)
+        labels[tuning] = ["01"] * 60 + ["NA"] * 60 + ["class c"] * 60
+        weak = decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning,
+            selection_rows=selection, options={"regularization": 0.})
+        strong = decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning,
+            selection_rows=selection, options={"regularization": 1.})
+        self.assertNotEqual(weak["candidate_rule"]["multipliers"], [1., 1., 1.])
+        self.assertEqual(strong["candidate_rule"]["multipliers"], [1., 1., 1.])
+        self.assertEqual(strong["diagnostics"]["reason"], "identity_on_tuning")
+        self.assertEqual(strong["diagnostics"]["regularization_cost"], 0.)
+
+    def test_guarded_json_preserves_exact_labels_and_prediction_alignment(self):
+        result = self.fit_fixture()
+        restored = json.loads(json.dumps(result, allow_nan=False))
+        self.assertEqual(restored["classes"], self.CLASSES)
+        self.assertEqual(restored["kind"], "guarded_macro_f1")
+        probabilities, labels, _, _ = self.fixture()
+        order = [2, 0, 1]
+        np.testing.assert_array_equal(
+            predict_with_rule(probabilities[:, order], [self.CLASSES[i] for i in order], restored["rule"]),
+            predict_with_rule(probabilities, self.CLASSES, restored["rule"]))
+        self.assertEqual(restored["partitions"], {"tuning_rows": list(range(180)),
+                                                  "selection_rows": list(range(180, 300))})
+        # Nested rules deliberately retain the old v1 API, including tie order.
+        tied = np.asarray([[.5, .5, 0.]])
+        rejected = self.fit_fixture(adverse_selection=True)
+        self.assertEqual(predict_with_rule(tied[:, order], [self.CLASSES[i] for i in order],
+                                          rejected["rule"]).tolist(), ["01"])
+
+    def test_support_guards_cover_tuning_and_selection_separately(self):
+        base_p, base_y, tuning, selection = self.fixture()
+        for partition, reason, replacement_count in (
+                (tuning, "tuning_missing_class", 36),
+                (tuning, "tuning_insufficient_class_support", 32),
+                (selection, "selection_missing_class", 20),
+                (selection, "selection_insufficient_class_support", 16)):
+            with self.subTest(reason=reason):
+                labels = base_y.copy()
+                class_rows = partition[labels[partition] == "class c"]
+                labels[class_rows[:replacement_count]] = "NA"
+                result = decision.fit_guarded_decision_rule(
+                    base_p, labels, self.CLASSES, tuning_rows=tuning, selection_rows=selection)
+                self.assertFalse(result["diagnostics"]["accepted"])
+                self.assertEqual(result["diagnostics"]["reason"], reason)
+                self.assertEqual(result["rule"]["multipliers"], [1., 1., 1.])
+
+    def test_sample_count_guards_and_unavailable_partitions_are_identity(self):
+        probabilities = np.tile([[.75, .15, .1], [.49, .46, .05], [.3, .1, .6]], (60, 1))
+        labels = np.tile(self.CLASSES, 60)
+        for tuning, selection, reason in (
+                (np.arange(90), np.arange(90, 180), "tuning_insufficient_samples"),
+                (np.arange(130), np.arange(130, 180), "selection_insufficient_samples"),
+                ([], [], "unavailable_partitions")):
+            with self.subTest(reason=reason):
+                result = decision.fit_guarded_decision_rule(
+                    probabilities, labels, self.CLASSES, tuning_rows=tuning, selection_rows=selection)
+                self.assertEqual(result["diagnostics"]["reason"], reason)
+                self.assertEqual(result["rule"]["multipliers"], [1., 1., 1.])
+        result = decision.fit_guarded_decision_rule(
+            np.empty((0, 3)), [], self.CLASSES, tuning_rows=[], selection_rows=[])
+        self.assertEqual(result["diagnostics"]["reason"], "unavailable_partitions")
+        self.assertEqual(result["rule"]["multipliers"], [1., 1., 1.])
+
+    def test_invalid_partitions_are_rejected_without_casting_or_splitting(self):
+        probabilities, labels, tuning, selection = self.fixture()
+        bad = (
+            ([0, 0, *range(1, 180)], selection),
+            (list(range(179)), selection),
+            (list(range(180)), list(range(179, 300))),
+            (np.arange(180, dtype=float), selection),
+            ([False, *range(1, 180)], selection),
+            ([-1, *range(1, 180)], selection),
+            ([300, *range(1, 180)], selection),
+            ([[0, 1]], selection), ("0", selection),
+        )
+        for fitting_rows, selected_rows in bad:
+            with self.subTest(tuning=repr(fitting_rows)[:50]), self.assertRaises(ValueError):
+                decision.fit_guarded_decision_rule(
+                    probabilities, labels, self.CLASSES,
+                    tuning_rows=fitting_rows, selection_rows=selected_rows)
+
+    def test_guarded_options_are_strict_finite_and_bounded(self):
+        probabilities, labels, tuning, selection = self.fixture()
+        for options in ([], {"unknown": 1}, {"regularization": -1},
+                        {"regularization": float("nan")}, {"regularization": True},
+                        {"min_selection_gain": 1.1}, {"max_selection_class_f1_drop": -1},
+                        {"min_tuning_class_count": 0}, {"min_selection_samples": True},
+                        {"max_rounds": 11}, {"max_candidates": 4097}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                decision.fit_guarded_decision_rule(
+                    probabilities, labels, self.CLASSES, tuning_rows=tuning,
+                    selection_rows=selection, options=options)
+
+    def test_guarded_fit_is_deterministic_bounded_and_does_not_mutate_inputs(self):
+        probabilities, labels, tuning, selection = self.fixture()
+        snapshots = [value.copy() for value in (probabilities, labels, tuning, selection)]
+        options = {"max_candidates": 5, "max_rounds": 2}
+        options_before = copy.deepcopy(options)
+        first = decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning,
+            selection_rows=selection, options=options)
+        second = decision.fit_guarded_decision_rule(
+            probabilities, labels, self.CLASSES, tuning_rows=tuning,
+            selection_rows=selection, options=options)
+        self.assertEqual(first, second)
+        self.assertLessEqual(first["diagnostics"]["candidates_evaluated"], 5)
+        self.assertLessEqual(first["diagnostics"]["rounds_completed"], 2)
+        self.assertEqual(options, options_before)
+        for actual, before in zip((probabilities, labels, tuning, selection), snapshots):
+            np.testing.assert_array_equal(actual, before)
+
+    def test_existing_v1_recipes_keep_published_json_fingerprints(self):
+        # Golden rule hashes were calculated from the published f0ba480 module,
+        # before the guarded implementation, not regenerated from current code.
+        classes = self.CLASSES
+        probabilities = np.asarray([[.75, .15, .1]] * 60
+                                   + [[.49, .46, .05]] * 20 + [[.3, .1, .6]] * 20)
+        labels = np.asarray(["01"] * 60 + ["NA"] * 20 + ["class c"] * 20)
+        result = fit_decision_rule(probabilities, labels, classes)
+        payload = json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                         "4b71f78b7402603e6055d484d452fd3a5858d335c52a3c71e436788531220cb9")
+        rng = np.random.default_rng(31415)
+        probabilities = rng.dirichlet([2., 1., .8], size=180)
+        labels = np.asarray(classes)[rng.permutation(np.repeat(np.arange(3), 60))]
+        result = fit_decision_rule(probabilities, labels, classes,
+                                   options={"max_candidates": 7, "max_rounds": 2})
+        payload = json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                         "ab2529dae28cbe40883b9bbdaca5b2e5fc2af823590ebaad89e7ba0c7ea573a7")
+
+
+class GuardedClassificationProtocolTests(unittest.TestCase):
+    def test_fresh_suite_has_fixed_seeds_and_new_disjoint_partitions(self):
+        self.assertEqual(cases.suite_seeds("guarded"), (314159, 271828, 161803))
+        self.assertTrue(set(cases.suite_seeds("guarded")).isdisjoint(cases.SEEDS))
+        for name in cases.case_definitions("guarded"):
+            for seed in cases.suite_seeds("guarded"):
+                with self.subTest(name=name, seed=seed):
+                    case = cases.make_case(name, seed, suite="guarded")
+                    repeated = cases.make_case(name, seed, suite="guarded")
+                    pd.testing.assert_frame_equal(case["frame"], repeated["frame"])
+                    for key in ("labels", "ids", "fit_rows", "calibration_rows", "audit_rows"):
+                        np.testing.assert_array_equal(case[key], repeated[key])
+                    self.assertEqual([len(case[key]) for key in
+                                      ("fit_rows", "calibration_rows", "audit_rows")], [900, 300, 300])
+                    tuning, selection, metadata = cases.calibration_partition(case)
+                    self.assertEqual((len(tuning), len(selection)), (180, 120))
+                    np.testing.assert_array_equal(np.sort(np.concatenate((tuning, selection))), np.arange(300))
+                    self.assertEqual(metadata["raw_feature_group_overlap"], 0)
+                    frame = case["frame"].iloc[case["calibration_rows"]]
+                    groups = pd.util.hash_pandas_object(frame, index=False).to_numpy()
+                    self.assertFalse(set(groups[tuning]) & set(groups[selection]))
+                    if name == "categorical_shift":
+                        self.assertLess(frame.iloc[tuning]["period"].max(), frame.iloc[selection]["period"].min())
+                        for key in ("fit_rows", "calibration_rows"):
+                            self.assertNotIn("unseen", case["frame"].iloc[case[key]]["habitat"].tolist())
+                        self.assertIn("unseen", case["frame"].iloc[case["audit_rows"]]["habitat"].tolist())
+
+    def test_calibration_split_does_not_depend_on_any_answers(self):
+        for name in cases.case_definitions("guarded"):
+            case = cases.make_case(name, 314159, suite="guarded")
+            before = cases.calibration_partition(case)
+            changed = dict(case)
+            changed["labels"] = np.roll(case["labels"], 23)
+            after = cases.calibration_partition(changed)
+            np.testing.assert_array_equal(before[0], after[0])
+            np.testing.assert_array_equal(before[1], after[1])
+            self.assertEqual(before[2], after[2])
+
+    def test_invalid_suite_and_seed_are_not_replaced_with_pilot(self):
+        for suite in ("unknown", "", None):
+            with self.subTest(suite=suite), self.assertRaises(ValueError):
+                cases.make_case("imbalance_overlap", 314159, suite=suite)
+        with self.assertRaises(ValueError):
+            cases.make_case("imbalance_overlap", 73, suite="guarded")
+        with self.assertRaises(ValueError):
+            cases.make_case("imbalance_overlap", 314159)
+
+    def test_mocked_guarded_worker_freezes_both_rules_and_audit_answers_cannot_change_them(self):
+        fixture = GuardedClassificationDecisionTests()
+        probabilities, calibration_y, tuning, selection = fixture.fixture()
+        classes = fixture.CLASSES
+        fit, calibration, audit = np.arange(30), np.arange(30, 330), np.arange(330, 360)
+        frame = pd.DataFrame({"x": np.arange(360)})
+        audit_p = np.asarray([[.49, .46, .05]] * 30)
+        plan = {"plan_sha256": "fixed-guarded-unit-plan", "suite": "guarded",
+                "guarded_method": {"options": {}}}
+        original_guard = decision.fit_guarded_decision_rule
+        original_diagnostics = experiment.diagnostics
+        snapshots = []
+        with tempfile.TemporaryDirectory() as temporary:
+            for attempt, audit_label in enumerate(("01", "NA")):
+                output = Path(temporary) / f"run-{attempt}"
+                output.mkdir()
+                directory = output / "fixture-314159"
+                labels = np.concatenate((np.repeat(classes, 10), calibration_y, np.repeat(audit_label, 30)))
+                case = {"name": "fixture", "seed": 314159, "suite": "guarded", "frame": frame,
+                        "labels": labels, "ids": np.asarray([f"{i:04d}" for i in range(360)]),
+                        "classes": classes, "fit_rows": fit, "calibration_rows": calibration,
+                        "audit_rows": audit, "split": {"strategy": "grouped"}}
+                calls = {"fit": 0, "guard": 0, "score": 0}
+                self_test = self
+
+                class StubPipeline:
+                    named_steps = {"model": SimpleNamespace(classes_=np.asarray(classes))}
+
+                    def fit(self, supplied, supplied_labels):
+                        self_test.assertEqual(supplied.index.tolist(), fit.tolist())
+                        np.testing.assert_array_equal(supplied_labels, labels[fit])
+                        calls["fit"] += 1
+                        return self
+
+                    def predict_proba(self, supplied):
+                        if supplied.index.tolist() == calibration.tolist():
+                            self_test.assertFalse((directory / "frozen.json").exists())
+                            return probabilities.copy()
+                        self_test.assertEqual(supplied.index.tolist(), audit.tolist())
+                        frozen = json.loads((directory / "frozen.json").read_text())
+                        self_test.assertIn("rule", frozen)
+                        self_test.assertIn("guarded_rule", frozen)
+                        self_test.assertEqual(frozen["rule_sha256"], experiment.json_hash(frozen["rule"]))
+                        self_test.assertEqual(frozen["guarded_rule_sha256"],
+                                              experiment.json_hash(frozen["guarded_rule"]))
+                        return audit_p.copy()
+
+                def fake_dump(model, path, **unused):
+                    Path(path).write_bytes(b"fixed-guarded-unit-model")
+
+                def checked_guard(supplied_p, supplied_y, supplied_classes, **options):
+                    self.assertFalse((directory / "frozen.json").exists())
+                    np.testing.assert_array_equal(supplied_p, probabilities)
+                    np.testing.assert_array_equal(supplied_y, calibration_y)
+                    np.testing.assert_array_equal(options["tuning_rows"], tuning)
+                    np.testing.assert_array_equal(options["selection_rows"], selection)
+                    calls["guard"] += 1
+                    return original_guard(supplied_p, supplied_y, supplied_classes, **options)
+
+                def checked_diagnostics(actual, predictions, supplied_classes):
+                    frozen = json.loads((directory / "frozen.json").read_text())
+                    self.assertEqual(frozen["plan_sha256"], plan["plan_sha256"])
+                    np.testing.assert_array_equal(actual, labels[audit])
+                    calls["score"] += 1
+                    return original_diagnostics(actual, predictions, supplied_classes)
+
+                with patch.object(experiment, "load_plan", return_value=plan), \
+                        patch.object(experiment, "make_case", return_value=case), \
+                        patch.object(experiment, "calibration_partition", return_value=(
+                            tuning, selection, {"strategy": "grouped", "raw_feature_group_overlap": 0})), \
+                        patch.object(experiment, "make_pipeline", return_value=StubPipeline()), \
+                        patch.object(experiment.joblib, "dump", side_effect=fake_dump), \
+                        patch.object(experiment, "memory_state", return_value={
+                            "measurement_available": False, "memory_limit_enforced": False}), \
+                        patch.object(decision, "fit_guarded_decision_rule", side_effect=checked_guard), \
+                        patch.object(experiment, "diagnostics", side_effect=checked_diagnostics):
+                    result = experiment.run_case(output, {"name": "fixture", "seed": 314159})
+                self.assertEqual(calls, {"fit": 1, "guard": 1, "score": 3})
+                frozen = json.loads((directory / "frozen.json").read_text())
+                self.assertEqual(frozen["guarded_rule"]["partitions"], {
+                    "tuning_rows": tuning.tolist(), "selection_rows": selection.tolist()})
+                audit_csv = pd.read_csv(directory / "audit_predictions.csv", keep_default_na=False,
+                                        dtype={"id": str, "actual": str, "legacy": str, "guarded": str})
+                self.assertTrue({"control", "legacy", "guarded"} <= set(audit_csv.columns))
+                self.assertEqual(set(audit_csv["actual"].tolist()), {audit_label})
+                snapshots.append((result, frozen))
+        for key in ("rule", "guarded_rule"):
+            self.assertEqual(snapshots[0][1][key], snapshots[1][1][key])
+        for key in ("control_predictions", "legacy_predictions", "guarded_predictions"):
+            self.assertEqual(snapshots[0][0]["hashes"][key], snapshots[1][0]["hashes"][key])
+        self.assertNotEqual(snapshots[0][0]["scores"], snapshots[1][0]["scores"])
 
 
 if __name__ == "__main__":
