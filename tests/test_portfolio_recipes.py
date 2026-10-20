@@ -213,7 +213,7 @@ class ComparisonProtocolTests(unittest.TestCase):
             output = Path(temporary) / "prepared"
             with patch.object(runner, "_attempt", side_effect=AssertionError("Unexpected fit")):
                 dataset, manifest = runner.prepare_comparison(None, output, builtin="wine", seeds=(1729,))
-            self.assertEqual(json.loads((output / "manifest.json").read_text()), json.loads(json.dumps(manifest)))
+            self.assertEqual(json.loads((output / "manifest.json").read_text(encoding="utf-8")), json.loads(json.dumps(manifest)))
             self.assertEqual(set(manifest["portfolios"]), {"exploration_plan", "portfolio_v1"})
             self.assertTrue(manifest["source_hashes"])
             self.assertEqual(len(manifest["diagnostic_ablations"]), 4)
@@ -259,7 +259,7 @@ class ComparisonProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             # Reverse native probability columns deliberately; class labels stay literal.
-            (directory / "classes.json").write_text(json.dumps(["NA", "001"]))
+            (directory / "classes.json").write_text(json.dumps(["NA", "001"]), encoding="utf-8")
             table = pd.DataFrame({"id": [dataset["ids"][i] for i in held], "position": held,
                                   "actual": dataset["y"][held], "label": dataset["y"][held],
                                   "probability_0": [0.1, 0.9, 0.1, 0.9],
