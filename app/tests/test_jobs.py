@@ -104,6 +104,49 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager.publish("example", job["id"])
 
+    @unittest.skipUnless(os.name == "nt", "Windows short path aliases are checked here")
+    def test_windows_short_data_path_supports_training_and_preserves_workspace_boundary(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self.manager.close()
+        long_data = self.root / "data directory with a long name"
+        self.data.rename(long_data)
+        get_short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        get_short_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        get_short_path.restype = wintypes.DWORD
+        required = get_short_path(str(long_data), None, 0)
+        if not required:
+            self.skipTest("Short path names are unavailable on this Windows filesystem")
+        buffer = ctypes.create_unicode_buffer(required)
+        length = get_short_path(str(long_data), buffer, len(buffer))
+        if not length or length >= len(buffer):
+            self.skipTest("Could not obtain a short path name on this Windows filesystem")
+        short_data = Path(buffer.value)
+        if short_data == long_data.resolve():
+            self.skipTest("This Windows filesystem does not create short path aliases")
+        self.assertEqual(short_data.resolve(), long_data.resolve())
+        catalog = DataCatalog(short_data)
+        self.manager = JobManager(short_data, self.state, catalog)
+        self.addCleanup(self.manager.close)
+
+        task = long_data / "example"
+        original_csv = (task / "submission.csv").read_bytes()
+        job = self.manager.start("example", "baseline")
+        result = self.wait(job)
+        self.assertEqual(result["status"], "completed", result.get("error"))
+        self.assertTrue(result["output_valid"])
+        self.assertFalse(result["api_used"])
+        self.assertEqual((task / "submission.csv").read_bytes(), original_csv)
+        self.assertTrue(self.manager.publish("example", job["id"])["published"])
+        self.assertEqual((task / "submission.csv").read_bytes(),
+                         self.manager.artifact("example", job["id"]).read_bytes())
+
+        nested = JobManager(short_data, task / ".workspace", catalog)
+        self.addCleanup(nested.close)
+        with self.assertRaisesRegex(ValueError, "отдельно"):
+            nested.start("example", "baseline")
+
     def test_one_job_at_a_time_cancel_and_close_are_bounded(self):
         if os.name != "nt" and not Path("/proc").is_dir():
             self.skipTest("Arbitrary subprocess fixtures require OS process inventory")

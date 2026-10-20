@@ -15,7 +15,8 @@ class ExportTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        # Match the builder's canonical ROOT, including Windows 8.3 aliases.
+        self.root = Path(self.directory.name).resolve()
         for name in build_submission.REQUIRED_FILES:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)

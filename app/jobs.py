@@ -450,9 +450,12 @@ class JobManager:
             else:
                 if not isinstance(task_id, str):
                     raise ValueError("Выберите задачу для запуска.")
-                task_folder = self.catalog.resolve(task_id).resolve()
+                # Keep the catalog's path spelling for its lexical boundary
+                # checks: resolve() expands Windows 8.3 names such as RUNNER~1.
+                task_folder = self.catalog.resolve(task_id)
+                task_location = task_folder.resolve()
                 state_folder = self.state_root.resolve()
-                if state_folder.is_relative_to(task_folder) or task_folder.is_relative_to(state_folder):
+                if state_folder.is_relative_to(task_location) or task_location.is_relative_to(state_folder):
                     raise ValueError("Рабочая папка запусков должна находиться отдельно от исходной задачи.")
                 if action in {"baseline", "extra_trees"}:
                     _, inputs = self.catalog._inputs(task_folder)

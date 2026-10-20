@@ -215,7 +215,7 @@ class SharingTests(unittest.TestCase):
     def test_corrupt_or_tampered_records_do_not_break_list(self):
         self.store.import_reports("regression", FINGERPRINT, self.envelope())
         record_file = next((self.root / ".workspace" / "imports").rglob("*.json"))
-        valid_record = record_file.read_text()
+        valid_record = record_file.read_text(encoding="utf-8")
         record_file.write_text("{broken", encoding="utf-8")
         self.assertEqual(self.store.list("regression"), [])
         # Re-import repairs the corrupted content atomically.
