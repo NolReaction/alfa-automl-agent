@@ -108,7 +108,7 @@ def known_start(state):
 # Real child code uses the fixed split and never reads validation answers to fit.
 EXPERIMENT = """import csv, json
 from pathlib import Path
-spec = json.loads(Path('research_validation.json').read_text())
+spec = json.loads(Path('research_validation.json').read_text(encoding="utf-8"))
 with (Path(spec['data_directory']) / 'train.csv').open(newline='') as stream:
     rows = list(csv.DictReader(stream))
 held = [rows[index] for index in spec['validation_rows']]
@@ -165,7 +165,7 @@ class ResearchTests(unittest.TestCase):
                 expected = existing_output(task_dir)
                 client = FakeClient([response(code=EXPERIMENT.replace("OFFSET", str(offset))), response()])
                 run_dir = self.run_quietly(task, client, 2)
-                report = json.loads((run_dir / "run.json").read_text())
+                report = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
                 self.assertEqual((task_dir / "submission.csv").read_bytes(), expected)
                 self.assertEqual(report["status"], "completed")
                 self.assertEqual(report["successful_experiments"], 1)
@@ -186,11 +186,11 @@ class ResearchTests(unittest.TestCase):
                 response(),
             ])
             run_dir = self.run_quietly(task, client, 3)
-            report = json.loads((run_dir / "run.json").read_text())
+            report = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(report["best_metric"]["value"], 0)
             self.assertEqual(report["successful_experiments"], 1)
             self.assertEqual(report["improvements"], 1)
-            self.assertEqual((task_dir / "submission.csv").read_text(), "row_key,outcome\n0005,17\nNA,20\n")
+            self.assertEqual((task_dir / "submission.csv").read_text(encoding="utf-8"), "row_key,outcome\n0005,17\nNA,20\n")
             self.assertTrue((run_dir / "best_holdout_predictions.csv").is_file())
             selections = [event["result"]["selection"] for event in report["events"] if event["kind"] == "experiment"]
             self.assertTrue(selections[0]["accepted"])
@@ -204,7 +204,7 @@ class ResearchTests(unittest.TestCase):
             expected = existing_output(task_dir)
             client = FakeClient([response(), response(code="print('hypothesis inspected')", usage=usage)])
             run_dir = self.run_quietly(task, client, 2)
-            report = json.loads((run_dir / "run.json").read_text())
+            report = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual((task_dir / "submission.csv").read_bytes(), expected)
             self.assertEqual(report["successful_experiments"], 0)
             self.assertEqual((report["status"], report["reason"]), ("fallback", "step_limit"))
@@ -226,7 +226,7 @@ class ResearchTests(unittest.TestCase):
                 expected = existing_output(task_dir)
                 client = FakeClient([response(code=code), response()])
                 run_dir = self.run_quietly(task, client, 2)
-                report = json.loads((run_dir / "run.json").read_text())
+                report = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
                 self.assertEqual((task_dir / "submission.csv").read_bytes(), expected)
                 self.assertEqual(report["successful_experiments"], 0)
                 self.assertEqual(report["improvements"], 0)
@@ -239,7 +239,7 @@ class ResearchTests(unittest.TestCase):
             original = source.read_bytes()
             code = EXPERIMENT.replace("OFFSET", "0") + "\nPath('regression/participants/train.csv').write_text('changed')"
             run_dir = self.run_quietly(task, FakeClient([response(code=code), response()]), 2)
-            report = json.loads((run_dir / "run.json").read_text())
+            report = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(source.read_bytes(), original)
             self.assertEqual(report["successful_experiments"], 0)
             self.assertEqual(report["best_metric"]["value"], 10)
@@ -255,24 +255,24 @@ class ResearchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Original task inputs changed"):
                 self.run_quietly(task, client, 3)
             runs = list((task_dir / ".agent_runs").glob("*/run.json"))
-            report = json.loads(runs[0].read_text())
+            report = json.loads(runs[0].read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "failed")
             self.assertEqual(report["successful_experiments"], 1)
             self.assertEqual(report["best_metric"]["value"], 0)
-            self.assertEqual((task_dir / "submission.csv").read_text(), "row_key,outcome\n0005,17\nNA,20\n")
+            self.assertEqual((task_dir / "submission.csv").read_text(encoding="utf-8"), "row_key,outcome\n0005,17\nNA,20\n")
 
     def test_unknown_metric_preserves_llm_route_but_marks_quality_unverified(self):
         with tempfile.TemporaryDirectory() as directory:
             task_dir = Path(directory)
             task = make_regression(task_dir)
-            task.write_text(task.read_text().replace("Metric: RMSE", "Metric: MAE"))
+            task.write_text(task.read_text(encoding="utf-8").replace("Metric: RMSE", "Metric: MAE"))
             code = (
                 "from pathlib import Path\n"
                 "Path('submission.csv').write_text('row_key,outcome\\n0005,17\\nNA,20\\n')\n"
                 "Path('research_hypothesis.json').write_text('{\"hypothesis\":\"A linear model\"}')\n"
             )
             run_dir = self.run_quietly(task, FakeClient([response(code=code), response()]), 2)
-            report = json.loads((run_dir / "run.json").read_text())
+            report = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual((report["status"], report["reason"]), ("fallback", "host_metric_unsupported"))
             self.assertEqual(report["host_validation"]["status"], "unsupported")
             self.assertEqual(report["successful_experiments"], 0)

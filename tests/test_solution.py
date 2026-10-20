@@ -34,6 +34,23 @@ class FakeClient:
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_generated_code_reads_utf8_files_independently_of_host_locale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = Path(directory)
+            (task / "manifest.json").write_text(
+                json.dumps({"reason": "Проверка гипотезы", "label": "网络"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            code = (
+                "import json; from pathlib import Path; "
+                "value = json.loads(Path('manifest.json').read_text()); "
+                "Path('copy.json').write_text(json.dumps(value, ensure_ascii=False))"
+            )
+            with patch.dict(os.environ, {"PYTHONUTF8": "0"}):
+                result = solution.run_python(code, task, task / "logs", 1, 10)
+            self.assertEqual(result["exit_code"], 0, result)
+            self.assertEqual((task / "copy.json").read_bytes(), (task / "manifest.json").read_bytes())
+
     def test_generated_modules_can_be_imported_from_the_task_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             task = Path(directory)
@@ -55,7 +72,7 @@ class ExecutionTests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-secret"}):
                 result = solution.run_python(code, task, task / "logs", 1, timeout=10)
             self.assertEqual(result["exit_code"], 0, result)
-            self.assertEqual((task / "answer.txt").read_text(), "ok")
+            self.assertEqual((task / "answer.txt").read_text(encoding="utf-8"), "ok")
             self.assertIn("done", result["stdout"])
 
     def test_timed_out_experiment_preserves_previous_file(self):
@@ -68,7 +85,7 @@ class ExecutionTests(unittest.TestCase):
             )
             self.assertTrue(result["timed_out"])
             self.assertNotEqual(result["exit_code"], 0)
-            self.assertEqual(output.read_text(), "id,prediction\n1,2\n")
+            self.assertEqual(output.read_text(encoding="utf-8"), "id,prediction\n1,2\n")
 
     def test_large_output_is_returned_as_a_bounded_tail(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -107,12 +124,12 @@ class AgentTests(unittest.TestCase):
             task = self.make_task(Path(directory))
             with patch.dict(os.environ, {"OPENAI_MODEL": "provided-test-model"}):
                 logs = solution.run_agent(task, client, max_steps=3, time_budget=30)
-            self.assertEqual((task.parent / "submission.csv").read_text(), "id,y\n1,2\n")
+            self.assertEqual((task.parent / "submission.csv").read_text(encoding="utf-8"), "id,y\n1,2\n")
             failure = json.loads(client.received_messages[1][-1]["content"])
             self.assertNotEqual(failure["exit_code"], 0)
             self.assertIn("try again", failure["stderr"])
             self.assertTrue(logs.is_dir())
-            report = json.loads((logs / "run.json").read_text())
+            report = json.loads((logs / "run.json").read_text(encoding="utf-8"))
             self.assertEqual((report["status"], report["reason"]),
                              ("fallback", "host_metric_unsupported"))
             self.assertEqual(report["successful_experiments"], 0)
