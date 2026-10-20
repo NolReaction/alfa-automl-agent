@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import csv
 from datetime import datetime, timezone
+import errno
 import io
 import json
 import hashlib
@@ -43,6 +44,10 @@ MAX_INPUT_BYTES = 512 * 1024 * 1024
 LOCAL_TIMEOUT = 1800
 PREPARE_TIMEOUT = 600
 POLL_SECONDS = 0.2
+STAGE_READ_WINDOWS = os.name == "nt"
+STAGE_READ_ATTEMPTS = 12
+STAGE_READ_INITIAL_DELAY = 0.01
+STAGE_READ_MAX_DELAY = 0.1
 MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
 MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
@@ -141,6 +146,36 @@ def _json(path: Path, root: Path, limit=2 * 1024 * 1024):
         raise ValueError("Служебный отчёт должен быть JSON-объектом.")
     _check_json_tree(result)
     return result
+
+
+def _stage_json(path: Path, root: Path, cancel=None):
+    """Read progress despite brief Windows replacement/reader sharing locks.
+
+    CPython's CRT open can expose EACCES without the original winerror. Retry
+    that narrowly on Windows, along with known sharing/access lock codes. A
+    permanent denial still propagates after at most .85 s of delays; malformed
+    JSON and unsafe paths are never hidden. Recheck the path on every attempt.
+    """
+    for attempt in range(STAGE_READ_ATTEMPTS):
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Запуск остановлен пользователем.")
+        try:
+            _safe(path, root)
+            if not path.exists():
+                return None
+            return _json(path, root)
+        except OSError as error:
+            winerror = getattr(error, "winerror", None)
+            crt_denial = (winerror is None and isinstance(error, PermissionError)
+                          and error.errno == errno.EACCES)
+            if (not STAGE_READ_WINDOWS or not (winerror in {5, 32, 33} or crt_denial)
+                    or attempt == STAGE_READ_ATTEMPTS - 1):
+                raise
+            delay = min(STAGE_READ_INITIAL_DELAY * (2 ** attempt), STAGE_READ_MAX_DELAY)
+            if cancel is None:
+                time.sleep(delay)
+            elif cancel.wait(delay):
+                raise InterruptedError("Запуск остановлен пользователем.") from error
 
 
 def _write_json(path: Path, value, root: Path):
@@ -784,8 +819,9 @@ class JobManager:
                         if path.stat().st_size > MAX_LOG_BYTES:
                             raise ValueError("Запуск остановлен: журнал превысил лимит 20 МБ.")
                     stage_file = folder / "stage.json"
-                    if job["action"] in OFFLINE_ACTIONS and stage_file.exists():
-                        evidence = _json(stage_file, self.state_root)
+                    evidence = (_stage_json(stage_file, self.state_root, active["cancel"])
+                                if job["action"] in OFFLINE_ACTIONS else None)
+                    if evidence is not None:
                         current = evidence.get("stage")
                         updates = {}
                         if current in {"training", "validating", "refitting", "finished"} and current != job["stage"]:
