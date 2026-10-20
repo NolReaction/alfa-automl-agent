@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 import io
 import json
 import os
@@ -122,6 +123,14 @@ class TeamIntegrationTests(unittest.TestCase):
             self.assertEqual(report["research_protocol_version"], 3)
             self.assertEqual(report["evaluations"]["selection"]["scope"], "inner_selection")
             self.assertEqual(len(client.received_messages), 2)
+            tool_feedback = [item for item in client.received_messages[1] if item["role"] == "tool"]
+            diagnosis = json.loads(tool_feedback[-1]["content"])["selection"]["diagnostics"]
+            self.assertEqual(diagnosis["scope"], "inner_selection")
+            self.assertIn("regression", diagnosis)
+            self.assertIn("Host-computed INNER errors", client.received_messages[0][2]["content"])
+            self.assertIn("Current host budget", client.received_messages[0][-1]["content"])
+            self.assertGreaterEqual(report["time_allocation"]["measurement_generation"], 4)
+            self.assertFalse(report["time_allocation"]["guaranteed"])
             self.assertTrue(validate_predictions(task.parent)["valid"])
             final_check = report["evaluations"]["final_check"]
             self.assertTrue(final_check["selection_uses_outer"])
@@ -288,6 +297,82 @@ class TeamIntegrationTests(unittest.TestCase):
             self.assertEqual((report["status"], report["reason"]), ("fallback", "repeated_failures"))
             self.assertEqual(report["successful_experiments"], 0)
             self.assertTrue(validate_predictions(task.parent)["valid"])
+
+    def test_incomplete_task_semantics_skips_paid_research_but_publishes_baseline(self):
+        from agent.research_workspace import DESCRIPTION_LIMIT_BYTES
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_regression(Path(directory))
+            task.write_text(task.read_text(encoding="utf-8") + "\n" + "x" * (DESCRIPTION_LIMIT_BYTES + 1),
+                            encoding="utf-8")
+            _, report, client, _, _ = self.run_v3(task, [response(code=candidate_tool())])
+            self.assertEqual(client.received_messages, [])
+            self.assertEqual(report["api"]["attempts"], 0)
+            self.assertEqual(report["reason"], "task_semantics_too_large")
+            self.assertFalse(report["task_semantics"]["complete"])
+            self.assertEqual(report["published_recipe"], "baseline")
+            self.assertTrue(validate_predictions(task.parent)["valid"])
+
+    def test_improved_but_unaffordable_candidate_does_not_replace_baseline(self):
+        from agent.research_budget import BudgetPolicy
+        estimate = BudgetPolicy.finalization_estimate
+
+        def expensive(policy, **kwargs):
+            plan = estimate(policy, **kwargs)
+            return replace(plan, estimated_seconds=1000000) if kwargs.get("candidate_key") else plan
+
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_regression(Path(directory))
+            with patch.object(BudgetPolicy, "finalization_estimate", expensive):
+                _, report, client, _, _ = self.run_v3(task, [response(code=candidate_tool()), response()])
+            self.assertEqual(report["successful_experiments"], 1)
+            self.assertEqual(report["improvements"], 0)
+            self.assertIsNone(report["frozen_candidate"])
+            self.assertEqual(report["published_recipe"], "baseline")
+            feedback = [item for item in client.received_messages[1] if item["role"] == "tool"]
+            selection = json.loads(feedback[-1]["content"])["selection"]
+            self.assertEqual(selection["reason"], "refit_budget")
+            self.assertTrue(selection["verified"])
+            self.assertFalse(selection["accepted"])
+            self.assertTrue(validate_predictions(task.parent)["valid"])
+
+    def test_candidate_estimated_to_exceed_single_worker_limit_is_not_admitted(self):
+        from agent.research_budget import BudgetPolicy
+        estimate = BudgetPolicy.finalization_estimate
+
+        def exceeds_worker_limit(policy, **kwargs):
+            plan = estimate(policy, **kwargs)
+            if kwargs.get("candidate_key"):
+                # Isolate the individual worker cap from the total-time guard.
+                return replace(plan, stage_seconds={**plan.stage_seconds, "candidate_refit": 1801},
+                               estimated_seconds=1)
+            return plan
+
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_regression(Path(directory))
+            with patch.object(BudgetPolicy, "finalization_estimate", exceeds_worker_limit):
+                _, report, client, _, _ = self.run_v3(task, [response(code=candidate_tool()), response()])
+            self.assertEqual(report["improvements"], 0)
+            self.assertEqual(report["published_recipe"], "baseline")
+            messages = [item for item in client.received_messages[1] if item["role"] == "tool"]
+            feedback = json.loads(messages[-1]["content"])["selection"]
+            self.assertFalse(feedback["timing"]["within_stage_limit"])
+            self.assertEqual(feedback["reason"], "refit_budget")
+
+    def test_incomplete_description_uses_fixed_seed_without_automl_search(self):
+        from agent.research_v3 import V3State, prepare_baseline, prepare_research
+        from agent.research_workspace import DESCRIPTION_LIMIT_BYTES
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_regression(Path(directory))
+            task.write_text(task.read_text(encoding="utf-8") + "\n" + "x" * (DESCRIPTION_LIMIT_BYTES + 1),
+                            encoding="utf-8")
+            state = V3State(task, 2, 90)
+            prepare_research(state)
+            with patch("agent.execution.run_python") as search:
+                prepare_baseline(state)
+            search.assert_not_called()
+            state.baseline.verify()
+            self.assertEqual(state.report["baseline_search"]["status"], "seed_only")
+            self.assertEqual(state.report["baseline_search"]["reason"], "task_semantics_too_large")
 
 
 if __name__ == "__main__":

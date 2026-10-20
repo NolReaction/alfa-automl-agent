@@ -11,6 +11,7 @@ from io import BytesIO
 import math
 from pathlib import Path
 import shutil
+import time
 from uuid import uuid4
 
 import pandas as pd
@@ -20,6 +21,8 @@ from agent.features import normalize_feature_config
 from agent.llm import ROOT, TOOL, get_model, safe_error_message
 from agent.model_config import ACTIONS, make_model_config
 from agent.research import RunState, checked_completion, record_usage
+from agent.research_budget import BudgetPolicy
+from agent.inner_feedback import inner_feedback
 from agent.research_candidate import (
     CANDIDATE_NAME, RECIPE_NAME, CandidateExecutionError, freeze_candidate, run_candidate,
 )
@@ -126,9 +129,7 @@ class V3State(RunState):
         self.selected_candidate = None
         self.best_inner = None
         self.dialogue_closed = False
-        # Fixed before research: expensive outer fits/refit cannot consume the
-        # time granted to the next model request. Minimum reserve fits toy jobs.
-        self.final_reserve = min(time_budget * .5, max(15.0, time_budget * .30))
+        self.budget = BudgetPolicy(time_budget, started=self.started)
         self.report.update(research_protocol_version=3, stage="preparation",
             stages=[{"id": item, "status": "pending"} for item in STAGES],
             evaluations={"selection": None, "final_check": None},
@@ -153,24 +154,65 @@ class V3State(RunState):
         if self.gate is not None:
             self.gate.check_source()
 
+    @staticmethod
+    def recipe_key(candidate):
+        return candidate.code_hash + ":" + candidate.recipe_hash
+
+    def finalization_plan(self, candidate=None):
+        gate = self.gate
+        candidate = candidate if candidate is not None else self.selected_candidate
+        return self.budget.finalization_estimate(
+            baseline_key=self.recipe_key(self.baseline) if self.baseline is not None else "baseline_pending",
+            candidate_key=self.recipe_key(candidate) if candidate is not None else None,
+            outer_fit_rows=len(gate.outer_fit_frame), outer_predict_rows=len(gate.outer_holdout_frame),
+            full_fit_rows=len(gate.train), test_rows=len(gate.test))
+
+    @property
+    def final_reserve(self):
+        return self.finalization_plan().reserve_seconds
+
+    def research_timeout(self, maximum=1800):
+        return self.budget.research_timeout(self.finalization_plan(), maximum=maximum)
+
+    def record_timing(self, candidate, started, fit_rows, predict_rows):
+        self.budget.record_measurement(self.recipe_key(candidate),
+            max(.001, time.monotonic() - started), fit_rows, predict_rows)
+
+    def budget_context(self):
+        plan = self.finalization_plan()
+        summary = self.budget.report(plan)
+        self.report["time_allocation"] = summary
+        return {"scope": "inner_selection", "time_allocation": summary,
+            "remaining_requests": max(0, self.report["max_steps"] - self.report["api"]["attempts"]),
+            "maximum_experiment_seconds": self.research_timeout(),
+            "instruction": "Use the measured time estimates to choose a feasible next experiment. "
+                "The host reserves time for outer checks and full-data refits. "
+                "These are conservative planning estimates, not guaranteed training durations."}
+
     def measure_inner(self, candidate):
         gate = self.gate
         gate.check_inputs()
         if not gate.held_rows:
             raise ValueError("Inner validation unavailable; no adaptive trial is allowed")
-        return run_candidate(candidate, spec=gate.research_spec,
+        timeout = self.research_timeout()
+        if timeout <= 0:
+            raise TimeoutError("Research time is reserved for final validation and refit")
+        started = time.monotonic()
+        result = run_candidate(candidate, spec=gate.research_spec,
             fit_frame=gate.research_train.iloc[gate.fit_rows],
             predict_frame=gate.research_train.iloc[gate.held_rows].drop(columns=[gate.spec.target_column]),
             actuals=gate.expected_inner_actuals, phase="inner_selection",
             output_dir=self.run_dir / "inner_evaluations",
-            timeout=min(1800, self.remaining() - self.final_reserve))
+            timeout=timeout, deadline=min(started + timeout, self.budget.deadline - self.budget.publication_buffer))
+        self.record_timing(candidate, started, len(gate.fit_rows), len(gate.held_rows))
+        return result
 
     def request_allowed(self, messages):
         if self.dialogue_closed:
             raise RuntimeError("Research is terminal after candidate freeze")
         if self.report["api"]["attempts"] >= self.report["max_steps"]:
             return "step_limit"
-        if self.remaining() <= self.final_reserve + 2:
+        if self.research_timeout() <= 2:
             return "time_limit"
         payload = json.dumps(self.clean(messages), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         # A host-side estimate, explicitly not provider usage or currency.
@@ -192,6 +234,7 @@ def prepare_research(state):
     state.report["host_validation"] = {"status": "supported", "manifest": "research_validation.json",
         "metric": state.gate.spec.metric.to_dict(), "split": state.gate.split,
         "purpose": "final_check", "selection_uses_outer": True, "unbiased_estimate": False}
+    state.report["task_semantics"] = state.gate.manifest.get("task_semantics", {})
     if validate_predictions(state.task_dir)["valid"]:
         state.checkpoint(state.task_dir)
         state.report["baseline"] = "existing_output"
@@ -204,7 +247,10 @@ def prepare_baseline(state):
     recipe = seed_candidate(gate.spec.classification)
     state.report["baseline_search"] = {"scope": "outer_fit_only", "status": "seed_only"}
     timeout = min(600.0, max(0, state.remaining() - state.final_reserve) * .40)
-    if gate.held_rows and timeout > 8:
+    semantics_allowed = gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed", True)
+    if not semantics_allowed:
+        state.report["baseline_search"]["reason"] = "task_semantics_too_large"
+    if semantics_allowed and gate.held_rows and timeout > 8:
         startup = state.run_dir / "startup"
         code = (f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
             "from pathlib import Path\nfrom agent.automl import run_automl\n"
@@ -240,6 +286,7 @@ def _context(state):
             "No original test data or outer answers are supplied. Selected baseline recipe: "
             + json.dumps(state.baseline.recipe if state.baseline is not None else None, ensure_ascii=False)
             + ". Current INNER selection: " + json.dumps(selection, ensure_ascii=False)
+            + ". Host-computed INNER errors: " + json.dumps(state.report.get("baseline_inner_diagnostics"), ensure_ascii=False)
             + ". Propose a fresh executable candidate, recipe and hypothesis; analysis-only calls "
             "do not count as measured trials. Finish after completing at least one measured trial.")
 
@@ -256,7 +303,8 @@ def _fresh_attempt(state):
 
 
 def _consider(state):
-    state.gate.check_inputs()
+    gate = state.gate
+    gate.check_inputs()
     hypothesis = read_hypothesis(state.workspace)
     recipe_path = state.workspace / RECIPE_NAME
     if recipe_path.is_symlink() or recipe_path.stat().st_size > 64 * 1024:
@@ -268,16 +316,31 @@ def _consider(state):
     state.gate.check_inputs()
     state.report["successful_experiments"] += 1
     better = state.best_inner is None or _better(result.metric, state.best_inner)
-    if better:
+    plan = state.finalization_plan(candidate)
+    within_stage_limit = all(value <= 1800 for name, value in plan.stage_seconds.items()
+                             if name.startswith("candidate_"))
+    feasible = plan.estimated_seconds <= state.remaining() and within_stage_limit
+    if better and feasible:
         state.selected_candidate, state.best_inner = candidate, result.metric
         state.report["improvements"] += 1
     state.report["evaluations"]["selection"] = {
         "metric": state.best_inner, "scope": "inner_selection", "split": state.gate.inner_split}
-    return {"accepted": better, "verified": True, "metric": result.metric,
-            "reason": "improved" if better else "not_better", "hypothesis": hypothesis,
+    feedback = {"accepted": better and feasible, "verified": True, "metric": result.metric,
+            "reason": ("improved" if feasible else "refit_budget") if better else "not_better", "hypothesis": hypothesis,
             "scope": "inner_selection", "code_hash": candidate.code_hash,
             "recipe_hash": candidate.recipe_hash,
-            "recipe_summary": {"family": str(recipe.get("family", recipe.get("action", "custom")))[:120]}}
+            "recipe_summary": {"family": str(recipe.get("family", recipe.get("action", "custom")))[:120]},
+            "timing": {"estimated_finalization_seconds": plan.estimated_seconds,
+                       "remaining_seconds": max(0, state.remaining()), "feasible_estimate": feasible,
+                       "within_stage_limit": within_stage_limit,
+                       "guaranteed": False}}
+    try:
+        feedback["diagnostics"] = inner_feedback(gate.research_spec, result, gate.expected_inner_actuals)
+    except (OSError, ValueError, TypeError) as error:
+        # Optional detail cannot undo a valid host-scored trial.
+        feedback["diagnostics"] = {"scope": "inner_selection", "available": False,
+                                   "reason": safe_error_message(error)}
+    return feedback
 
 
 def _outer_evidence(state, result, actuals):
@@ -310,23 +373,44 @@ def finalize(state, reason):
     state.transition("outer_validation")
     gate = state.gate
     results, errors = {}, {}
+    completed_stages = []
+
+    def stage_timeout(stage):
+        plan = state.finalization_plan()
+        state.report["time_allocation"] = state.budget.report(plan)
+        allocations = state.budget.finalization_timeouts(plan, completed=completed_stages)
+        timeout = allocations.get(stage, 0)
+        state.report.setdefault("final_stage_budgets", {})[stage] = {
+            "timeout_seconds": timeout, "remaining_seconds": state.budget.remaining(),
+            "pending_allocations": allocations, "completed_stages": list(completed_stages)}
+        if timeout <= 0:
+            raise TimeoutError("No time remains for " + stage + " after reserving the fallback")
+        return timeout
+
     # Both recipes were fixed before seeing either outer score. Outer acceptance
     # chooses between them, so the winner's score is NOT an unbiased estimate.
     for name, frozen in (("baseline", state.baseline), ("candidate", candidate)):
         if frozen is None:
             continue
         try:
-            timeout = min(1800.0, state.remaining() * (.30 if name == "baseline" and candidate else .45))
+            timeout = stage_timeout(name + "_outer")
+            started = time.monotonic()
             result = run_candidate(frozen, spec=gate.spec, fit_frame=gate.outer_fit_frame,
                 predict_frame=gate.outer_holdout_frame.drop(columns=[gate.spec.target_column]),
                 actuals=gate.expected_actuals, phase="outer_validation", timeout=timeout,
+                deadline=min(started + timeout, state.budget.deadline - state.budget.publication_buffer),
                 output_dir=state.run_dir / "outer_evaluations" / name)
             gate.check_inputs()
+            state.record_timing(frozen, started, len(gate.outer_fit_frame), len(gate.outer_holdout_frame))
             results[name] = result
         except (OSError, ValueError, RuntimeError, TimeoutError) as error:
             errors[name] = safe_error_message(error)
             if isinstance(error, CandidateExecutionError):
                 state.event("outer_execution_failed", recipe=name, execution=error.execution)
+        finally:
+            completed_stages.append(name + "_outer")
+            if name not in results:
+                completed_stages.append(name + "_refit")
     selected = "baseline"
     if "candidate" in results and ("baseline" not in results
             or _better(results["candidate"].metric, results["baseline"].metric)):
@@ -347,17 +431,23 @@ def finalize(state, reason):
     # If the admitted candidate cannot refit, the already fixed baseline is a
     # recovery recipe, not a new search informed by outer feedback.
     order = (["baseline", "candidate"] if selected == "candidate" and "baseline" in results else [selected])
+    for name in ("baseline", "candidate"):
+        stage = name + "_refit"
+        if name not in order and stage in state.finalization_plan().stage_seconds and stage not in completed_stages:
+            completed_stages.append(stage)
     published = False
     for name in order:
         if name not in results:
             continue
         try:
-            remaining = state.remaining() - 1
-            timeout = remaining * .40 if name == "baseline" and selected == "candidate" else remaining
+            timeout = stage_timeout(name + "_refit")
+            started = time.monotonic()
             result = run_candidate(frozen_by_name[name], spec=gate.spec, fit_frame=gate.train,
-                predict_frame=gate.test, phase="full_refit", timeout=min(1800, timeout),
+                predict_frame=gate.test, phase="full_refit", timeout=timeout,
+                deadline=min(started + timeout, state.budget.deadline - state.budget.publication_buffer),
                 output_dir=state.run_dir / "full_refit" / name)
             gate.check_inputs()
+            state.record_timing(frozen_by_name[name], started, len(gate.train), len(gate.test))
             temporary = result.output_path.parent / "publication"
             temporary.mkdir()
             result.copy_output(temporary / "submission.csv")
@@ -381,6 +471,8 @@ def finalize(state, reason):
         except (OSError, ValueError, RuntimeError, TimeoutError) as error:
             state.event("refit_failed", recipe=name, error=safe_error_message(error),
                         execution=error.execution if isinstance(error, CandidateExecutionError) else None)
+        finally:
+            completed_stages.append(name + "_refit")
     state.check_source()
     if not published and not state.recover():
         raise RuntimeError("No verified full-data predictions; no successful output can be reported")
@@ -398,6 +490,7 @@ def finalize(state, reason):
         if published else {"scope": "existing_output", "quality_verified": False})
     state.report["publication"] = {"new_result_published": published,
                                   "recipe": state.report.get("published_recipe"), "reason": reason}
+    state.report["time_allocation"] = state.budget.report(state.finalization_plan())
     status = "completed" if reason == "model_finished" and state.report["successful_experiments"] else "fallback"
     return state.finish(status, reason)
 
@@ -410,10 +503,17 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
     try:
         prepare_research(state)
         prepare_baseline(state)
-        if state.gate.held_rows and state.baseline is not None:
+        semantics_allowed = state.gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed", True)
+        if semantics_allowed and state.gate.held_rows and state.baseline is not None:
             try:
-                state.baseline_inner = state.measure_inner(state.baseline).metric
+                measured = state.measure_inner(state.baseline)
+                state.baseline_inner = measured.metric
                 state.best_inner = state.baseline_inner
+                try:
+                    state.report["baseline_inner_diagnostics"] = inner_feedback(
+                        state.gate.research_spec, measured, state.gate.expected_inner_actuals)
+                except (OSError, ValueError, TypeError) as error:
+                    state.event("inner_diagnostics_unavailable", error=safe_error_message(error))
             except (OSError, ValueError, RuntimeError, TimeoutError) as error:
                 state.event("inner_baseline_unavailable", error=safe_error_message(error))
         state.report["evaluations"]["selection"] = {
@@ -422,20 +522,28 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
         if not state.gate.held_rows:
             state.report["stages"][1].update(status="skipped", reason=state.gate.inner_unavailable_reason)
             return finalize(state, "inner_validation_unavailable")
+        if state.gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed") is False:
+            reason = state.gate.manifest["task_semantics"].get("fallback_reason", "task_semantics_unavailable")
+            state.report["stages"][1].update(status="skipped", reason=reason)
+            return finalize(state, reason)
         messages = [{"role": "system", "content": SYSTEM_V3},
                     {"role": "user", "content": state.gate.task_text},
                     {"role": "user", "content": state.redact(_context(state))}]
         reason = "step_limit"
         for step in range(1, max_steps + 1):
-            blocked = state.request_allowed(messages)
+            # This host snapshot is refreshed, not appended to accumulated
+            # history. It contains only inner information and measured costs.
+            request_messages = [*messages, {"role": "user", "content":
+                "Current host budget: " + json.dumps(state.budget_context(), ensure_ascii=False, allow_nan=False)}]
+            blocked = state.request_allowed(request_messages)
             if blocked:
                 reason = blocked
                 break
             state.report["api"]["attempts"] += 1
             state.save()
             try:
-                response = client.with_options(timeout=min(120, state.remaining() - state.final_reserve)).chat.completions.create(
-                    model=get_model(), messages=state.clean(messages), tools=[TOOL],
+                response = client.with_options(timeout=state.research_timeout(120)).chat.completions.create(
+                    model=get_model(), messages=state.clean(request_messages), tools=[TOOL],
                     parallel_tool_calls=False, max_tokens=4096)
                 state.report["api"]["responses"] += 1
                 record_usage(state, response)
@@ -471,8 +579,11 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
                         raise ValueError("This code already failed; change the approach")
                     _fresh_attempt(state)
                     from agent.execution import run_python
+                    timeout = state.research_timeout()
+                    if timeout <= 0:
+                        raise TimeoutError("Research time is reserved for final validation and refit")
                     result = run_python(code, state.workspace, state.run_dir,
-                        step * 100 + index, timeout=min(1800, state.remaining() - state.final_reserve))
+                        step * 100 + index, timeout=timeout)
                     state.report["experiments"] += 1
                 except (ValueError, OSError, TimeoutError) as error:
                     result = {"error": safe_error_message(error)}

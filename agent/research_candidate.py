@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 from uuid import uuid4
 
 import pandas as pd
@@ -244,7 +245,7 @@ Path("receipt.json").write_text(json.dumps(receipt, allow_nan=False), encoding="
 
 def run_candidate(candidate: FrozenCandidate, *, spec: TaskSpec, fit_frame,
                   predict_frame, output_dir: Path, phase: str, timeout: float,
-                  actuals=None,
+                  actuals=None, deadline: float | None = None,
                   max_memory_bytes: int | None = DEFAULT_MEMORY_LIMIT_BYTES) -> CandidateResult:
     """Fit a fixed recipe and validate predictions, keeping evaluation labels host-only.
 
@@ -252,12 +253,37 @@ def run_candidate(candidate: FrozenCandidate, *, spec: TaskSpec, fit_frame,
     for selection/final_check; refit never accepts validation answers.  The
     caller owns split selection and must stop the research dialogue before
     final_check.  Phase naming by itself cannot enforce the caller's lifecycle.
+    The timeout includes host input preparation and required output validation,
+    not only the child process.  An optional absolute monotonic deadline can
+    shorten this stage further; it can never extend the supplied timeout.
     """
+    started = time.monotonic()
     if not isinstance(phase, str) or phase not in PHASES:
         raise ValueError("Unsupported candidate phase")
     if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
             or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("Candidate timeout must be positive and finite")
+    if deadline is not None and (
+            isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+            or not math.isfinite(deadline)):
+        raise ValueError("Candidate deadline must be a finite monotonic timestamp or None")
+    expires = started + timeout
+    if deadline is not None:
+        expires = min(expires, deadline)
+
+    def remaining(stage, execution=None):
+        now = time.monotonic()
+        left = expires - now
+        if left <= 0:
+            message = f"Candidate time budget exhausted during {stage}"
+            if execution is None:
+                raise TimeoutError(message)
+            failed = dict(execution, timed_out=True, host_deadline_exceeded=True,
+                          host_elapsed_seconds=round(now - started, 6))
+            raise CandidateExecutionError(message, failed)
+        return left
+
+    remaining("input preparation")
     if phase in {"refit", "full_refit"} and actuals is not None:
         raise ValueError("Refit does not take evaluation answers")
     candidate.verify()
@@ -294,14 +320,18 @@ def run_candidate(candidate: FrozenCandidate, *, spec: TaskSpec, fit_frame,
               ("candidate.py", "recipe.json", "fit.csv", "predict.csv", "context.json")}
     if inputs["candidate.py"] != candidate.code_hash or inputs["recipe.json"] != candidate.recipe_hash:
         raise ValueError("Frozen candidate changed while copying inputs")
-    execution = run_python(_driver(project_root()), invocation, invocation / "logs", 0,
-                           timeout=timeout, max_memory_bytes=max_memory_bytes)
+    driver = _driver(project_root())
+    child_timeout = remaining("input preparation")
+    execution = run_python(driver, invocation, invocation / "logs", 0,
+                           timeout=child_timeout, max_memory_bytes=max_memory_bytes)
+    execution["host_elapsed_seconds"] = round(time.monotonic() - started, 6)
     candidate.verify()
     if any(_hash(_regular_bytes(invocation / name)) != digest for name, digest in inputs.items()):
         raise CandidateExecutionError("Candidate changed its execution inputs", execution)
     if ("error" in execution or execution.get("exit_code") != 0
             or execution.get("timed_out") or execution.get("memory_limit_exceeded")):
         raise CandidateExecutionError("Candidate subprocess did not complete successfully", execution)
+    remaining("output validation", execution)
     output_path, receipt_path = invocation / "predictions.csv", invocation / "receipt.json"
     try:
         output = _regular_bytes(output_path, limit=_output_limit(spec, expected_ids))
@@ -329,6 +359,9 @@ def run_candidate(candidate: FrozenCandidate, *, spec: TaskSpec, fit_frame,
                       "higher_is_better": spec.metric.higher_is_better}
     except (OSError, ValueError, TypeError, UnicodeError) as error:
         raise CandidateExecutionError(f"Candidate predictions failed validation: {error}", execution) from error
-    return CandidateResult(output_path, metric, execution, candidate.code_hash,
-                           candidate.recipe_hash, phase, receipt_path,
-                           _hash(output), len(output), _hash(receipt_bytes))
+    result = CandidateResult(output_path, metric, execution, candidate.code_hash,
+                             candidate.recipe_hash, phase, receipt_path,
+                             _hash(output), len(output), _hash(receipt_bytes))
+    remaining("output validation", execution)
+    execution["host_elapsed_seconds"] = round(time.monotonic() - started, 6)
+    return result

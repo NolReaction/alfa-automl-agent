@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from agent.metrics import get_metric
+from agent.metrics import get_metric, score_predictions
 from agent.research_candidate import (
     CandidateExecutionError, freeze_candidate, run_candidate,
 )
@@ -57,6 +57,18 @@ def frozen(root, code=LINEAR, recipe=None):
     source = root / "proposal.py"
     source.write_text(code, encoding="utf-8")
     return freeze_candidate(source, recipe or {"model": "linear"}, root / "frozen")
+
+
+def fake_success(work):
+    context = json.loads((work / "context.json").read_text(encoding="utf-8"))
+    output = b"row_key,answer\n0005,19\nNA,21\n"
+    (work / "predictions.csv").write_bytes(output)
+    (work / "receipt.json").write_text(json.dumps({
+        "version": 3, "nonce": context["nonce"], "phase": context["phase"],
+        "code_hash": context["code_hash"], "recipe_hash": context["recipe_hash"],
+        "output_hash": hashlib.sha256(output).hexdigest(),
+    }), encoding="utf-8")
+    return {"exit_code": 0, "timed_out": False, "memory_limit_exceeded": False}
 
 
 class ResearchCandidateTests(unittest.TestCase):
@@ -230,6 +242,100 @@ class ResearchCandidateTests(unittest.TestCase):
                 run_candidate(candidate, spec=make_spec(root), fit_frame=fit, predict_frame=predict,
                               output_dir=root / "executions", phase="outer_validation", timeout=0.2)
             self.assertTrue(raised.exception.execution["timed_out"])
+
+    def test_host_csv_preparation_reduces_child_timeout_and_absolute_deadline_can_only_shorten(self):
+        for deadline, expected in ((None, 4), (108, 2), (1000, 4)):
+            with self.subTest(deadline=deadline), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                candidate, spec = frozen(root), make_spec(root)
+                fit, predict = data()
+                clock, captured = {"now": 100.0}, []
+                original_to_csv = pd.DataFrame.to_csv
+
+                def prepare(frame, path, *args, **kwargs):
+                    value = original_to_csv(frame, path, *args, **kwargs)
+                    if Path(path).name in {"fit.csv", "predict.csv"}:
+                        clock["now"] += 3
+                    return value
+
+                def execute(code, work, logs, step, **kwargs):
+                    captured.append(kwargs["timeout"])
+                    clock["now"] += 1
+                    return fake_success(work)
+
+                with patch("agent.research_candidate.time.monotonic", side_effect=lambda: clock["now"]), \
+                        patch.object(pd.DataFrame, "to_csv", prepare), \
+                        patch("agent.research_candidate.run_python", side_effect=execute):
+                    result = run_candidate(candidate, spec=spec, fit_frame=fit, predict_frame=predict,
+                                           output_dir=root / "executions", phase="inner_selection",
+                                           timeout=10, deadline=deadline, actuals=[19, 21])
+                self.assertEqual(captured, [expected])
+                self.assertEqual(result.metric["value"], 0)
+                self.assertEqual(result.execution["host_elapsed_seconds"], 7)
+
+    def test_preparation_exhaustion_and_past_deadline_never_launch_child(self):
+        for deadline in (None, 99):
+            with self.subTest(deadline=deadline), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                candidate, spec = frozen(root), make_spec(root)
+                fit, predict = data()
+                clock = {"now": 100.0}
+                original_to_csv = pd.DataFrame.to_csv
+
+                def prepare(frame, path, *args, **kwargs):
+                    value = original_to_csv(frame, path, *args, **kwargs)
+                    clock["now"] += 5
+                    return value
+
+                with patch("agent.research_candidate.time.monotonic", side_effect=lambda: clock["now"]), \
+                        patch.object(pd.DataFrame, "to_csv", prepare), \
+                        patch("agent.research_candidate.run_python") as child:
+                    with self.assertRaisesRegex(TimeoutError, "input preparation"):
+                        run_candidate(candidate, spec=spec, fit_frame=fit, predict_frame=predict,
+                                      output_dir=root / "executions", phase="outer_validation",
+                                      timeout=10, deadline=deadline)
+                    child.assert_not_called()
+                self.assertFalse(list((root / "executions").rglob("predictions.csv")))
+
+    def test_required_host_scoring_over_deadline_cannot_return_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, spec = frozen(root), make_spec(root)
+            fit, predict = data()
+            clock = {"now": 100.0}
+
+            def execute(code, work, logs, step, **kwargs):
+                clock["now"] += 1
+                return fake_success(work)
+
+            def score(*args, **kwargs):
+                value = score_predictions(*args, **kwargs)
+                clock["now"] += 10
+                return value
+
+            with patch("agent.research_candidate.time.monotonic", side_effect=lambda: clock["now"]), \
+                    patch("agent.research_candidate.run_python", side_effect=execute), \
+                    patch("agent.research_candidate.score_predictions", side_effect=score):
+                with self.assertRaisesRegex(CandidateExecutionError, "output validation") as raised:
+                    run_candidate(candidate, spec=spec, fit_frame=fit, predict_frame=predict,
+                                  output_dir=root / "executions", phase="outer_validation",
+                                  timeout=10, actuals=[19, 21])
+            self.assertTrue(raised.exception.execution["timed_out"])
+            self.assertTrue(raised.exception.execution["host_deadline_exceeded"])
+            self.assertEqual(raised.exception.execution["host_elapsed_seconds"], 11)
+
+    def test_absolute_deadline_requires_a_finite_numeric_timestamp_without_bool(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, spec = frozen(root), make_spec(root)
+            fit, predict = data()
+            for deadline in (True, False, float("nan"), float("inf"), "100"):
+                with self.subTest(deadline=deadline), patch("agent.research_candidate.run_python") as child:
+                    with self.assertRaisesRegex(ValueError, "deadline"):
+                        run_candidate(candidate, spec=spec, fit_frame=fit, predict_frame=predict,
+                                      output_dir=root / "executions", phase="inner_selection",
+                                      timeout=10, deadline=deadline)
+                    child.assert_not_called()
 
     def test_invalid_phase_refit_answers_target_in_predict_and_bad_recipe_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
