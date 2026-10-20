@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -122,6 +123,19 @@ class AnalyzeDataTests(unittest.TestCase):
                             for item in find(report, "утечка", level="warning")))
         self.assertTrue(find(report, "сдвиг", ["protocol"]) or find(report, "типы", ["protocol"]))
         self.assertAlmostEqual(target["majority_macro_f1"], 2 * (800 / 900) / (1 + 800 / 900) / 3)
+
+    def test_random_macro_f1_accounts_for_class_imbalance(self):
+        def random_macro_f1(counts):
+            labels = pd.Series([label for label, n in counts.items() for _ in range(n)], name="verdict")
+            codes, classes = pd.factorize(labels, sort=True)
+            task = SimpleNamespace(train=labels.to_frame(), target="verdict", classification=True)
+            return analyze_data.analyze_target(task, codes.astype(int), [str(c) for c in classes], [])[
+                "uniform_random_macro_f1"]
+
+        real = {"Normal": 28000, "Generic": 20000, "Exploits": 16696, "Fuzzers": 9092, "DoS": 6132,
+                "Reconnaissance": 5245, "Analysis": 1000, "Backdoor": 873, "Shellcode": 567, "Worms": 65}
+        self.assertAlmostEqual(random_macro_f1(real), 0.0734, places=3)  # not 1 / 10
+        self.assertAlmostEqual(random_macro_f1({"a": 50, "b": 50}), 0.5)  # balanced classes: 1 / k
 
     def test_ids_that_are_row_counters_are_not_a_leak(self):
         with tempfile.TemporaryDirectory() as directory:

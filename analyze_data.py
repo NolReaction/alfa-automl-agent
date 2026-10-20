@@ -398,7 +398,10 @@ def analyze_target(task: Task, y: np.ndarray, classes: list[str], findings: list
     result.update(
         n_classes=k, counts=counts.to_dict(), shares=shares.round(5).to_dict(),
         imbalance_ratio=float(counts.iloc[0] / counts.iloc[-1]), majority_share=top,
-        majority_macro_f1=float(2 * top / (1 + top) / k), uniform_random_macro_f1=float(1 / k),
+        majority_macro_f1=float(2 * top / (1 + top) / k),
+        # Uniform random guess: precision of class c is its share p, recall is 1/k, so F1 = 2p(1/k) / (p + 1/k).
+        # Averaged over classes this is below 1/k whenever the classes are imbalanced.
+        uniform_random_macro_f1=float((2 * shares / k / (shares + 1 / k)).mean()),
         normalized_entropy=float(-(shares * np.log(shares)).sum() / np.log(k)) if k > 1 else 0.0,
         rare_classes={label: int(n) for label, n in counts.items() if n < RARE_CLASS_ROWS},
         label_whitespace=int((raw != raw.str.strip()).sum()),
@@ -530,8 +533,8 @@ def analyze_duplicates(task: Task, features: list[str], findings: list) -> dict:
         add(findings, "warning" if inflated >= 0.1 else "info", "дубликаты",
             f"{result['train_extra_duplicate_rows']} полных дублей признаков в train. При случайном 80/20 у {inflated:.1%} "
             f"валидационных строк есть точная копия в обучающей части, а у строк test копия в train только у "
-            f"{result['test_rows_seen_in_train']:.1%}: локальная оценка будет завышена — дедуплицировать перед split или "
-            "делить по группам одинаковых признаков")
+            f"{result['test_rows_seen_in_train']:.1%}: локальная оценка будет завышена — "
+            "делить по группам одинаковых признаков, чтобы копии не оказались и в обучении, и в проверке")
     if result["conflicting_groups"]:
         add(findings, "warning", "дубликаты", f"{result['conflicting_groups']} групп одинаковых признаков с разными ответами: "
             "шум в цели, потолок качества ниже идеала")
