@@ -133,6 +133,11 @@ class TeamIntegrationTests(unittest.TestCase):
             self.assertTrue(any(entry["phase"] in {"full_refit", "refit"} for entry in candidate_calls))
             self.assertEqual({entry["recipe_hash"] for entry in candidate_calls}, {frozen["recipe_hash"]})
             self.assertTrue((run_dir / "last_valid_submission.csv").is_file())
+            from app.runs import RunReader
+            reader = RunReader(task.parent)
+            code_files = [item for item in reader.detail(run_dir.name)["files"] if item["kind"] == "code"]
+            self.assertTrue(code_files, "The existing Alfa Lab code viewer must retain generated tool code")
+            self.assertIn("research_candidate.py", reader.file(run_dir.name, code_files[0]["name"])["text"])
             values = np.genfromtxt(task.parent / "submission.csv", delimiter=",", skip_header=1,
                                    usecols=1)
             np.testing.assert_allclose(values, [17, 20], rtol=0, atol=1e-10)

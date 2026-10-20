@@ -471,7 +471,7 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
                         raise ValueError("This code already failed; change the approach")
                     _fresh_attempt(state)
                     from agent.execution import run_python
-                    result = run_python(code, state.workspace, state.run_dir / "research_execution",
+                    result = run_python(code, state.workspace, state.run_dir,
                         step * 100 + index, timeout=min(1800, state.remaining() - state.final_reserve))
                     state.report["experiments"] += 1
                 except (ValueError, OSError, TimeoutError) as error:
