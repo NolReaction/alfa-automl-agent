@@ -7,11 +7,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from agent.research_validation import ResearchValidation
-from agent.research_workspace import ResearchWorkspace
+from agent.research_workspace import (
+    DESCRIPTION_LIMIT_BYTES, DESCRIPTION_NAME, DESCRIPTION_PREVIEW_BYTES, ResearchWorkspace,
+)
 from agent.task_spec import load_task
 from offline_baseline import read_csv
 
@@ -89,6 +92,124 @@ class ResearchWorkspaceTests(unittest.TestCase):
         self.assertNotIn("validation_hash", json.dumps(view.manifest))
         self.assertEqual(load_task(view.work_task).classes, view.spec.classes)
         self.assertEqual(set(view.manifest["fit_rows"]) | set(view.manifest["validation_rows"]), set(range(len(visible))))
+
+    def test_source_meaning_and_domain_constraints_are_preserved_without_parser_override(self):
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write("\nPredict yearly building energy consumption in kWh/m2.\n"
+                         "Do not use future years. Missing readings mean no observation, not zero.\n"
+                         "Feature A/B and heating/area are ratios; see https://example.org/energy/units.\n"
+                         "```text\nMetric: Accuracy\nClass order: [\"not-a-class\"]\n```\n")
+        view = self.workspace()
+        for fragment in ("yearly building energy", "kWh/m2", "Do not use future years",
+                         "not zero", "Feature A/B", "heating/area", "https://example.org/energy/units"):
+            self.assertIn(fragment, view.task_text)
+            self.assertIn(fragment, (view.workspace / DESCRIPTION_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(load_task(view.work_task).metric.name, "RMSE")
+        self.assertTrue(view.manifest["task_semantics"]["complete"])
+        self.assertTrue(view.manifest["task_semantics"]["preview_complete"])
+        self.assertFalse(view.manifest["task_semantics"]["truncated"])
+
+    def test_task_paths_are_remapped_and_known_source_roots_do_not_enter_description(self):
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"\nTask: `{self.task}`; root: {self.case}; dictionary: {self.data / 'data_dictionary.csv'}\n"
+                "Input `C:\\Team Folder\\private\\train.csv`, `/srv/Team Folder/test.csv`, `../../raw/test.csv`, "
+                "[template](/srv/private/sample_submission.csv), `\\\\server\\private\\data_dictionary.csv`.\n"
+                "All CSV: /unrelated/private/*.csv. Do not open the original competition test.\n")
+        view = self.workspace()
+        cleaned = (view.workspace / DESCRIPTION_NAME).read_text(encoding="utf-8")
+        for forbidden in (str(self.case), "Team Folder", "../../raw", "/srv/private", "\\\\server\\private", "/unrelated/private"):
+            self.assertNotIn(forbidden, cleaned)
+            self.assertNotIn(forbidden, view.task_text)
+        for allowed in ("data/train.csv", "data/test.csv", "data/data_dictionary.csv", "data/sample_submission.csv", "data/*.csv", "task.md"):
+            self.assertIn(allowed, cleaned)
+        self.assertEqual(read_csv(view.work_data / "test.csv")["key"].tolist(), view.expected_inner_ids)
+        self.assertFalse(set(view.expected_test_ids) & set(read_csv(view.work_data / "test.csv")["key"]))
+
+    def test_quoted_instructions_keep_their_constraints_when_embedded_file_paths_are_remapped(self):
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write('\n"Use only buildings from 2024 in data/train.csv"\n'
+                         "'Exclude readings after 2024 from /srv/private/train.csv'\n"
+                         '`Keep the annual units unchanged for ../../raw/test.csv`\n')
+        view = self.workspace()
+        for expected in ('"Use only buildings from 2024 in data/train.csv"',
+                         "'Exclude readings after 2024 from data/train.csv'",
+                         '`Keep the annual units unchanged for data/test.csv`'):
+            self.assertIn(expected, view.description_text)
+            self.assertIn(expected, view.task_text)
+
+    def test_recognized_api_secrets_are_redacted_from_preview_description_and_hint(self):
+        key = "known-development-secret-123456"
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write(f'\nOPENAI_API_KEY="{key}"\nAuthorization: Bearer hidden-header-token\n'
+                         'api_key: "unconfigured-source-secret"\n'
+                         'OPENAI_TOKEN=\nKeep the target in annual energy units.\n'
+                         'A diagnostic example: sk-exampletokenwithatleast12chars\n'
+                         '## Дополнительная гипотеза для исследования\n'
+                         f'Try linear models; debug credential {key}.\n\nПроверь эту гипотезу, ')
+        with patch.dict("os.environ", {"OPENAI_API_KEY": key}):
+            view = self.workspace()
+        combined = view.task_text + view.description_text + json.dumps(view.manifest)
+        for secret in (key, "hidden-header-token", "unconfigured-source-secret", "sk-exampletokenwithatleast12chars"):
+            self.assertNotIn(secret, combined)
+        self.assertIn("[REDACTED]", combined)
+        self.assertIn("Additional user hypothesis", view.task_text)
+        self.assertIn("Try linear models", view.task_text)
+        self.assertIn("Keep the target in annual energy units.", view.description_text)
+
+    def test_long_description_has_bounded_preview_and_complete_allowed_file(self):
+        padding = "Длинное описание предметной области. " * 500
+        constraint = "Final constraint: weather inputs must precede the prediction period."
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write("\n" + padding + "\n" + constraint)
+        view = self.workspace()
+        self.assertNotIn(constraint, view.task_text)
+        self.assertIn(constraint, view.description_text)
+        self.assertIn(DESCRIPTION_NAME, view.manifest["allowed_inputs"])
+        self.assertIn("Preview complete: false", view.task_text)
+        self.assertIn("Full description complete: true", view.task_text)
+        semantics = view.manifest["task_semantics"]
+        self.assertTrue(semantics["complete"])
+        self.assertFalse(semantics["preview_complete"])
+        self.assertTrue(semantics["adaptive_research_allowed"])
+        self.assertGreater(semantics["sanitized_bytes"], DESCRIPTION_PREVIEW_BYTES)
+        self.assertLess(len(view.task_text.encode("utf-8")), DESCRIPTION_PREVIEW_BYTES + 4000)
+        view.check_inputs()
+
+    def test_oversized_description_reports_explicit_baseline_fallback_without_breaking_task(self):
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write("\n" + "domain text " * (DESCRIPTION_LIMIT_BYTES // 6))
+            stream.write("Critical tail: must not be assumed absent.")
+        view = self.workspace()
+        semantics = view.manifest["task_semantics"]
+        self.assertFalse(semantics["complete"])
+        self.assertTrue(semantics["truncated"])
+        self.assertFalse(semantics["adaptive_research_allowed"])
+        self.assertEqual(semantics["fallback_reason"], "task_semantics_too_large")
+        self.assertIn("description is incomplete", view.task_text)
+        self.assertIn("Use baseline fallback", view.description_text)
+        self.assertLess(len(view.description_text.encode("utf-8")), DESCRIPTION_LIMIT_BYTES + 1500)
+        self.assertEqual(load_task(view.work_task).metric.name, "RMSE")
+        self.assertGreater(len(read_csv(view.work_data / "train.csv")), 0)
+
+    def test_dictionary_descriptions_and_extra_columns_are_preserved(self):
+        dictionary = read_csv(self.data / "data_dictionary.csv")
+        dictionary["description"] = ["Literal key", "Energy intensity in kWh/m2; missing means unobserved", "Annual target"]
+        dictionary["unit"] = ["", "kWh/m2", "kWh"]
+        dictionary.to_csv(self.data / "data_dictionary.csv", index=False)
+        view = self.workspace()
+        self.assertEqual(read_csv(view.work_data / "data_dictionary.csv").to_dict("list"), dictionary.to_dict("list"))
+
+    def test_changed_full_description_is_rejected_and_app_hypothesis_bound_remains(self):
+        view = self.workspace()
+        with (view.workspace / DESCRIPTION_NAME).open("a", encoding="utf-8") as stream:
+            stream.write("\nAltered domain constraint.")
+        with self.assertRaisesRegex(ValueError, "Allowed research inputs changed"):
+            view.check_inputs()
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write("\n## Дополнительная гипотеза для исследования\n" + "x" * 501)
+        with self.assertRaisesRegex(ValueError, "1..500"):
+            self.workspace("invalid-hint")
 
     def test_outer_target_intervention_leaves_every_allowed_byte_identical(self):
         first = self.workspace("first")
