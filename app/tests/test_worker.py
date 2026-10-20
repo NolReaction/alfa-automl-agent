@@ -18,6 +18,7 @@ from sklearn.metrics import f1_score, mean_squared_error
 from sklearn.model_selection import train_test_split
 
 from app import worker
+from app.model_config import make_model_config
 
 
 def write_csv(path: Path, rows) -> None:
@@ -127,6 +128,9 @@ class WorkerTests(unittest.TestCase):
                     self.assertEqual(result["split"]["seed"], 42)
                     self.assertEqual(metrics["evaluation_source"], "app_local_holdout")
                     self.assertEqual(metrics["api"], {"used": False, "calls": 0})
+                    expected_config = make_model_config(action, "classification" if classification else "regression")
+                    self.assertEqual(result["model_config"], expected_config)
+                    self.assertEqual(metrics["model_config"], expected_config)
                     self.assertIn("flag", metrics["features"]["numeric"])
                     self.assertGreater(metrics["elapsed_seconds"], 0)
                     submission = pd.read_csv(staged / "submission.csv", dtype=str,
@@ -159,6 +163,119 @@ class WorkerTests(unittest.TestCase):
         path.write_text(json.dumps(config), encoding="utf-8")
         with self.assertRaises(ValueError):
             worker.load_config(path)
+
+    def test_time_and_grouped_recipes_keep_their_evidence_and_comparison_identity(self):
+        for classification, validation in (
+            (False, {"strategy": "time", "time_column": "x"}),
+            (True, {"strategy": "grouped"}),
+        ):
+            with self.subTest(validation=validation):
+                source = self.make_source(classification)
+                original_train_path = source / "nested/participants/train.csv"
+                original = pd.read_csv(original_train_path, dtype=str, keep_default_na=False)
+                original["x"] = [str(i // 4 if classification else i // 16) for i in range(80)]
+                if classification:
+                    original["flag"] = [str((i // 4) % 2) for i in range(80)]
+                original.to_csv(original_train_path, index=False)
+                results = []
+                for action in ("baseline", "extra_trees"):
+                    path, job_dir, _ = self.make_config(source, action)
+                    config = json.loads(path.read_text(encoding="utf-8"))
+                    config["validation"] = validation
+                    path.write_text(json.dumps(config), encoding="utf-8")
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        code = worker.main(["--config", str(path)])
+                    self.assertEqual(code, 0)
+                    result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+                    results.append(result)
+                    self.assertEqual(result["split"]["strategy"], validation["strategy"])
+                    holdout = pd.read_csv(job_dir / "holdout_predictions.csv", dtype=str, keep_default_na=False)
+                    mask = original["row_key"].isin(holdout["id"])
+                    if classification:
+                        features = ["x", "flag", "protocol"]
+                        fitted = set(map(tuple, original.loc[~mask, features].to_numpy()))
+                        held = set(map(tuple, original.loc[mask, features].to_numpy()))
+                        self.assertFalse(fitted & held)
+                        self.assertEqual(result["split"]["group_overlap"], 0)
+                    else:
+                        self.assertEqual(set(original.loc[mask, "x"]), {"4"})
+                        self.assertEqual(result["split"]["validation_period"], "4")
+                    self.assertAlmostEqual(result["split"]["validation_fraction"], len(holdout) / len(original))
+                    self.assertTrue(result["output_valid"])
+                self.assertEqual(results[0]["comparison_key"], results[1]["comparison_key"])
+                self.assertEqual(results[0]["split"]["validation_hash"], results[1]["split"]["validation_hash"])
+
+                random_path, random_job_dir, _ = self.make_config(source, "baseline", source.name + "-random-reference")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(worker.main(["--config", str(random_path)]), 0)
+                random_result = json.loads((random_job_dir / "result.json").read_text(encoding="utf-8"))
+                self.assertNotEqual(results[0]["comparison_key"], random_result["comparison_key"])
+
+    def test_config_accepts_legacy_and_rejects_unknown_validation_options(self):
+        source = self.make_source()
+        path, _, _ = self.make_config(source, "baseline")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(worker.load_config(path)["validation"], {"strategy": "random"})
+        for value in ({"strategy": "time"}, {"strategy": "shell"}, {"strategy": "random", "code": "x"}):
+            with self.subTest(validation=value):
+                path.write_text(json.dumps({**config, "validation": value}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    worker.load_config(path)
+        path.write_text(json.dumps({**config, "unexpected": True}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            worker.load_config(path)
+
+    def test_custom_model_parameters_change_training_and_refit_without_changing_holdout(self):
+        for classification in (False, True):
+            source = self.make_source(classification)
+            task_type = "classification" if classification else "regression"
+            for action in ("baseline", "extra_trees"):
+                with self.subTest(task_type=task_type, action=action):
+                    outputs = []
+                    custom = ({"max_iter": 50, "max_leaf_nodes": 4, "min_samples_leaf": 100,
+                               "learning_rate": 0.03, "l2_regularization": 0.5}
+                              if action == "baseline" and not classification else
+                              {"n_estimators": 50, "max_depth": 2, "min_samples_leaf": 100})
+                    for suffix, params in (("default", None), ("custom", custom)):
+                        path, job_dir, staged = self.make_config(source, action, f"{task_type}-{action}-{suffix}")
+                        config = json.loads(path.read_text(encoding="utf-8"))
+                        if params is not None:
+                            config["model_params"] = params
+                        path.write_text(json.dumps(config), encoding="utf-8")
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            self.assertEqual(worker.main(["--config", str(path)]), 0)
+                        result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+                        metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
+                        holdout = pd.read_csv(job_dir / "holdout_predictions.csv", dtype=str, keep_default_na=False)
+                        outputs.append((result, holdout))
+                        self.assertEqual(result["model_config"], make_model_config(action, task_type, params))
+                        self.assertEqual(result["model_config"], metrics["model_config"])
+                        for key, value in result["model_config"]["parameters"].items():
+                            self.assertEqual(metrics["model"]["parameters"][key], value)
+                        self.assertEqual(metrics["model"]["parameters"]["random_state"], 42)
+                        if "n_jobs" in metrics["model"]["parameters"]:
+                            self.assertEqual(metrics["model"]["parameters"]["n_jobs"], 8)
+                        if suffix == "custom":
+                            # Both the holdout model (64 rows) and final clone
+                            # (80 rows) are too small to split with leaf=100.
+                            submission = pd.read_csv(staged / "submission.csv", dtype=str, keep_default_na=False)
+                            self.assertEqual(holdout["prediction"].nunique(), 1)
+                            self.assertEqual(submission["answer"].nunique(), 1)
+                    self.assertEqual(outputs[0][0]["comparison_key"], outputs[1][0]["comparison_key"])
+                    self.assertEqual(outputs[0][1]["id"].tolist(), outputs[1][1]["id"].tolist())
+                    self.assertNotEqual(outputs[0][1]["prediction"].tolist(), outputs[1][1]["prediction"].tolist())
+
+    def test_model_params_reject_unknown_controls_under_actual_task_type(self):
+        source = self.make_source()
+        path, job_dir, _ = self.make_config(source, "baseline")
+        base = json.loads(path.read_text(encoding="utf-8"))
+        for params in ({"n_jobs": 1000}, {"n_estimators": 120}, {"max_iter": True}, {"learning_rate": "0.1"}):
+            with self.subTest(params=params):
+                path.write_text(json.dumps({**base, "model_params": params}), encoding="utf-8")
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(worker.main(["--config", str(path)]), 1)
+                self.assertFalse((job_dir / "holdout_predictions.csv").exists())
+                self.assertFalse(json.loads((job_dir / "result.json").read_text(encoding="utf-8"))["output_valid"])
 
     def test_existing_symlink_output_is_refused_before_training(self):
         source = self.make_source()

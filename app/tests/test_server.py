@@ -152,6 +152,95 @@ class ServerTests(unittest.TestCase):
             stream.write("\nChanged data description")
         self.assertEqual(self.request(f"/api/jobs/{job_id}/bundle?task_id=case")[0], 400)
 
+    def test_invalid_validation_is_rejected_before_starting_or_creating_artifacts(self):
+        body = {"task_id": "case", "action": "baseline"}
+        invalid = [True, [], "random", {}, {"strategy": []}, {"strategy": "unknown"},
+                   {"strategy": "random", "command": "anything"},
+                   {"strategy": "grouped", "path": "../../.env"},
+                   {"strategy": "time", "time_column": "feature"}]
+        for validation in invalid:
+            with self.subTest(validation=validation):
+                status, _, response = self.post("/api/jobs", {**body, "validation": validation})
+                self.assertEqual(status, 400, response)
+        for action in ("agent", "prepare"):
+            with self.subTest(action=action):
+                status, _, response = self.post("/api/jobs", {
+                    "task_id": None if action == "prepare" else "case",
+                    "action": action, "validation": {"strategy": "random"},
+                })
+                self.assertEqual(status, 400, response)
+                self.assertIn("валидации", json.loads(response)["error"])
+        self.assertEqual(self.server.jobs.list(), [])
+        self.assertEqual(list(self.server.jobs.jobs_root.iterdir()), [])
+        self.assertFalse((self.root / "case" / "submission.csv").exists())
+
+    def test_browser_grouped_validation_reaches_worker_and_returns_group_evidence(self):
+        task = self.root / "case"
+        with (task / "train.csv").open("w", encoding="utf-8", newline="") as stream:
+            csv.writer(stream).writerows([["id", "feature", "label"]] + [
+                [f"train-{index}", index // 4, "yes" if index % 2 else "NA"] for index in range(40)])
+        validation = {"strategy": "grouped"}
+        status, _, response = self.post("/api/jobs", {
+            "task_id": "case", "action": "extra_trees", "validation": validation,
+            "model_params": {"n_estimators": 50, "max_depth": 4},
+        })
+        self.assertEqual(status, 202, response)
+        job_id = json.loads(response)["job"]["id"]
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status, _, response = self.request(f"/api/jobs/{job_id}?task_id=case")
+            self.assertEqual(status, 200, response)
+            detail = json.loads(response)
+            if detail["job"]["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.05)
+        self.assertEqual(detail["job"]["status"], "completed", detail)
+        self.assertEqual(detail["job"]["validation"], validation)
+        self.assertEqual(detail["job"]["split"]["strategy"], "grouped")
+        self.assertEqual(detail["job"]["split"]["group_overlap"], 0)
+        self.assertEqual(detail["job"]["split"]["group_count"], 10)
+        self.assertEqual(detail["job"]["model_config"]["parameters"]["n_estimators"], 50)
+        self.assertEqual(detail["job"]["model_config"]["parameters"]["max_depth"], 4)
+        self.assertFalse((task / "submission.csv").exists())
+
+    def test_profile_exposes_model_options_without_changing_cached_profile(self):
+        profile = self.server.catalog.profile("case")
+        self.assertNotIn("model_options", profile)
+        with patch.object(self.server.catalog, "profile", return_value=profile):
+            status, _, response = self.request("/api/tasks/case/profile")
+        self.assertEqual(status, 200, response)
+        options = json.loads(response)["model_options"]
+        self.assertEqual(set(options), {"baseline", "extra_trees"})
+        self.assertEqual(options["baseline"]["model"], "RandomForestClassifier")
+        self.assertEqual(options["extra_trees"]["model"], "ExtraTreesClassifier")
+        self.assertIn("n_estimators", options["baseline"]["defaults"])
+        self.assertTrue(options["baseline"]["fields"])
+        self.assertNotIn("model_options", profile)
+        self.assertNotIn("model_options", self.server.catalog.profile("case"))
+
+    def test_invalid_model_parameters_are_rejected_without_artifacts(self):
+        body = {"task_id": "case", "action": "baseline"}
+        invalid = [True, [], "anything", {"command": "anything"}, {"n_jobs": 1},
+                   {"random_state": 0}, {"max_iter": 50}, {"n_estimators": True},
+                   {"n_estimators": 49}, {"n_estimators": 601}, {"min_samples_leaf": 0},
+                   {"max_depth": {"path": "../../.env"}}]
+        for parameters in invalid:
+            with self.subTest(parameters=parameters):
+                status, _, response = self.post("/api/jobs", {**body, "model_params": parameters})
+                self.assertEqual(status, 400, response)
+        for action in ("agent", "prepare"):
+            for parameters in (None, {}, {"n_estimators": 50}):
+                with self.subTest(action=action, parameters=parameters):
+                    status, _, response = self.post("/api/jobs", {
+                        "task_id": None if action == "prepare" else "case",
+                        "action": action, "model_params": parameters,
+                    })
+                    self.assertEqual(status, 400, response)
+                    self.assertIn("модели", json.loads(response)["error"])
+        self.assertEqual(self.server.jobs.list(), [])
+        self.assertEqual(list(self.server.jobs.jobs_root.iterdir()), [])
+        self.assertFalse((self.root / "case" / "submission.csv").exists())
+
     def test_delivery_is_token_protected_and_downloads_only_competition_sources(self):
         self.assertEqual(self.post("/api/delivery", {}, token=False)[0], 403)
         self.assertEqual(self.post("/api/delivery", {}, headers={"Origin": "https://evil.example"})[0], 403)

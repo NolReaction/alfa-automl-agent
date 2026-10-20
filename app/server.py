@@ -20,12 +20,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.jobs import JobManager, api_settings
+from app.model_config import model_options
 from app.exports import delivery_archive, result_archive, report_bytes_from_archive, MAX_IMPORT_BYTES
 from app.profiling import DataCatalog
 from app.runs import RunReader
 from app.sharing import ReportStore
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -231,7 +232,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             self.server.catalog.resolve(task_id)
             if len(parts) == 4:
                 if action == "profile":
-                    self._json(self.server.catalog.profile(task_id))
+                    profile = self.server.catalog.profile(task_id)
+                    self._json({**profile, "model_options": model_options(profile["task_type"])})
                 elif action == "column":
                     self._json(self.server.catalog.column(task_id, self._one(query, "name")))
                 elif action == "description":
@@ -315,13 +317,19 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                     raise ValueError("Сборка решения не принимает дополнительные параметры.")
                 self._bytes(delivery_archive(), "application/zip", filename="solution.zip")
             elif is_job:
-                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes"}:
+                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params"}:
                     raise ValueError("Неизвестные параметры запуска.")
+                if "validation" in body and body.get("action") not in ("baseline", "extra_trees"):
+                    raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
+                if "model_params" in body and body.get("action") not in ("baseline", "extra_trees"):
+                    raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
                 job = self.server.jobs.start(task_id, body.get("action"),
                                              author=body.get("author", ""),
                                              hypothesis=body.get("hypothesis", ""),
-                                             minutes=body.get("minutes", 20))
+                                             minutes=body.get("minutes", 20),
+                                             validation=body.get("validation"),
+                                             model_params=body.get("model_params"))
                 self._json({"job": job}, 202)
             elif is_job_action:
                 if set(body) != {"task_id"}:

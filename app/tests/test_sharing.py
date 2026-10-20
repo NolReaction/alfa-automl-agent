@@ -1,12 +1,16 @@
 """Security and provenance checks for portable experiment summaries."""
 
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from app import file_io
 from app.sharing import ReportStore
+from app.model_config import make_model_config
 
 
 FINGERPRINT = "a" * 64
@@ -65,6 +69,163 @@ class SharingTests(unittest.TestCase):
         self.assertEqual(self.store.import_reports("regression", FINGERPRINT, exported_again),
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
+
+    def test_selected_model_parameters_survive_import_reexport_and_deduplication(self):
+        config = make_model_config("extra_trees", "regression", {"n_estimators": 200, "max_depth": 12})
+        envelope = self.envelope(job(model_config=config))
+        self.assertEqual(envelope["reports"][0]["model_config"], config)
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["model_config"], config)
+        self.assertEqual(imported["comparison_key"], job()["comparison_key"])
+        self.assertIs(imported["verified"], False)
+        self.assertIs(imported["published"], False)
+        reexported = self.store.export("regression", FINGERPRINT, [imported])
+        self.assertEqual(reexported["reports"], envelope["reports"])
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": 1})
+
+    def test_changed_model_parameters_change_report_identity(self):
+        for trees in (200, 201):
+            config = make_model_config("extra_trees", "regression", {"n_estimators": trees})
+            self.assertEqual(self.store.import_reports("regression", FINGERPRINT,
+                                                      self.envelope(job(model_config=config))),
+                             {"imported": 1, "skipped": 0})
+        reports = self.store.list("regression")
+        self.assertEqual(len({report["id"] for report in reports}), 2)
+        self.assertEqual({report["model_config"]["parameters"]["n_estimators"] for report in reports},
+                         {200, 201})
+
+    def test_legacy_and_agent_reports_do_not_gain_default_model_parameters(self):
+        for original in (job(), job(action="agent", model=None, metric=None)):
+            with self.subTest(action=original["action"]):
+                envelope = self.envelope(original)
+                self.assertNotIn("model_config", envelope["reports"][0])
+                summary = envelope["reports"][0]
+                digest = hashlib.sha256(json.dumps(summary, ensure_ascii=False, sort_keys=True,
+                                                   separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+                self.store.import_reports("regression", FINGERPRINT, envelope)
+                imported = next(report for report in self.store.list("regression")
+                                if report["id"] == "import-" + digest)
+                self.assertNotIn("model_config", imported)
+                reexported = self.store.export("regression", FINGERPRINT, [imported])
+                self.assertEqual(reexported["reports"], envelope["reports"])
+
+    def test_malformed_model_parameters_are_rejected_on_export_and_import(self):
+        valid = make_model_config("extra_trees", "regression")
+        invalid = [None, True, [], {}, {**valid, "path": "/private/.env"},
+                   {**valid, "model": "<script>unknown</script>"},
+                   {**valid, "parameters": None}, {**valid, "parameters": []},
+                   {**valid, "parameters": {"n_estimators": 200}},
+                   {**valid, "parameters": {**valid["parameters"], "code": "do not execute"}}]
+        for field, values in (("n_estimators", (True, "200", 200.5, float("nan"), 1, 601)),
+                              ("max_depth", (False, "12", 100)),
+                              ("max_features", (True, float("nan"), "<img src=x>"))):
+            invalid.extend({**valid, "parameters": {**valid["parameters"], field: value}} for value in values)
+        for config in invalid:
+            with self.subTest(config=config):
+                with self.assertRaises(ValueError):
+                    self.envelope(job(model_config=config))
+                envelope = self.envelope()
+                envelope["reports"][0]["model_config"] = deepcopy(config)
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_model_metadata_must_match_the_recipe_and_declared_model(self):
+        config = make_model_config("extra_trees", "regression")
+        for change in ({"action": "agent"}, {"action": "baseline"},
+                       {"model": "RandomForestClassifier"}):
+            with self.subTest(change=change):
+                with self.assertRaises(ValueError):
+                    self.envelope(job(model_config=config, **change))
+                envelope = self.envelope(job(model_config=config))
+                envelope["reports"][0].update(change)
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        # A failed run can retain chosen settings before a fitted model exists.
+        pending_model = self.envelope(job(status="failed", model=None, model_config=config))
+        self.assertEqual(pending_model["reports"][0]["model_config"], config)
+        self.assertIsNone(pending_model["reports"][0]["model"])
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_validation_metadata_survives_import_and_reexport(self):
+        common = {**job()["split"], "train_fraction": 0.8, "train_rows": 42648,
+                  "shuffle": False}
+        splits = [
+            {**common, "strategy": "random", "shuffle": True},
+            {**common, "strategy": "time", "time_column": "timestamp",
+             "train_period_min": "2024-01-01", "train_period_max": "2024-06-30",
+             "validation_period": "2024-07-01 — 2024-09-30"},
+            {**common, "strategy": "grouped", "group_count": 10, "train_groups": 8,
+             "validation_groups": 2, "group_overlap": 0, "n_splits": 5, "fold": 3},
+        ]
+        for split in splits:
+            with self.subTest(strategy=split["strategy"]):
+                envelope = self.envelope(job(split=split))
+                self.assertEqual(envelope["reports"][0]["split"], split)
+                self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                                 {"imported": 1, "skipped": 0})
+                imported = next(row for row in self.store.list("regression")
+                                if row["split"]["strategy"] == split["strategy"])
+                self.assertEqual(imported["split"], split)
+                self.assertIs(imported["verified"], False)
+                self.assertIs(imported["published"], False)
+                reexported = self.store.export("regression", FINGERPRINT, [imported])
+                self.assertEqual(reexported["reports"], envelope["reports"])
+                self.assertEqual(self.store.import_reports("regression", FINGERPRINT, reexported),
+                                 {"imported": 0, "skipped": 1})
+
+    def test_validation_metadata_is_part_of_imported_report_identity(self):
+        common = job()["split"]
+        variants = [
+            {**common, "strategy": "time", "validation_period": "2024-01"},
+            {**common, "strategy": "time", "validation_period": "2024-02"},
+            {**common, "strategy": "grouped", "n_splits": 5, "fold": 0},
+            {**common, "strategy": "grouped", "n_splits": 5, "fold": 1},
+        ]
+        for split in variants:
+            self.assertEqual(self.store.import_reports("regression", FINGERPRINT,
+                                                      self.envelope(job(split=split))),
+                             {"imported": 1, "skipped": 0})
+        reports = self.store.list("regression")
+        self.assertEqual(len({row["id"] for row in reports}), len(variants))
+        self.assertTrue(all(row["origin_id"] == job()["id"] for row in reports))
+
+    def test_legacy_reports_do_not_gain_validation_metadata(self):
+        legacy_split = job()["split"]
+        envelope = self.envelope()
+        self.assertEqual(envelope["version"], 1)
+        self.assertEqual(envelope["reports"][0]["split"], legacy_split)
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["split"], legacy_split)
+        reexported = self.store.export("regression", FINGERPRINT, [imported])
+        self.assertEqual(reexported["reports"], envelope["reports"])
+
+    def test_invalid_validation_metadata_is_rejected_before_import_writes(self):
+        changes = [{"strategy": value} for value in (None, "", "unknown", [], True)]
+        for field, limit in (("time_column", 500), ("train_period_min", 100),
+                             ("train_period_max", 100), ("validation_period", 100)):
+            changes.extend({field: value} for value in (None, "", " ", 1, "x\x00", "x" * (limit + 1)))
+        for field in ("train_rows", "group_count", "train_groups", "validation_groups",
+                      "group_overlap", "n_splits", "fold"):
+            changes.extend({field: value} for value in (None, True, 0.5, -1, 1 << 31, "2"))
+        changes.extend({field: 0} for field in ("train_rows", "group_count", "train_groups",
+                                               "validation_groups", "n_splits"))
+        changes.extend([
+            {"n_splits": 1}, {"n_splits": 5, "fold": 5}, {"n_splits": 2, "fold": 3},
+            {"train_fraction": True}, {"train_fraction": 0}, {"train_fraction": 1},
+            {"shuffle": 0}, {"shuffle": "false"}, {"shuffle": None},
+        ])
+        for change in changes:
+            with self.subTest(change=change):
+                envelope = self.envelope()
+                envelope["reports"][0]["split"].update(change)
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
 
     def test_qwen_fallback_survives_export_import_without_raw_reason_diagnostics(self):
         envelope = self.envelope(job(action="agent", metric=None, agent_status="fallback",
@@ -225,6 +386,48 @@ class SharingTests(unittest.TestCase):
         record["metric"]["value"] = 0.01
         record_file.write_text(json.dumps(record), encoding="utf-8")
         self.assertEqual(self.store.list("regression"), [])
+
+    def test_failed_atomic_import_cleans_temp_and_preserves_existing_reports(self):
+        self.store.import_reports("regression", FINGERPRINT, self.envelope())
+        existing = {path: path.read_bytes() for path in self.root.rglob("*.json")}
+        error = PermissionError(13, "Target is locked")
+        error.winerror = 5
+        with patch.object(file_io, "WINDOWS", True), patch.object(file_io, "REPLACE_ATTEMPTS", 2), \
+                patch.object(file_io.os, "replace", side_effect=error) as replace, \
+                patch.object(file_io.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "сохранить") as caught:
+                self.store.import_reports("regression", FINGERPRINT,
+                                          self.envelope(job(hypothesis="A different experiment")))
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertEqual(replace.call_count, 2)
+        self.assertEqual({path: path.read_bytes() for path in self.root.rglob("*.json")}, existing)
+        self.assertEqual(len(self.store.list("regression")), 1)
+        self.assertEqual(list(self.root.rglob("*.tmp")), [])
+
+    def test_import_rechecks_paths_after_a_windows_lock(self):
+        original_safe = self.store._safe
+        changed = {"path": None}
+        error = PermissionError(13, "Target is locked")
+        error.winerror = 32
+
+        def check_path(path):
+            if path == changed["path"]:
+                raise ValueError("Destination became a link")
+            return original_safe(path)
+
+        def locked_replace(source, destination):
+            changed["path"] = destination
+            raise error
+
+        with patch.object(self.store, "_safe", side_effect=check_path), \
+                patch.object(file_io, "WINDOWS", True), \
+                patch.object(file_io.os, "replace", side_effect=locked_replace) as replace, \
+                patch.object(file_io.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "became a link"):
+                self.store.import_reports("regression", FINGERPRINT, self.envelope())
+        self.assertEqual(replace.call_count, 1)
+        self.assertEqual(self.store.list("regression"), [])
+        self.assertEqual(list(self.root.rglob("*.tmp")), [])
 
     def test_symlinked_state_or_record_rejected(self):
         outside = self.root / "outside"
