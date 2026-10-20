@@ -169,6 +169,33 @@ class ResearchWorkspace:
             "candidate_file": "research_candidate.py", "recipe_file": "research_recipe.json",
             "hypothesis_file": "research_hypothesis.json",
             "required_outputs": ["research_candidate.py", "research_recipe.json", "research_hypothesis.json"],
+            "candidate_contract": {
+                "version": 3,
+                "signature": "fit_predict(X_fit, y_fit, X_predict, context)",
+                "arguments": {
+                    "X_fit": "Raw string pandas.DataFrame with feature columns only; no ID or target.",
+                    "y_fit": "Numeric regression pandas.Series or literal string class pandas.Series for X_fit only.",
+                    "X_predict": "Raw string pandas.DataFrame with the same feature columns; no ID or target.",
+                    "context": {
+                        "protocol_version": 3,
+                        "fields": ["version", "protocol_version", "phase", "nonce", "recipe",
+                                   "code_hash", "recipe_hash", "features", "numeric", "categorical",
+                                   "classes", "positive_class", "metric", "task_type", "prediction_kind"],
+                        "phase_purposes": {"selection": ["selection", "inner_selection"],
+                                           "final_check": ["final_check", "outer_validation"],
+                                           "refit": ["refit", "full_refit"]},
+                    },
+                },
+                "return": {
+                    "type": "dict", "allowed_keys": ["predictions", "classes"],
+                    "required_keys": ["predictions"],
+                    "predictions": "One prediction per X_predict row, in that exact order; finite values, literal labels or normalized probabilities as declared by metric.",
+                    "classes": "Required for probabilities: non-empty list or tuple of literal string labels in prediction-column order. Optional otherwise.",
+                },
+                "training_rule": "Use only supplied arguments for training; do not read files, memorize row positions, or branch on phase.",
+                "host_owns": ["ID assignment", "prediction CSV", "frozen evaluation answers", "scoring", "publication"],
+                "limits": {"code_bytes": 262144, "recipe_bytes": 65536},
+            },
             "completion": "Freeze the selected recipe before host final_check; no research follows final_check.",
             "isolation": "allowed-input view; no operating-system sandbox",
         }

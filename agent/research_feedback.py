@@ -96,6 +96,11 @@ class ResearchLedger:
             "remaining_seconds": round(max(0, remaining), 3),
             "resources": result.get("resources"),
         }
+        if selection.get("scope") is not None:
+            row["evaluation_scope"] = selection["scope"]
+            row["candidate_code_hash"] = selection.get("code_hash")
+            row["recipe_hash"] = selection.get("recipe_hash")
+            row["recipe"] = selection.get("recipe_summary")
         error = result.get("error") or (result.get("stderr") if execution_failed else None)
         if error:
             row["error"] = str(error)[-1500:]

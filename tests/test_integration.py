@@ -20,30 +20,24 @@ HAS_PACKAGES = all(importlib.util.find_spec(name) is not None
 class LocalApiTests(unittest.TestCase):
     def test_cli_to_api_to_training_to_csv(self):
         requests = []
-        experiment = """from pathlib import Path
+        restored_outputs = []
+        candidate = """from sklearn.linear_model import LinearRegression
+def fit_predict(X_fit, y_fit, X_predict, context):
+    model = LinearRegression().fit(X_fit[['feature']].astype(float), y_fit)
+    return {'predictions': model.predict(X_predict[['feature']].astype(float))}
+"""
+        experiment_template = """from pathlib import Path
 import json
-import pandas as pd
-from sklearn.linear_model import LinearRegression
 manifest = json.loads(Path('research_validation.json').read_text(encoding='utf-8'))
-train = pd.read_csv('inputs/train.csv', dtype=str, keep_default_na=False)
-test = pd.read_csv('inputs/test.csv', dtype=str, keep_default_na=False)
-x = train[['feature']].astype(float)
-y = train['outcome'].astype(float)
-fit, held = manifest['fit_rows'], manifest['validation_rows']
-model = LinearRegression().fit(x.iloc[fit], y.iloc[fit])
-pd.DataFrame({
-    'id': train['row_id'].iloc[held].to_numpy(),
-    'actual': train['outcome'].iloc[held].to_numpy(),
-    'prediction': model.predict(x.iloc[held]),
-}).to_csv('holdout_predictions.csv', index=False)
+assert manifest['version'] == 3
+assert manifest['training_data_scope'] == 'outer_fit_only'
+Path('research_candidate.py').write_text(__CANDIDATE__, encoding='utf-8')
+Path('research_recipe.json').write_text(json.dumps({'family': 'linear'}), encoding='utf-8')
 Path('research_hypothesis.json').write_text(json.dumps({
     'hypothesis': 'A linear model should improve on trees for this linear target.'
 }), encoding='utf-8')
-model.fit(x, y)
-result = pd.DataFrame({'row_id': test['row_id'], 'outcome': model.predict(test[['feature']].astype(float))})
-result.to_csv('submission.tmp.csv', index=False)
-Path('submission.tmp.csv').replace('submission.csv')
-print('predictions-written')
+Path(__PUBLISHED_PATH__).write_text('row_id,outcome\\n20,987654\\n10,987654\\n', encoding='utf-8')
+print('candidate-written')
 """
 
         class Handler(BaseHTTPRequestHandler):
@@ -53,6 +47,8 @@ print('predictions-written')
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 requests.append((self.path, payload))
+                if len(requests) > 1:
+                    restored_outputs.append((task_dir / "submission.csv").read_bytes())
                 if len(requests) == 1:
                     message = {
                         "role": "assistant", "content": None,
@@ -94,6 +90,10 @@ print('predictions-written')
                 (inputs / "data_dictionary.csv").write_text(
                     "feature,role,dtype\nrow_id,id,numeric\nfeature,feature,numeric\noutcome,target,numeric\n"
                 )
+                original_output = b"row_id,outcome\r\n20,111.0000\r\n10,222.0000\r\n"
+                (task_dir / "submission.csv").write_bytes(original_output)
+                experiment = experiment_template.replace("__CANDIDATE__", repr(candidate)).replace(
+                    "__PUBLISHED_PATH__", repr(str(task_dir / "submission.csv")))
                 original_inputs = {path: path.read_bytes() for path in inputs.iterdir()}
                 # The local fixture must not inherit a workstation's proxy.
                 env = {key: value for key, value in os.environ.items()
@@ -116,14 +116,29 @@ print('predictions-written')
                 self.assertAlmostEqual(output["outcome"].iloc[0], 13)
                 self.assertAlmostEqual(output["outcome"].iloc[1], 16)
                 self.assertEqual(len(requests), 2)
+                self.assertEqual(restored_outputs, [original_output])
                 self.assertEqual(requests[0][0], "/v1/chat/completions")
                 tool_reply = json.loads(next(item["content"] for item in reversed(requests[1][1]["messages"])
                                              if item["role"] == "tool"))
                 self.assertEqual(tool_reply["exit_code"], 0)
-                self.assertIn("predictions-written", tool_reply["stdout"])
+                self.assertIn("candidate-written", tool_reply["stdout"])
                 self.assertTrue(tool_reply["selection"]["verified"])
                 self.assertTrue(tool_reply["selection"]["accepted"])
                 self.assertLess(tool_reply["selection"]["metric"]["value"], 1e-10)
+                self.assertEqual(tool_reply["selection"]["scope"], "inner_selection")
+                reports = list((task_dir / ".agent_runs").glob("*/run.json"))
+                self.assertEqual(len(reports), 1)
+                report = json.loads(reports[0].read_text(encoding="utf-8"))
+                self.assertEqual(report["research_protocol_version"], 3)
+                self.assertEqual((report["status"], report["reason"]), ("completed", "model_finished"))
+                self.assertTrue(report["evaluations"]["final_check"]["selection_uses_outer"])
+                self.assertFalse(report["evaluations"]["final_check"]["unbiased_estimate"])
+                receipts = report["candidate_receipts"]
+                outer_receipt = json.loads(Path(receipts["outer"]).read_text(encoding="utf-8"))
+                refit_receipt = json.loads(Path(receipts["refit"]).read_text(encoding="utf-8"))
+                self.assertEqual(outer_receipt["code_hash"], refit_receipt["code_hash"])
+                self.assertEqual(outer_receipt["recipe_hash"], refit_receipt["recipe_hash"])
+                self.assertEqual(outer_receipt["code_hash"], report["frozen_candidate"]["code_hash"])
                 for path, content in original_inputs.items():
                     self.assertEqual(path.read_bytes(), content)
         finally:

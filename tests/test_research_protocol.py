@@ -1,4 +1,4 @@
-"""Malformed provider replies must preserve checked predictions and exit cleanly."""
+"""Retain v2 SDK protocol coverage; default v3 has dedicated integration tests."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import solution
 from agent.llm import DEFAULT_MODEL
+from agent.research import run_agent_v2
 from tests.test_research import FakeClient, known_start, make_regression, response as fake_response
 
 
@@ -92,6 +93,7 @@ class ResearchProtocolTests(unittest.TestCase):
                     env["OPENAI_MODEL"] = model
                 output, errors = io.StringIO(), io.StringIO()
                 with patch.dict(os.environ, env, clear=True), \
+                        patch("solution.run_agent", side_effect=run_agent_v2), \
                         patch("sys.argv", ["solution.py", str(task), "--max-steps", str(max_steps),
                                            "--time-budget", "30"]), \
                         patch("agent.research.prepare_starting_output", side_effect=known_start if starter else None), \

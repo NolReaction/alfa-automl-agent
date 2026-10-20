@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from io import BytesIO
 import json
 import math
 import os
@@ -19,13 +20,14 @@ import shutil
 import tempfile
 from uuid import uuid4
 
+import pandas as pd
+
 from agent import project_root
 from agent.execution import run_python
 from agent.file_io import replace_file
 from agent.metrics import score_predictions
 from agent.resources import DEFAULT_MEMORY_LIMIT_BYTES
 from agent.task_spec import TaskSpec
-from offline_baseline import read_csv
 
 
 PROTOCOL_VERSION = 3
@@ -310,7 +312,7 @@ def run_candidate(candidate: FrozenCandidate, *, spec: TaskSpec, fit_frame,
                             "output_hash": _hash(output)}
         if receipt != expected_receipt:
             raise ValueError("Candidate output receipt differs from the current invocation")
-        frame = read_csv(output_path)
+        frame = pd.read_csv(BytesIO(output), dtype=str, keep_default_na=False)
         spec.validate_frame(frame, expected_ids)
         metric = None
         if frozen_actuals is not None:
