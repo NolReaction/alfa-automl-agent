@@ -21,6 +21,61 @@ from offline_baseline import find_data
 from validation import validate_predictions
 
 
+def checked_completion(response) -> dict:
+    """Validate the SDK envelope before executing any returned tool call."""
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Invalid API response: choices must be a non-empty list")
+    choice = choices[0]
+    message = getattr(choice, "message", None)
+    if (message is None or not hasattr(message, "content") or not hasattr(message, "tool_calls")
+            or getattr(message, "role", "assistant") != "assistant"):
+        raise ValueError("Invalid API response: missing assistant message")
+    content = message.content
+    if content is not None and not isinstance(content, str):
+        raise ValueError("Invalid API response: assistant content must be text or null")
+    finish_reason = getattr(choice, "finish_reason", None)
+    if not isinstance(finish_reason, str):
+        raise ValueError("Invalid API response: missing finish reason")
+    calls = message.tool_calls
+    if calls is not None and not isinstance(calls, list):
+        raise ValueError("Invalid API response: tool_calls must be a list or null")
+    checked_calls, seen_ids = [], set()
+    for call in calls or []:
+        call_id = getattr(call, "id", None)
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None)
+        if (not isinstance(call_id, str) or not call_id.strip() or call_id in seen_ids
+                or getattr(call, "type", "function") != "function"
+                or not isinstance(name, str) or not name.strip()):
+            raise ValueError("Invalid API response: tool calls require unique IDs and named functions")
+        seen_ids.add(call_id)
+        arguments = getattr(function, "arguments", None)
+        # Invalid argument types receive a tool error below. Keep the assistant
+        # history schema valid so the next request can carry that feedback.
+        history_arguments = arguments if isinstance(arguments, str) else json.dumps(arguments, allow_nan=False)
+        checked_calls.append({"id": call_id, "name": name, "arguments": arguments,
+                              "history": {"id": call_id, "type": "function", "function": {
+                                  "name": name, "arguments": history_arguments}}})
+    return {"content": content, "finish_reason": finish_reason, "tool_calls": checked_calls}
+
+
+def record_usage(state, response) -> None:
+    """Optional provider accounting must not invalidate a usable response."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    fields = ("prompt_tokens", "completion_tokens", "total_tokens")
+    counts = {field: getattr(usage, field, None) for field in fields}
+    invalid = [field for field, value in counts.items() if type(value) is not int or value < 0]
+    if invalid:
+        state.event("invalid_api_usage", fields=invalid)
+        return
+    state.report["api"]["usage_reported_responses"] += 1
+    for field, value in counts.items():
+        state.report["api"][field] += value
+
+
 class RunState:
     def __init__(self, task_path: Path, max_steps: int, time_budget: float):
         self.task_path = task_path
@@ -308,37 +363,37 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                     model=os.environ["OPENAI_MODEL"], messages=messages,
                     tools=[TOOL], parallel_tool_calls=False, max_tokens=4096,
                 )
+                state.report["api"]["responses"] += 1
+                completion = checked_completion(response)
             except Exception as error:
                 state.event("api_error", error=str(error))
                 if state.recover():
                     print("API request failed; the retained submission.csv was preserved.")
                     return state.finish("fallback", "api_error")
                 raise
-            state.report["api"]["responses"] += 1
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                state.report["api"]["usage_reported_responses"] += 1
-                for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    state.report["api"][field] += getattr(usage, field, None) or 0
+            record_usage(state, response)
             state.save()
-            message = response.choices[0].message
-            if response.choices[0].finish_reason == "length":
+            if completion["finish_reason"] == "length":
                 if state.recover():
                     print("Model response was truncated; retained predictions were preserved.")
                     return state.finish("fallback", "truncated_response")
                 raise RuntimeError("Model response was truncated; no code from it was executed.")
-            if message.tool_calls:
+            if completion["tool_calls"]:
                 messages.append({
-                    "role": "assistant", "content": message.content,
-                    "tool_calls": [call.model_dump(exclude_none=True) for call in message.tool_calls],
+                    "role": "assistant", "content": completion["content"],
+                    "tool_calls": [call["history"] for call in completion["tool_calls"]],
                 })
-                for index, call in enumerate(message.tool_calls, start=1):
+                for index, call in enumerate(completion["tool_calls"], start=1):
                     try:
-                        if call.function.name != "run_python":
-                            raise ValueError("Unknown tool: " + call.function.name)
-                        arguments = json.loads(call.function.arguments)
+                        if call["name"] != "run_python":
+                            raise ValueError("Unknown tool: " + call["name"])
+                        if not isinstance(call["arguments"], str):
+                            raise ValueError("run_python arguments must be a JSON string")
+                        arguments = json.loads(call["arguments"])
                         if not isinstance(arguments, dict) or set(arguments) != {"code"}:
                             raise ValueError("run_python requires exactly one argument: code")
+                        if not isinstance(arguments["code"], str) or not arguments["code"].strip():
+                            raise ValueError("run_python code must be a non-empty string")
                         state.begin_attempt()
                         remaining = state.remaining()
                         if remaining <= 5:
@@ -368,13 +423,13 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                         result["previous_output_restored"] = state.recover()
                     state.event("experiment", step=step, tool_index=index, result=result)
                     messages.append({
-                        "role": "tool", "tool_call_id": call.id,
+                        "role": "tool", "tool_call_id": call["id"],
                         "content": json.dumps(state.clean(result), ensure_ascii=False),
                     })
             else:
                 valid = state.recover()
                 if valid and (state.report["successful_experiments"] or state.report["unverified_experiments"]):
-                    print(state.redact(message.content or "Agent finished."))
+                    print(state.redact(completion["content"] or "Agent finished."))
                     if state.validator is None:
                         return state.finish("fallback", "host_metric_unsupported")
                     return state.finish("completed", "model_finished")
@@ -387,7 +442,7 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                 if state.validator is not None:
                     instruction += " Follow research_validation.json."
                 messages.extend([
-                    {"role": "assistant", "content": message.content or "Finished."},
+                    {"role": "assistant", "content": completion["content"] or "Finished."},
                     {"role": "user", "content": instruction},
                 ])
         if state.recover():
