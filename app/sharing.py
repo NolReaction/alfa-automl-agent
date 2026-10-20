@@ -167,6 +167,15 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         "error": "",
         "output_valid": output_valid, "api_used": api_used,
     }
+    if "model_config" in raw:
+        from app.model_config import validate_model_config
+
+        if raw["action"] not in {"baseline", "extra_trees"}:
+            raise ValueError("Параметры модели доступны только для локальных рецептов.")
+        model_config = validate_model_config(raw["model_config"], action=raw["action"])
+        if result["model"] is not None and result["model"] != model_config["model"]:
+            raise ValueError("Название модели не совпадает с параметрами запуска.")
+        result["model_config"] = model_config
     # Raw process/API errors can contain credentials, paths or response bodies.
     # User-authored hypotheses remain exact; machine diagnostics stay local.
     _text(raw.get("error"), "error", 1000)

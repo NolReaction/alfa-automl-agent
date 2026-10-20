@@ -114,7 +114,9 @@ def _readable_report(report: dict) -> bytes:
     split = report.get("split") or {}
     fraction = split.get("validation_fraction")
     validation = (f'{fraction * 100:g}% данных' if fraction is not None else "Не указана")
-    scheme = {"random": "Случайная 80/20", "time": "По последнему периоду",
+    random_scheme = (f'Случайная {(1 - fraction) * 100:g}/{fraction * 100:g}'
+                     if fraction is not None else "Случайная")
+    scheme = {"random": random_scheme, "time": "По последнему периоду",
               "grouped": "По группам одинаковых признаков"}.get(split.get("strategy"),
                   "Прежняя проверка 80/20" if split and report["action"] in {"baseline", "extra_trees"}
                   else "Схема не указана")
@@ -127,8 +129,35 @@ def _readable_report(report: dict) -> bytes:
         evidence.extend([("Групп в обучении / проверке",
                           f'{split.get("train_groups", "—")} / {split.get("validation_groups", "—")}'),
                          ("Пересечение групп", split.get("group_overlap"))])
+        if "fold" in split and "n_splits" in split:
+            evidence.append(("Разбиение групп", f'{split["fold"] + 1} из {split["n_splits"]}'))
+    configuration = []
+    model_config = report.get("model_config")
+    if model_config is not None:
+        from app.model_config import model_options
+
+        definition = next((option for task_type in ("classification", "regression")
+                           for option in model_options(task_type).values()
+                           if option["model"] == model_config["model"]), {})
+        fields = {field["name"]: field for field in definition.get("fields", [])}
+        parameters = []
+        for name, value in model_config["parameters"].items():
+            field = fields.get(name, {})
+            selected = next((option for option in field.get("options", [])
+                             if option["value"] == value), None)
+            if selected is not None:
+                value = selected["label"]
+            elif value is None:
+                value = "Без ограничения"
+            elif isinstance(value, bool):
+                value = "Да" if value else "Нет"
+            elif isinstance(value, float):
+                value = f"{value:g}"
+            parameters.append(f'{field.get("label", name)}: {value}')
+        configuration.append(("Параметры модели", "; ".join(parameters)))
     rows = [
-        ("Модель", report.get("model") or action), ("Автор", report.get("author") or "Не указан"),
+        ("Модель", report.get("model") or (model_config or {}).get("model") or action), *configuration,
+        ("Автор", report.get("author") or "Не указан"),
         ("Заметка / гипотеза", report.get("hypothesis") or "Не указана"),
         ("Начало", report.get("started_at")), ("Окончание", report.get("finished_at")),
         ("Время", f'{report["elapsed_seconds"]:g} с' if report.get("elapsed_seconds") is not None else None),

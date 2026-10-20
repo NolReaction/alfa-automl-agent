@@ -21,6 +21,7 @@ from uuid import uuid4
 from app.profiling import DataCatalog, _metric
 from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
+from app.model_config import make_model_config, validate_model_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +38,8 @@ POLL_SECONDS = 0.2
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
@@ -360,6 +361,15 @@ class JobManager:
                     return False
             except ValueError:
                 return False
+        if "model_config" in job:
+            if job["action"] not in {"baseline", "extra_trees"}:
+                return False
+            try:
+                config = validate_model_config(job["model_config"], action=job["action"])
+                if config != job["model_config"] or job.get("model") not in (None, config["model"]):
+                    return False
+            except ValueError:
+                return False
         for name, limit in (("author", 80), ("hypothesis", 500), ("stage", 40), ("started_at", 64)):
             if not isinstance(job.get(name), str) or len(job[name]) > limit:
                 return False
@@ -425,6 +435,11 @@ class JobManager:
         if isinstance(summary.get("validation"), dict):
             summary["validation"] = {key: value for key, value in summary["validation"].items()
                                      if key in {"strategy", "time_column"}}
+        if "model_config" in summary:
+            try:
+                summary["model_config"] = validate_model_config(summary["model_config"], action=job["action"])
+            except ValueError:
+                summary.pop("model_config")
         if isinstance(summary.get("api"), dict):
             summary["api"] = {key: value for key, value in summary["api"].items()
                               if key in {"state", "attempts", "responses", "reported_responses", "prompt_tokens",
@@ -477,12 +492,17 @@ class JobManager:
         _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
         return job
 
-    def start(self, task_id, action, author="", hypothesis="", minutes=175, validation=None):
+    def start(self, task_id, action, author="", hypothesis="", minutes=175, validation=None, model_params=None):
         if not isinstance(action, str) or action not in ACTIONS:
             raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, agent и prepare.")
         if validation is not None and action not in {"baseline", "extra_trees"}:
             raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
+        if model_params is not None and action not in {"baseline", "extra_trees"}:
+            raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
+        if model_params is not None and not isinstance(model_params, dict):
+            raise ValueError("Параметры модели должны быть объектом.")
         validation = normalize_validation(validation) if action in {"baseline", "extra_trees"} else None
+        model_config = None
         if not isinstance(author, str) or len(author) > 80 or not isinstance(hypothesis, str) or len(hypothesis) > 500:
             raise ValueError("Имя автора: до 80 символов; гипотеза: до 500 символов.")
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 175:
@@ -529,6 +549,7 @@ class JobManager:
                             raise ValueError("Признак времени должен быть числовым.")
                     if validation["strategy"] == "grouped" and task_type != "classification":
                         raise ValueError("Групповая валидация доступна для классификации.")
+                    model_config = make_model_config(action, task_type, model_params)
                 fingerprint = self.catalog.fingerprint(task_id)
             job_id = uuid4().hex
             folder = _safe(self.jobs_root / job_id, self.state_root)
@@ -543,6 +564,8 @@ class JobManager:
                    "exit_code": None, "api_used": False}
             if validation is not None:
                 job["validation"] = validation
+            if model_config is not None:
+                job["model_config"] = model_config
             self._jobs[job_id] = job
             self._save(job)
             active = {"id": job_id, "cancel": threading.Event(), "process": None,
@@ -615,6 +638,8 @@ class JobManager:
         config = {"job_dir": str(folder), "task_path": str(task_path), "action": job["action"],
                   "dataset_fingerprint": job["dataset_fingerprint"],
                   "validation": normalize_validation(job.get("validation"))}
+        if "model_config" in job:
+            config["model_params"] = validate_model_config(job["model_config"], action=job["action"])["parameters"]
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 
@@ -760,6 +785,11 @@ class JobManager:
                 or requested_validation["strategy"] == "time"
                 and split.get("time_column") != requested_validation["time_column"]):
             raise ValueError("Отчёт использует другую стратегию валидации.")
+        if "model_config" in job:
+            requested_config = validate_model_config(job["model_config"], action=job["action"])
+            reported_config = validate_model_config(evidence.get("model_config"), action=job["action"])
+            if reported_config != requested_config or evidence["model"] != reported_config["model"]:
+                raise ValueError("Параметры обученной модели не совпадают с настройками запуска.")
         job.update(model=evidence["model"], metric=metric, split=split,
                    comparison_key=evidence["comparison_key"])
 

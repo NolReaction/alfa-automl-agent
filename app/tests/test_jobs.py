@@ -154,6 +154,72 @@ class JobTests(unittest.TestCase):
         self.assertEqual(list(self.manager.jobs_root.iterdir()), [])
         self.assertEqual((self.task / "submission.csv").read_bytes(), original)
 
+    def test_custom_model_parameters_reach_worker_and_survive_restore(self):
+        requests = [("baseline", {"max_iter": 50, "max_leaf_nodes": 8}),
+                    ("extra_trees", {"n_estimators": 50, "max_depth": 4})]
+        results = []
+        for action, parameters in requests:
+            expected = deepcopy(parameters)
+            job = self.manager.start("example", action, model_params=parameters)
+            parameters["max_iter" if action == "baseline" else "n_estimators"] = 51
+            result = self.wait(job)
+            self.assertEqual(result["status"], "completed", self.manager.detail("example", job["id"]))
+            self.assertEqual(result["model_config"]["model"], result["model"])
+            for name, value in expected.items():
+                self.assertEqual(result["model_config"]["parameters"][name], value)
+            folder = self.state / "jobs" / job["id"]
+            config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+            evidence = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["model_params"], result["model_config"]["parameters"])
+            self.assertEqual(evidence["model_config"], result["model_config"])
+            results.append(result)
+        self.manager.close()
+        restored = JobManager(self.data, self.state, self.catalog)
+        self.addCleanup(restored.close)
+        for result in results:
+            self.assertEqual(restored.detail("example", result["id"])["job"]["model_config"],
+                             result["model_config"])
+
+    def test_invalid_model_parameters_create_no_jobs(self):
+        original = (self.task / "submission.csv").read_bytes()
+        invalid = [True, [], "anything", {"command": "anything"}, {"n_jobs": 1},
+                   {"random_state": 0}, {"n_estimators": 50}, {"max_iter": True},
+                   {"max_iter": 49}, {"max_iter": 601}, {"max_iter": {"path": "../../.env"}},
+                   {"learning_rate": float("nan")}, {"learning_rate": float("inf")}]
+        for parameters in invalid:
+            with self.subTest(parameters=parameters), self.assertRaises(ValueError):
+                self.manager.start("example", "baseline", model_params=parameters)
+        for action, task_id in (("agent", "example"), ("prepare", None)):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, "модели"):
+                self.manager.start(task_id, action, model_params={"max_iter": 50})
+        self.assertEqual(self.manager.list(), [])
+        self.assertEqual(list(self.manager.jobs_root.iterdir()), [])
+        self.assertEqual((self.task / "submission.csv").read_bytes(), original)
+
+    def test_collected_model_config_must_match_requested_parameters(self):
+        job = self.manager.start("example", "baseline", model_params={"max_iter": 50})
+        result = self.wait(job)
+        self.assertEqual(result["status"], "completed", self.manager.detail("example", job["id"]))
+        path = self.state / "jobs" / job["id"] / "result.json"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        changed = deepcopy(original)
+        changed["model_config"]["parameters"]["max_iter"] = 51
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "настройками"):
+            self.manager._collect(self.manager._jobs[job["id"]])
+        changed = deepcopy(original)
+        changed["model_config"]["parameters"]["command"] = "must not leak"
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.manager._collect(self.manager._jobs[job["id"]])
+        changed = deepcopy(original)
+        changed.pop("model_config")
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.manager._collect(self.manager._jobs[job["id"]])
+        self.manager._jobs[job["id"]].pop("model_config")
+        self.manager._collect(self.manager._jobs[job["id"]])
+
     def test_restore_accepts_legacy_split_and_rejects_invalid_validation_metadata(self):
         job = self.manager.start("example", "baseline")
         self.assertEqual(self.wait(job)["status"], "completed")
@@ -162,6 +228,7 @@ class JobTests(unittest.TestCase):
         original = json.loads(path.read_text(encoding="utf-8"))
         legacy = deepcopy(original)
         legacy.pop("validation", None)
+        legacy.pop("model_config", None)
         legacy["split"].pop("strategy", None)
         legacy["split"]["unknown_private_value"] = "hidden"
         path.write_text(json.dumps(legacy), encoding="utf-8")
@@ -169,6 +236,7 @@ class JobTests(unittest.TestCase):
         try:
             saved = restored.detail("example", job["id"])["job"]
             self.assertNotIn("validation", saved)
+            self.assertNotIn("model_config", saved)
             self.assertNotIn("strategy", saved["split"])
             self.assertNotIn("unknown_private_value", saved["split"])
         finally:
@@ -183,6 +251,10 @@ class JobTests(unittest.TestCase):
             lambda row: row["split"].update(group_count=1 << 31),
             lambda row: row["split"].update(train_period_min="x" * 101),
             lambda row: row["split"].update(validation_fraction=True),
+            lambda row: row["model_config"].update(path="../../.env"),
+            lambda row: row["model_config"]["parameters"].update(command="anything"),
+            lambda row: row["model_config"]["parameters"].update(max_iter=True),
+            lambda row: row.update(model="ExtraTreesRegressor"),
         ]
         for mutate in mutations:
             row = deepcopy(original)

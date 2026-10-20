@@ -29,6 +29,7 @@ from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.metrics import f1_score, mean_squared_error
 from threadpoolctl import threadpool_limits
 
+from app.model_config import make_model_config
 from app.splits import normalize_validation, split_rows
 from offline_baseline import (
     SEED, find_data, load_data, make_pipeline, prepare_features,
@@ -97,13 +98,15 @@ def load_config(config_path: Path) -> dict:
     config = json.loads(raw.decode("utf-8-sig"))
     required = {"job_dir", "task_path", "action", "dataset_fingerprint"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"validation"}):
+            or set(config) - required - {"validation", "model_params"}):
         raise ValueError("Некорректные настройки запуска.")
     if any(not isinstance(config[key], str) for key in required):
         raise ValueError("Настройки запуска должны содержать строковые значения.")
     if config["action"] not in ACTIONS:
         raise ValueError("Неизвестный рецепт обучения.")
     config["validation"] = normalize_validation(config.get("validation"))
+    if config.get("model_params") is not None and not isinstance(config["model_params"], dict):
+        raise ValueError("Настройки модели должны быть объектом.")
     if not re.fullmatch(r"[0-9a-f]{64}", config["dataset_fingerprint"]):
         raise ValueError("Некорректный отпечаток набора данных.")
     job_dir = _plain_path(Path(config["job_dir"]), directory=True, required=True)
@@ -147,6 +150,8 @@ def run_job(config: dict) -> dict:
     data_dir = _check_inputs(task_dir, job_dir)
     (train, test, columns, id_column, target, y, features,
      numeric, categorical, classification) = load_data(data_dir)
+    model_config = make_model_config(config["action"], "classification" if classification else "regression",
+                                     config.get("model_params"))
     x = prepare_features(train, features, numeric, categorical)
     test_x = prepare_features(test, features, numeric, categorical)
     validation = normalize_validation(config.get("validation"))
@@ -174,6 +179,7 @@ def run_job(config: dict) -> dict:
             n_estimators=160, min_samples_leaf=2, n_jobs=8, random_state=SEED,
         ))
         pipeline.set_params(model=model)
+    pipeline.named_steps["model"].set_params(**model_config["parameters"])
 
     _atomic_json(job_dir / "stage.json", {"stage": "training"})
     fit_started = time.monotonic()
@@ -220,6 +226,7 @@ def run_job(config: dict) -> dict:
         "task_type": "classification" if classification else "regression",
         "seed": SEED, "split": split,
         "model": {"name": model_name, "parameters": pipeline.named_steps["model"].get_params()},
+        "model_config": model_config,
         "metric": {**metric, "source": "local_holdout_from_train.csv"},
         "shapes": {"train": list(train.shape), "test": list(test.shape),
                    "training_features": [len(fit_rows), len(features)],
@@ -245,6 +252,7 @@ def run_job(config: dict) -> dict:
     }
     result = {
         "model": model_name, "metric": metric, "split": split,
+        "model_config": model_config,
         "comparison_key": comparison_key, "output_valid": True,
     }
     _atomic_json(job_dir / "metrics.json", metrics)

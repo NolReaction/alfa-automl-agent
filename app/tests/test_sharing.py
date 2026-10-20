@@ -1,5 +1,6 @@
 """Security and provenance checks for portable experiment summaries."""
 
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 
 from app.sharing import ReportStore
+from app.model_config import make_model_config
 
 
 FINGERPRINT = "a" * 64
@@ -65,6 +67,86 @@ class SharingTests(unittest.TestCase):
         self.assertEqual(self.store.import_reports("regression", FINGERPRINT, exported_again),
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
+
+    def test_selected_model_parameters_survive_import_reexport_and_deduplication(self):
+        config = make_model_config("extra_trees", "regression", {"n_estimators": 200, "max_depth": 12})
+        envelope = self.envelope(job(model_config=config))
+        self.assertEqual(envelope["reports"][0]["model_config"], config)
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["model_config"], config)
+        self.assertEqual(imported["comparison_key"], job()["comparison_key"])
+        self.assertIs(imported["verified"], False)
+        self.assertIs(imported["published"], False)
+        reexported = self.store.export("regression", FINGERPRINT, [imported])
+        self.assertEqual(reexported["reports"], envelope["reports"])
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": 1})
+
+    def test_changed_model_parameters_change_report_identity(self):
+        for trees in (200, 201):
+            config = make_model_config("extra_trees", "regression", {"n_estimators": trees})
+            self.assertEqual(self.store.import_reports("regression", FINGERPRINT,
+                                                      self.envelope(job(model_config=config))),
+                             {"imported": 1, "skipped": 0})
+        reports = self.store.list("regression")
+        self.assertEqual(len({report["id"] for report in reports}), 2)
+        self.assertEqual({report["model_config"]["parameters"]["n_estimators"] for report in reports},
+                         {200, 201})
+
+    def test_legacy_and_agent_reports_do_not_gain_default_model_parameters(self):
+        for original in (job(), job(action="agent", model=None, metric=None)):
+            with self.subTest(action=original["action"]):
+                envelope = self.envelope(original)
+                self.assertNotIn("model_config", envelope["reports"][0])
+                summary = envelope["reports"][0]
+                digest = hashlib.sha256(json.dumps(summary, ensure_ascii=False, sort_keys=True,
+                                                   separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+                self.store.import_reports("regression", FINGERPRINT, envelope)
+                imported = next(report for report in self.store.list("regression")
+                                if report["id"] == "import-" + digest)
+                self.assertNotIn("model_config", imported)
+                reexported = self.store.export("regression", FINGERPRINT, [imported])
+                self.assertEqual(reexported["reports"], envelope["reports"])
+
+    def test_malformed_model_parameters_are_rejected_on_export_and_import(self):
+        valid = make_model_config("extra_trees", "regression")
+        invalid = [None, True, [], {}, {**valid, "path": "/private/.env"},
+                   {**valid, "model": "<script>unknown</script>"},
+                   {**valid, "parameters": None}, {**valid, "parameters": []},
+                   {**valid, "parameters": {"n_estimators": 200}},
+                   {**valid, "parameters": {**valid["parameters"], "code": "do not execute"}}]
+        for field, values in (("n_estimators", (True, "200", 200.5, float("nan"), 1, 601)),
+                              ("max_depth", (False, "12", 100)),
+                              ("max_features", (True, float("nan"), "<img src=x>"))):
+            invalid.extend({**valid, "parameters": {**valid["parameters"], field: value}} for value in values)
+        for config in invalid:
+            with self.subTest(config=config):
+                with self.assertRaises(ValueError):
+                    self.envelope(job(model_config=config))
+                envelope = self.envelope()
+                envelope["reports"][0]["model_config"] = deepcopy(config)
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_model_metadata_must_match_the_recipe_and_declared_model(self):
+        config = make_model_config("extra_trees", "regression")
+        for change in ({"action": "agent"}, {"action": "baseline"},
+                       {"model": "RandomForestClassifier"}):
+            with self.subTest(change=change):
+                with self.assertRaises(ValueError):
+                    self.envelope(job(model_config=config, **change))
+                envelope = self.envelope(job(model_config=config))
+                envelope["reports"][0].update(change)
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        # A failed run can retain chosen settings before a fitted model exists.
+        pending_model = self.envelope(job(status="failed", model=None, model_config=config))
+        self.assertEqual(pending_model["reports"][0]["model_config"], config)
+        self.assertIsNone(pending_model["reports"][0]["model"])
+        self.assertFalse((self.root / ".workspace").exists())
 
     def test_validation_metadata_survives_import_and_reexport(self):
         common = {**job()["split"], "train_fraction": 0.8, "train_rows": 42648,
