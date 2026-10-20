@@ -21,12 +21,26 @@ class LocalApiTests(unittest.TestCase):
     def test_cli_to_api_to_training_to_csv(self):
         requests = []
         experiment = """from pathlib import Path
+import json
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-train = pd.read_csv('inputs/train.csv')
-test = pd.read_csv('inputs/test.csv')
-model = LinearRegression().fit(train[['feature']], train['outcome'])
-result = pd.DataFrame({'row_id': test['row_id'], 'outcome': model.predict(test[['feature']])})
+manifest = json.loads(Path('research_validation.json').read_text(encoding='utf-8'))
+train = pd.read_csv('inputs/train.csv', dtype=str, keep_default_na=False)
+test = pd.read_csv('inputs/test.csv', dtype=str, keep_default_na=False)
+x = train[['feature']].astype(float)
+y = train['outcome'].astype(float)
+fit, held = manifest['fit_rows'], manifest['validation_rows']
+model = LinearRegression().fit(x.iloc[fit], y.iloc[fit])
+pd.DataFrame({
+    'id': train['row_id'].iloc[held].to_numpy(),
+    'actual': train['outcome'].iloc[held].to_numpy(),
+    'prediction': model.predict(x.iloc[held]),
+}).to_csv('holdout_predictions.csv', index=False)
+Path('research_hypothesis.json').write_text(json.dumps({
+    'hypothesis': 'A linear model should improve on trees for this linear target.'
+}), encoding='utf-8')
+model.fit(x, y)
+result = pd.DataFrame({'row_id': test['row_id'], 'outcome': model.predict(test[['feature']].astype(float))})
 result.to_csv('submission.tmp.csv', index=False)
 Path('submission.tmp.csv').replace('submission.csv')
 print('predictions-written')
@@ -70,13 +84,17 @@ print('predictions-written')
                 task_dir = Path(directory)
                 inputs = task_dir / "inputs"
                 inputs.mkdir()
-                (task_dir / "task.md").write_text("Train a regression model using inputs/*.csv. Write submission.csv.")
-                (inputs / "train.csv").write_text("row_id,feature,outcome\n0,0,1\n1,1,4\n2,2,7\n3,3,10\n")
+                (task_dir / "task.md").write_text(
+                    "Train a regression model using inputs/*.csv. Write submission.csv.\nMetric: RMSE\n")
+                (inputs / "train.csv").write_text(
+                    "row_id,feature,outcome\n" + "".join(
+                        f"{index},{index},{3 * index + 1}\n" for index in range(100)))
                 (inputs / "test.csv").write_text("row_id,feature\n20,4\n10,5\n")
                 (inputs / "sample_submission.csv").write_text("row_id,outcome\n20,0\n10,0\n")
                 (inputs / "data_dictionary.csv").write_text(
                     "feature,role,dtype\nrow_id,id,numeric\nfeature,feature,numeric\noutcome,target,numeric\n"
                 )
+                original_inputs = {path: path.read_bytes() for path in inputs.iterdir()}
                 # The local fixture must not inherit a workstation's proxy.
                 env = {key: value for key, value in os.environ.items()
                        if not key.lower().endswith("_proxy")}
@@ -87,8 +105,8 @@ print('predictions-written')
                 })
                 result = subprocess.run(
                     [sys.executable, str(Path(__file__).resolve().parents[1] / "solution.py"),
-                     str(task_dir / "task.md"), "--max-steps", "3", "--time-budget", "30"],
-                    env=env, capture_output=True, text=True, timeout=45,
+                     str(task_dir / "task.md"), "--mode", "llm", "--max-steps", "3", "--time-budget", "90"],
+                    env=env, capture_output=True, text=True, timeout=105,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 import pandas as pd
@@ -102,6 +120,11 @@ print('predictions-written')
                 tool_reply = json.loads(requests[1][1]["messages"][-1]["content"])
                 self.assertEqual(tool_reply["exit_code"], 0)
                 self.assertIn("predictions-written", tool_reply["stdout"])
+                self.assertTrue(tool_reply["selection"]["verified"])
+                self.assertTrue(tool_reply["selection"]["accepted"])
+                self.assertLess(tool_reply["selection"]["metric"]["value"], 1e-10)
+                for path, content in original_inputs.items():
+                    self.assertEqual(path.read_bytes(), content)
         finally:
             server.shutdown()
             server.server_close()

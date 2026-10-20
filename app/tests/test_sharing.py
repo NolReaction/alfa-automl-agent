@@ -11,6 +11,7 @@ from unittest.mock import patch
 from app import file_io
 from app.sharing import ReportStore
 from app.model_config import make_model_config
+from app.search_summary import validate_search_summary
 
 
 FINGERPRINT = "a" * 64
@@ -30,6 +31,40 @@ def job(**overrides):
         "error": "", "output_valid": True, "api_used": False, "exit_code": 0,
     }
     value.update(overrides)
+    return value
+
+
+def search_summary(**changes):
+    value = {
+        "status": "completed", "planned": 4, "completed": 2,
+        "best_candidate": "extra", "validation_reason": "Одинаковые проверочные строки",
+        "candidates": [
+            {"id": "baseline", "label": "Стартовая модель", "model": "HistGradientBoostingRegressor",
+             "status": "completed", "metric": 50.0, "selected": False, "elapsed_seconds": 1.0, "error": None},
+            {"id": "extra", "label": "ExtraTrees", "model": "ExtraTreesRegressor",
+             "status": "completed", "metric": 43.25, "selected": True, "elapsed_seconds": 2.0, "error": None},
+            {"id": "failed", "label": "Изменённая модель", "model": "ExtraTreesRegressor",
+             "status": "failed", "metric": None, "selected": False, "elapsed_seconds": 0.2,
+             "error": "private-key from C:\\Users\\Private\\train.csv"},
+            {"id": "skipped", "label": "Последняя модель", "model": "ExtraTreesRegressor",
+             "status": "skipped", "metric": None, "selected": False, "elapsed_seconds": 0.0, "error": None},
+        ],
+    }
+    value.update(changes)
+    return value
+
+
+def classification_job(**changes):
+    from agent.diagnostics import classification_diagnostics
+
+    diagnostics = classification_diagnostics(["NA", "NA", "Positive", "Positive"],
+                                           ["NA", "Positive", "Positive", "Positive"])
+    value = job(action="baseline", model="RandomForestClassifier",
+                metric={"name": "Macro F1", "value": diagnostics["macro_f1"], "higher_is_better": True},
+                split={"seed": 42, "validation_fraction": 0.2, "stratified": True,
+                       "validation_rows": 4, "validation_hash": "c" * 64},
+                classification_diagnostics=diagnostics)
+    value.update(changes)
     return value
 
 
@@ -69,6 +104,194 @@ class SharingTests(unittest.TestCase):
         self.assertEqual(self.store.import_reports("regression", FINGERPRINT, exported_again),
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
+
+    def test_class_diagnostics_survive_exchange_without_becoming_verified(self):
+        original = classification_job()
+        envelope = self.envelope(original)
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("classification")
+        self.assertEqual(imported["classification_diagnostics"], original["classification_diagnostics"])
+        self.assertIs(imported["verified"], False)
+        self.assertIs(imported["published"], False)
+        self.assertEqual(imported["source"], "imported")
+        reexported = self.store.export("classification", FINGERPRINT, [imported])
+        self.assertEqual(reexported["reports"], envelope["reports"])
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": 1})
+
+    def test_diagnostic_matrix_changes_report_identity_at_the_same_macro_f1(self):
+        from agent.diagnostics import classification_diagnostics
+
+        first = classification_job()
+        second = classification_job(classification_diagnostics=classification_diagnostics(
+            ["NA", "NA", "Positive", "Positive"], ["NA", "NA", "NA", "Positive"]))
+        self.assertAlmostEqual(first["metric"]["value"], second["classification_diagnostics"]["macro_f1"])
+        for record in (first, second):
+            envelope = self.envelope(record)
+            self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                             {"imported": 1, "skipped": 0})
+        self.assertEqual(len({row["id"] for row in self.store.list("classification")}), 2)
+
+    def test_invalid_class_diagnostics_and_metric_mismatches_never_write_imports(self):
+        valid = self.envelope(classification_job())
+        mutations = [
+            lambda r: r["classification_diagnostics"]["confusion_matrix"][0].__setitem__(0, 100),
+            lambda r: r["classification_diagnostics"]["confusion_matrix"][0].__setitem__(0, True),
+            lambda r: r["classification_diagnostics"].update(accuracy=float("nan")),
+            lambda r: r["classification_diagnostics"].update(rows=99),
+            lambda r: r["classification_diagnostics"].update(path="/private/.env"),
+            lambda r: r["classification_diagnostics"]["per_class"][0].update(f1=1.0),
+            lambda r: r["metric"].update(value=0.123),
+            lambda r: r["metric"].update(name="RMSE", higher_is_better=False),
+            lambda r: r["split"].update(validation_rows=5),
+            lambda r: r.update(action="agent"),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                envelope = deepcopy(valid)
+                mutation(envelope["reports"][0])
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("classification", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_bounded_large_class_report_fits_without_removing_envelope_size_limit(self):
+        from agent.diagnostics import classification_diagnostics
+        from app import sharing
+
+        labels = ["К" * 190 + str(index) for index in range(50)]
+        diagnostics = classification_diagnostics(labels, labels)
+        original = classification_job(classification_diagnostics=diagnostics,
+                                      metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+                                      split={"validation_rows": 50})
+        envelope = self.envelope(original)
+        self.assertGreater(len(json.dumps(envelope, ensure_ascii=False).encode("utf-8")), 16 * 1024)
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("classification")
+        self.assertEqual(imported["classification_diagnostics"], diagnostics)
+        with patch.object(sharing, "MAX_BYTES", 100):
+            with self.assertRaisesRegex(ValueError, "1 МБ"):
+                self.envelope(original)
+        with patch.object(sharing, "MAX_RECORD_BYTES", 1024):
+            with self.assertRaisesRegex(ValueError, "КБ"):
+                self.envelope(original)
+
+    def test_many_full_class_matrices_roundtrip_near_the_envelope_byte_limit(self):
+        from agent.diagnostics import classification_diagnostics
+        from app import sharing
+
+        labels = [str(index) for index in range(50)]
+        diagnostics = classification_diagnostics(labels, labels)
+        original = classification_job(classification_diagnostics=diagnostics,
+                                      metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+                                      split={"validation_rows": 50})
+        single = self.envelope(original)
+        record_bytes = len(sharing._encoded(single["reports"][0]))
+        overhead = len(sharing._encoded(single)) - record_bytes
+        count = min(sharing.MAX_REPORTS, (sharing.MAX_BYTES - overhead + 1) // (record_bytes + 1))
+        jobs = [{**original, "id": f"{index:032x}"} for index in range(count)]
+        envelope = self.store.export("classification", FINGERPRINT, jobs)
+        size = len(sharing._encoded(envelope))
+        self.assertGreater(size, sharing.MAX_BYTES * .98)
+        self.assertLessEqual(size, sharing.MAX_BYTES)
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                         {"imported": count, "skipped": 0})
+        imported = self.store.list("classification")
+        self.assertEqual(len(imported), count)
+        reexported = self.store.export("classification", FINGERPRINT, imported)
+        self.assertEqual(sorted(reexported["reports"], key=lambda row: row["id"]),
+                         sorted(envelope["reports"], key=lambda row: row["id"]))
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": count})
+        with self.assertRaisesRegex(ValueError, "1 МБ"):
+            self.store.export("classification", FINGERPRINT, jobs + [{**original, "id": f"{count:032x}"}])
+
+    def test_automl_candidates_and_winner_survive_exchange_without_machine_diagnostics(self):
+        config = make_model_config("extra_trees", "regression")
+        original = job(action="automl", model_config=config, search=search_summary())
+        envelope = self.envelope(original)
+        serialized = json.dumps(envelope)
+        self.assertNotIn("private-key", serialized)
+        self.assertNotIn("Users", serialized)
+        self.assertEqual(original["search"]["candidates"][2]["error"],
+                         "private-key from C:\\Users\\Private\\train.csv")
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["search"], envelope["reports"][0]["search"])
+        self.assertEqual(imported["search"]["best_candidate"], "extra")
+        self.assertEqual(imported["model_config"], config)
+        self.assertFalse(imported["verified"])
+        self.assertFalse(imported["published"])
+        reexported = self.envelope(imported)
+        self.assertEqual(reexported["reports"], envelope["reports"])
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": 1})
+
+    def test_automl_attempt_evidence_changes_identity(self):
+        for score in (50.0, 51.0):
+            search = search_summary()
+            search["candidates"][0]["metric"] = score
+            envelope = self.envelope(job(action="automl", search=search,
+                                         model_config=make_model_config("extra_trees", "regression")))
+            self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                             {"imported": 1, "skipped": 0})
+        self.assertEqual(len({row["id"] for row in self.store.list("regression")}), 2)
+
+    def test_invalid_automl_winner_and_evidence_rejected_before_import_writes(self):
+        valid = self.envelope(job(action="automl", search=search_summary(),
+                                  model_config=make_model_config("extra_trees", "regression")))
+        mutations = [
+            lambda row: row["search"].update(best_candidate="absent"),
+            lambda row: row["search"].update(completed=1),
+            lambda row: row["search"].update(planned=99),
+            lambda row: row["search"].update(path="/private/.env"),
+            lambda row: row["search"]["candidates"][0].update(selected=True),
+            lambda row: row["search"]["candidates"][0].update(metric=42),
+            lambda row: row["search"]["candidates"][0].update(metric=float("nan")),
+            lambda row: row["search"]["candidates"][0].update(id="extra"),
+            lambda row: row["search"]["candidates"][0].update(error="x" * 2001),
+            lambda row: row["search"]["candidates"][1].update(model="RandomForestClassifier"),
+            lambda row: row["search"]["candidates"][1].update(status="failed"),
+            lambda row: row["metric"].update(value=44),
+            lambda row: row.pop("model_config"),
+            lambda row: row.pop("search"),
+            lambda row: row.update(action="extra_trees"),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                envelope = deepcopy(valid)
+                mutation(envelope["reports"][0])
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_search_progress_can_be_valid_before_first_winner_but_not_final(self):
+        summary = search_summary(status="running", completed=0, best_candidate=None)
+        for row in summary["candidates"]:
+            row.update(status="pending", selected=False, metric=None, error=None)
+        summary["candidates"][0]["status"] = "running"
+        validated = validate_search_summary(summary, allow_running=True)
+        self.assertEqual(validated, summary)
+        self.assertIsNot(validated["candidates"], summary["candidates"])
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary)
+        summary["status"] = "completed"
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary, allow_running=True)
+
+    def test_failed_search_progress_preserves_failure_with_or_without_a_winner(self):
+        summary = search_summary(status="failed")
+        self.assertEqual(validate_search_summary(summary, allow_running=True), summary)
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary)
+        summary.update(completed=0, best_candidate=None)
+        for row in summary["candidates"]:
+            row.update(status="failed", selected=False, metric=None, error="Training failed")
+        self.assertEqual(validate_search_summary(summary, allow_running=True), summary)
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary)
 
     def test_selected_model_parameters_survive_import_reexport_and_deduplication(self):
         config = make_model_config("extra_trees", "regression", {"n_estimators": 200, "max_depth": 12})
@@ -226,6 +449,17 @@ class SharingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.store.import_reports("regression", FINGERPRINT, envelope)
         self.assertFalse((self.root / ".workspace").exists())
+
+    def test_unknown_metric_fallback_preserves_quality_warning_in_exchange(self):
+        envelope = self.envelope(job(action="agent", metric=None, agent_status="fallback",
+                                     agent_reason="host_metric_unsupported"))
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["agent_status"], "fallback")
+        self.assertEqual(imported["agent_reason"], "host_metric_unsupported")
+        self.assertIsNone(imported["metric"])
+        self.assertEqual(self.store.export("regression", FINGERPRINT, [imported])["reports"],
+                         envelope["reports"])
 
     def test_qwen_fallback_survives_export_import_without_raw_reason_diagnostics(self):
         envelope = self.envelope(job(action="agent", metric=None, agent_status="fallback",

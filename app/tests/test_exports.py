@@ -13,6 +13,7 @@ import build_submission
 from app.exports import delivery_archive, result_archive, _readable_report
 from app.model_config import make_model_config
 from app.sharing import ReportStore
+from app.tests.test_sharing import classification_job, search_summary
 
 
 class ExportTests(unittest.TestCase):
@@ -142,6 +143,65 @@ class ExportTests(unittest.TestCase):
         html = _readable_report(report).decode("utf-8")
         self.assertNotIn("<img ", html)
         self.assertIn("&lt;img src=x onerror=&quot;evil()&quot;&gt;", html)
+
+    def test_automl_report_shows_attempts_winner_and_escapes_text(self):
+        search = search_summary(status="time_limit")
+        search["validation_reason"] = "<script>validation</script>"
+        search["candidates"][0]["label"] = '<img src=x onerror="evil()">'
+        search["candidates"][2]["error"] = "<script>error</script>"
+        report = {"id": "a" * 32, "action": "automl", "model": "ExtraTreesRegressor",
+                  "dataset_fingerprint": "b" * 64, "search": search,
+                  "metric": {"name": "RMSE", "value": 43.25, "higher_is_better": False},
+                  "model_config": make_model_config("extra_trees", "regression")}
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("Автоподбор моделей", html)
+        self.assertIn("Попытки автоподбора", html)
+        self.assertIn("Победитель", html)
+        self.assertIn("Лимит времени: сохранён лучший завершённый результат.", html)
+        self.assertIn("43.25", html)
+        self.assertNotIn("<script>", html)
+        self.assertNotIn("<img ", html)
+        self.assertIn("&lt;script&gt;validation&lt;/script&gt;", html)
+        self.assertIn("&lt;script&gt;error&lt;/script&gt;", html)
+
+    def test_readable_class_report_has_per_class_scores_and_escaped_confusions(self):
+        from agent.diagnostics import classification_diagnostics
+
+        unsafe = '<img src=x onerror="evil()">'
+        diagnostics = classification_diagnostics([unsafe, unsafe, "NA"], ["NA", unsafe, "NA"])
+        report = classification_job(classification_diagnostics=diagnostics,
+                                    metric={"name": "Macro F1", "value": diagnostics["macro_f1"],
+                                            "higher_is_better": True}, source="imported")
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("Качество по классам", html)
+        self.assertIn("Precision", html)
+        self.assertIn("Recall", html)
+        self.assertIn("F1", html)
+        self.assertIn("Предсказано", html)
+        self.assertIn("&lt;img src=x onerror=&quot;evil()&quot;&gt;</th><td>2</td><td>1</td>", html)
+        self.assertIn("настоящий класс → предсказанный", html)
+        self.assertIn("&lt;img src=x onerror=&quot;evil()&quot;&gt; → NA: 1", html)
+        self.assertNotIn("<img ", html)
+        self.assertIn("не проверены на этом компьютере", html)
+
+    def test_result_package_keeps_class_diagnostics_without_changing_csv(self):
+        report = classification_job()
+        csv_bytes = b"id,answer\n001,NA\n"
+        artifact = self.root / "classifications.csv"
+        artifact.write_bytes(csv_bytes)
+        jobs = Mock()
+        jobs.artifact.return_value = artifact
+        jobs.list.return_value = [report]
+        jobs._file_hash.return_value = hashlib.sha256(csv_bytes).hexdigest()
+        catalog = Mock()
+        catalog.fingerprint.return_value = report["dataset_fingerprint"]
+        package = result_archive("classification", report["id"], jobs=jobs, catalog=catalog,
+                                 reports=ReportStore(self.root / "reports"))
+        with ZipFile(BytesIO(package)) as archive:
+            self.assertEqual(archive.read("submission.csv"), csv_bytes)
+            exported, = json.loads(archive.read("reports.json"))["reports"]
+            self.assertEqual(exported["classification_diagnostics"], report["classification_diagnostics"])
+            self.assertIn("Качество по классам", archive.read("report.html").decode("utf-8"))
 
 
 if __name__ == "__main__":

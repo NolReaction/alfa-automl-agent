@@ -79,6 +79,36 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(session["token"], self.server.token)
         self.assertEqual(set(session["api"]), {"ready", "missing", "model_configured"})
 
+    def test_large_diagnostic_download_can_be_uploaded_unchanged(self):
+        from agent.diagnostics import classification_diagnostics
+        from app.sharing import MAX_BYTES
+        from app.tests.test_sharing import classification_job
+
+        labels = [str(index) for index in range(50)]
+        diagnostics = classification_diagnostics(labels, labels)
+        fingerprint = self.server.catalog.fingerprint("case")
+        records = [classification_job(
+            id=f"{index:032x}", dataset_fingerprint=fingerprint,
+            classification_diagnostics=diagnostics,
+            metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+            split={"validation_rows": 50},
+        ) for index in range(110)]
+        with patch.object(self.server, "experiments", return_value=records):
+            status, headers, downloaded = self.request("/api/tasks/case/export")
+        self.assertEqual(status, 200, downloaded)
+        self.assertGreater(len(downloaded), MAX_BYTES * .98)
+        self.assertLessEqual(len(downloaded), MAX_BYTES)
+        self.assertEqual(int(headers["Content-Length"]), len(downloaded))
+        count = len(json.loads(downloaded)["reports"])
+        status, _, response = self.request(
+            "/api/tasks/case/import", method="POST", body=downloaded,
+            headers={"Content-Type": "application/json", "X-Alfa-Token": self.server.token},
+        )
+        self.assertEqual(status, 200, response)
+        self.assertEqual(json.loads(response), {"imported": count, "skipped": 0})
+        self.assertTrue(all(row["source"] == "imported"
+                            for row in self.server.reports.list("case")))
+
     def test_browser_job_is_isolated_until_explicit_publish_and_report_roundtrip(self):
         task = self.root / "case"
         original = b"id,label\n0010,NA\n"
@@ -151,6 +181,21 @@ class ServerTests(unittest.TestCase):
         with (task / "task.md").open("a", encoding="utf-8") as stream:
             stream.write("\nChanged data description")
         self.assertEqual(self.request(f"/api/jobs/{job_id}/bundle?task_id=case")[0], 400)
+
+    def test_automl_http_preserves_auto_validation_and_budget_without_model_controls(self):
+        body = {"task_id": "case", "action": "automl", "validation": {"strategy": "auto"}}
+        for model_params in (None, {}, {"n_estimators": 50}):
+            self.assertEqual(self.post("/api/jobs", {**body, "model_params": model_params})[0], 400)
+        for minutes in (True, 0, 176, "10"):
+            self.assertEqual(self.post("/api/jobs", {**body, "minutes": minutes})[0], 400)
+        self.assertEqual(self.post("/api/jobs", {**body, "validation": {"strategy": "auto", "command": "x"}})[0], 400)
+        self.assertIsNone(self.server.jobs.active_job())
+        with patch.object(self.server.jobs, "start", return_value={"id": "example", "action": "automl"}) as start:
+            status, _, response = self.post("/api/jobs", body)
+        self.assertEqual(status, 202, response)
+        self.assertEqual(start.call_args.kwargs["validation"], {"strategy": "auto"})
+        self.assertEqual(start.call_args.kwargs["minutes"], 10)
+        self.assertIsNone(start.call_args.kwargs["model_params"])
 
     def test_invalid_validation_is_rejected_before_starting_or_creating_artifacts(self):
         body = {"task_id": "case", "action": "baseline"}

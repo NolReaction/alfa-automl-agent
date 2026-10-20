@@ -53,6 +53,30 @@ class FrontendTests(unittest.TestCase):
     def test_reported_model_settings_are_escaped_and_never_invented(self):
         self.check_case("escaping")
 
+    def test_automl_requests_keep_budget_validation_and_omit_manual_model_parameters(self):
+        self.check_case("automl_payload")
+
+    def test_auto_validation_is_exclusive_to_search_and_resolves_for_manual_comparison(self):
+        self.check_case("automl_validation")
+
+    def test_search_results_show_verified_winner_failures_and_escaped_evidence(self):
+        self.check_case("automl_results")
+
+    def test_search_progress_does_not_treat_unstarted_variants_as_completed(self):
+        self.check_case("automl_progress")
+
+    def test_class_diagnostics_preserve_orientation_and_normalize_within_actual_class(self):
+        self.check_case("diagnostic_orientation")
+
+    def test_class_diagnostics_handle_perfect_predictions_and_absent_actual_classes(self):
+        self.check_case("diagnostic_perfect_and_empty_class")
+
+    def test_class_diagnostics_do_not_invent_missing_or_mismatched_evidence(self):
+        self.check_case("diagnostic_boundaries")
+
+    def test_class_diagnostics_escape_labels_and_distinguish_imported_reports(self):
+        self.check_case("diagnostic_escaping_and_provenance")
+
 
 if __name__ == "__main__":
     unittest.main()

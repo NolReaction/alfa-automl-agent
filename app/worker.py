@@ -1,4 +1,4 @@
-"""Run one fixed offline modelling recipe on an isolated job's copied data."""
+"""Run an offline model recipe or bounded search on an isolated job's copied data."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.metrics import f1_score, mean_squared_error
 from threadpoolctl import threadpool_limits
 
+from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from app.file_io import replace_file
 from app.model_config import make_model_config
 from app.splits import normalize_validation, split_rows
@@ -38,8 +39,8 @@ from offline_baseline import (
 from validation import validate_predictions
 
 
-ACTIONS = {"baseline", "extra_trees"}
-OUTPUT_NAMES = ("stage.json", "result.json", "metrics.json", "holdout_predictions.csv")
+ACTIONS = {"baseline", "extra_trees", "automl"}
+OUTPUT_NAMES = ("stage.json", "result.json", "metrics.json", "holdout_predictions.csv", "automl_report.json")
 
 
 def _plain_path(path: Path, root: Path | None = None, *, directory=False,
@@ -97,13 +98,26 @@ def load_config(config_path: Path) -> dict:
     config = json.loads(raw.decode("utf-8-sig"))
     required = {"job_dir", "task_path", "action", "dataset_fingerprint"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"validation", "model_params"}):
+            or set(config) - required - {"validation", "model_params", "time_budget"}):
         raise ValueError("Некорректные настройки запуска.")
     if any(not isinstance(config[key], str) for key in required):
         raise ValueError("Настройки запуска должны содержать строковые значения.")
     if config["action"] not in ACTIONS:
         raise ValueError("Неизвестный рецепт обучения.")
-    config["validation"] = normalize_validation(config.get("validation"))
+    if config["action"] == "automl":
+        if "model_params" in config:
+            raise ValueError("Автоподбор сам выбирает параметры моделей.")
+        requested = config.get("validation")
+        config["validation"] = ({"strategy": "auto"} if requested is None or requested == {"strategy": "auto"}
+                                else normalize_validation(requested))
+        budget = config.get("time_budget", 600)
+        if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not 0 < budget <= 10500:
+            raise ValueError("Бюджет автоподбора должен быть числом от 0 до 10500 секунд.")
+        config["time_budget"] = budget
+    else:
+        if "time_budget" in config:
+            raise ValueError("Бюджет времени доступен только для автоподбора.")
+        config["validation"] = normalize_validation(config.get("validation"))
     if config.get("model_params") is not None and not isinstance(config["model_params"], dict):
         raise ValueError("Настройки модели должны быть объектом.")
     if not re.fullmatch(r"[0-9a-f]{64}", config["dataset_fingerprint"]):
@@ -141,8 +155,59 @@ def _check_inputs(task_dir: Path, job_dir: Path) -> Path:
     return data_dir
 
 
+def _run_automl_job(config: dict) -> dict:
+    from agent.automl import run_automl
+    from app.model_config import validate_model_config
+    from app.search_summary import validate_search_summary
+
+    job_dir, task_path = config["job_dir"], config["task_path"]
+    _check_inputs(task_path.parent, job_dir)
+
+    def progress(event):
+        if not isinstance(event, dict) or event.get("stage") not in {
+                "training", "validating", "refitting", "finished"}:
+            raise ValueError("Некорректный этап автоподбора.")
+        stage = {"stage": event["stage"]}
+        if "search" in event:
+            stage["search"] = validate_search_summary(event["search"], allow_running=True)
+        _atomic_json(job_dir / "stage.json", stage)
+
+    evidence = run_automl(
+        task_path, time_budget=config.get("time_budget", 600),
+        validation=config.get("validation"),
+        dataset_fingerprint=config["dataset_fingerprint"], progress=progress, output_dir=job_dir,
+    )
+    result = {key: evidence[key] for key in (
+        "model", "model_config", "metric", "split", "comparison_key", "output_valid", "search")}
+    result["model_config"] = validate_model_config(result["model_config"])
+    result["search"] = validate_search_summary(result["search"], metric=result["metric"], model=result["model"])
+    if "classification_diagnostics" in evidence:
+        result["classification_diagnostics"] = validate_classification_diagnostics(
+            evidence["classification_diagnostics"], metric=result["metric"],
+            validation_rows=result["split"]["validation_rows"])
+    output_check = validate_predictions(task_path.parent)
+    if result["output_valid"] is not True or not output_check["valid"]:
+        raise ValueError("Предсказания автоподбора не прошли проверку формата.")
+    metrics = {
+        **result, "task_type": evidence["task_type"], "action": "automl", "seed": SEED,
+        "model": {"name": result["model"], "parameters": result["model_config"]["parameters"]},
+        "metric": {**result["metric"], "source": "local_holdout_from_train.csv"},
+        "dataset_fingerprint": config["dataset_fingerprint"],
+        "elapsed_seconds": evidence["elapsed_seconds"], "api": {"used": False, "calls": 0},
+        "evaluation_source": "app_local_holdout", "holdout_predictions_path": "holdout_predictions.csv",
+        "output_check": output_check,
+    }
+    _atomic_json(job_dir / "metrics.json", metrics)
+    _atomic_json(job_dir / "result.json", result)
+    progress({"stage": "finished", "search": result["search"]})
+    print(f"AutoML selected {result['model']}. API calls: 0.", flush=True)
+    return result
+
+
 def run_job(config: dict) -> dict:
     """Execute an already validated config and return the compact job result."""
+    if config["action"] == "automl":
+        return _run_automl_job(config)
     started = time.monotonic()
     job_dir, task_path = config["job_dir"], config["task_path"]
     task_dir = task_path.parent
@@ -254,6 +319,13 @@ def run_job(config: dict) -> dict:
         "model_config": model_config,
         "comparison_key": comparison_key, "output_valid": True,
     }
+    if classification:
+        diagnostics = classification_diagnostics(y.iloc[validation_rows].tolist(), holdout_predictions.tolist())
+        if diagnostics is not None:
+            diagnostics = validate_classification_diagnostics(
+                diagnostics, metric=metric, validation_rows=len(validation_rows))
+            result["classification_diagnostics"] = diagnostics
+            metrics["classification_diagnostics"] = diagnostics
     _atomic_json(job_dir / "metrics.json", metrics)
     _atomic_json(job_dir / "result.json", result)
     _atomic_json(job_dir / "stage.json", {"stage": "finished"})

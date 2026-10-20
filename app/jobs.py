@@ -1,9 +1,11 @@
-"""Fixed local training actions, isolated workspaces and explicit publication."""
+"""Local model training and search, isolated workspaces and explicit publication."""
 
 from __future__ import annotations
 
 from copy import deepcopy
+import csv
 from datetime import datetime, timezone
+import io
 import json
 import hashlib
 import math
@@ -23,10 +25,13 @@ from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
 from app.model_config import make_model_config, validate_model_config
 from app.file_io import replace_file
+from app.search_summary import validate_search_summary
+from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ACTIONS = {"baseline", "extra_trees", "agent", "prepare"}
+ACTIONS = {"baseline", "extra_trees", "automl", "agent", "prepare"}
+OFFLINE_ACTIONS = {"baseline", "extra_trees", "automl"}
 ACTIVE = {"queued", "running"}
 JOB_ID = re.compile(r"[0-9a-f]{32}\Z")
 API_FIELDS = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
@@ -36,16 +41,28 @@ MAX_INPUT_BYTES = 512 * 1024 * 1024
 LOCAL_TIMEOUT = 1800
 PREPARE_TIMEOUT = 600
 POLL_SECONDS = 0.2
+MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
+MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
 SPLIT_FIELDS = {"seed", "validation_fraction", "stratified", "validation_rows", "validation_hash",
                 "train_fraction", "shuffle", "train_rows", "strategy", *SPLIT_TEXT_FIELDS, *SPLIT_COUNT_FIELDS}
+
+
+def _job_validation(action, value=None):
+    if action == "automl" and (value is None or value == {"strategy": "auto"}):
+        return {"strategy": "auto"}
+    return normalize_validation(value)
+
+
+def _config_action(action):
+    return None if action == "automl" else action
 
 
 def _valid_split(split):
@@ -282,6 +299,8 @@ class JobManager:
         self._closed = False
         self._jobs = {}
         self._publication_cache = {}
+        self._diagnostic_cache = {}
+        self._diagnostic_catalogs = {}
         self._secrets = {}
         self._lock_stream = None
         self._take_lock()
@@ -329,7 +348,7 @@ class JobManager:
                 if not self._valid_stored_job(job, folder.name):
                     continue
                 job = {key: value for key, value in job.items() if key in PUBLIC_FIELDS or key in {
-                    "_runtime", "_published_sha256", "_output_sha256", "_previous_submission"}}
+                    "_runtime", "_published_sha256", "_output_sha256", "_previous_submission", "_holdout_sha256"}}
                 if job["status"] in ACTIVE:
                     runtime = job.get("_runtime") or {}
                     pid, identity = runtime.get("pid"), runtime.get("identity")
@@ -356,18 +375,18 @@ class JobManager:
                                                   or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id))):
             return False
         if "validation" in job:
-            if job["action"] not in {"baseline", "extra_trees"}:
+            if job["action"] not in OFFLINE_ACTIONS:
                 return False
             try:
-                if normalize_validation(job["validation"]) != job["validation"]:
+                if _job_validation(job["action"], job["validation"]) != job["validation"]:
                     return False
             except ValueError:
                 return False
         if "model_config" in job:
-            if job["action"] not in {"baseline", "extra_trees"}:
+            if job["action"] not in OFFLINE_ACTIONS:
                 return False
             try:
-                config = validate_model_config(job["model_config"], action=job["action"])
+                config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
                 if config != job["model_config"] or job.get("model") not in (None, config["model"]):
                     return False
             except ValueError:
@@ -390,7 +409,7 @@ class JobManager:
                 or not isinstance(job["elapsed_seconds"], (int, float)) or job["elapsed_seconds"] < 0
                 or job["exit_code"] is not None and type(job["exit_code"]) is not int):
             return False
-        for name in ("comparison_key", "dataset_fingerprint", "_published_sha256", "_output_sha256"):
+        for name in ("comparison_key", "dataset_fingerprint", "_published_sha256", "_output_sha256", "_holdout_sha256"):
             if job.get(name) is not None and (not isinstance(job[name], str) or not re.fullmatch(r"[a-f0-9]{64}", job[name])):
                 return False
         metric = job.get("metric")
@@ -403,10 +422,31 @@ class JobManager:
         if split is not None and not _valid_split(split):
             return False
         if (split is not None and "validation" in job
+                and job["validation"]["strategy"] != "auto"
                 and split.get("strategy", "random") != job["validation"]["strategy"]):
             return False
         if (split is not None and job.get("validation", {}).get("strategy") == "time"
                 and split.get("time_column") != job["validation"]["time_column"]):
+            return False
+        if "search" in job:
+            if job["action"] != "automl":
+                return False
+            try:
+                validate_search_summary(job["search"], metric=job.get("metric"), model=job.get("model"),
+                                        allow_running=job["status"] != "completed")
+            except ValueError:
+                return False
+        if "classification_diagnostics" in job:
+            if job["action"] not in OFFLINE_ACTIONS:
+                return False
+            try:
+                validate_classification_diagnostics(
+                    job["classification_diagnostics"], metric=job.get("metric"),
+                    validation_rows=(job.get("split") or {}).get("validation_rows"))
+            except ValueError:
+                return False
+        if job["action"] == "automl" and job["status"] == "completed" and (
+                "search" not in job or "model_config" not in job):
             return False
         api = job.get("api")
         if api is not None:
@@ -439,9 +479,23 @@ class JobManager:
                                      if key in {"strategy", "time_column"}}
         if "model_config" in summary:
             try:
-                summary["model_config"] = validate_model_config(summary["model_config"], action=job["action"])
+                summary["model_config"] = validate_model_config(summary["model_config"], action=_config_action(job["action"]))
             except ValueError:
                 summary.pop("model_config")
+        if "search" in summary:
+            try:
+                summary["search"] = validate_search_summary(
+                    summary["search"], metric=job.get("metric"), model=job.get("model"),
+                    allow_running=job["status"] != "completed")
+            except ValueError:
+                summary.pop("search")
+        if "classification_diagnostics" in summary:
+            try:
+                summary["classification_diagnostics"] = validate_classification_diagnostics(
+                    summary["classification_diagnostics"], metric=job.get("metric"),
+                    validation_rows=(job.get("split") or {}).get("validation_rows"))
+            except ValueError:
+                summary.pop("classification_diagnostics")
         if isinstance(summary.get("api"), dict):
             summary["api"] = {key: value for key, value in summary["api"].items()
                               if key in {"state", "attempts", "responses", "reported_responses", "prompt_tokens",
@@ -494,21 +548,23 @@ class JobManager:
         _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
         return job
 
-    def start(self, task_id, action, author="", hypothesis="", minutes=175, validation=None, model_params=None):
+    def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None):
         if not isinstance(action, str) or action not in ACTIONS:
-            raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, agent и prepare.")
-        if validation is not None and action not in {"baseline", "extra_trees"}:
-            raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
+            raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, automl, agent и prepare.")
+        if validation is not None and action not in OFFLINE_ACTIONS:
+            raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
         if model_params is not None and action not in {"baseline", "extra_trees"}:
             raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
         if model_params is not None and not isinstance(model_params, dict):
             raise ValueError("Параметры модели должны быть объектом.")
-        validation = normalize_validation(validation) if action in {"baseline", "extra_trees"} else None
+        validation = _job_validation(action, validation) if action in OFFLINE_ACTIONS else None
         model_config = None
         if not isinstance(author, str) or len(author) > 80 or not isinstance(hypothesis, str) or len(hypothesis) > 500:
             raise ValueError("Имя автора: до 80 символов; гипотеза: до 500 символов.")
+        if minutes is None:
+            minutes = 10 if action == "automl" else 175
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 175:
-            raise ValueError("Бюджет агента должен быть целым числом от 1 до 175 минут.")
+            raise ValueError("Бюджет запуска должен быть целым числом от 1 до 175 минут.")
         with self._lock:
             if self._closed:
                 raise RuntimeError("Менеджер запусков остановлен.")
@@ -532,7 +588,7 @@ class JobManager:
                 state_folder = self.state_root.resolve()
                 if state_folder.is_relative_to(task_location) or task_location.is_relative_to(state_folder):
                     raise ValueError("Рабочая папка запусков должна находиться отдельно от исходной задачи.")
-                if action in {"baseline", "extra_trees"}:
+                if action in OFFLINE_ACTIONS:
                     _, inputs = self.catalog._inputs(task_folder)
                     metadata, _, _, task_type = self.catalog._metadata(inputs)
                     expected = {"regression": "RMSE", "classification": "Macro F1"}.get(task_type)
@@ -551,7 +607,8 @@ class JobManager:
                             raise ValueError("Признак времени должен быть числовым.")
                     if validation["strategy"] == "grouped" and task_type != "classification":
                         raise ValueError("Групповая валидация доступна для классификации.")
-                    model_config = make_model_config(action, task_type, model_params)
+                    if action != "automl":
+                        model_config = make_model_config(action, task_type, model_params)
                 fingerprint = self.catalog.fingerprint(task_id)
             job_id = uuid4().hex
             folder = _safe(self.jobs_root / job_id, self.state_root)
@@ -635,13 +692,15 @@ class JobManager:
             return [sys.executable, "-u", str(ROOT / "prepare_data.py"), "all", "--data-dir", str(self.data_root)]
         if job["action"] == "agent":
             return [sys.executable, "-u", str(ROOT / "solution.py"), str(task_path),
-                    "--max-steps", "12", "--time-budget", str(minutes * 60)]
+                    "--mode", "llm", "--max-steps", "12", "--time-budget", str(minutes * 60)]
         folder = self.jobs_root / job["id"]
         config = {"job_dir": str(folder), "task_path": str(task_path), "action": job["action"],
                   "dataset_fingerprint": job["dataset_fingerprint"],
-                  "validation": normalize_validation(job.get("validation"))}
-        if "model_config" in job:
-            config["model_params"] = validate_model_config(job["model_config"], action=job["action"])["parameters"]
+                  "validation": _job_validation(job["action"], job.get("validation"))}
+        if job["action"] == "automl":
+            config["time_budget"] = minutes * 60
+        if "model_config" in job and job["action"] != "automl":
+            config["model_params"] = validate_model_config(job["model_config"], action=_config_action(job["action"]))["parameters"]
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 
@@ -664,7 +723,7 @@ class JobManager:
             from agent.execution import child_environment
             environment = child_environment()
             environment.update(settings)
-            timeout = PREPARE_TIMEOUT if job["action"] == "prepare" else minutes * 60 + 30 if job["action"] == "agent" else LOCAL_TIMEOUT
+            timeout = PREPARE_TIMEOUT if job["action"] == "prepare" else minutes * 60 + 30 if job["action"] in {"agent", "automl"} else LOCAL_TIMEOUT
             stage = {"prepare": "downloading", "agent": "research"}.get(job["action"], "training")
             with (folder / "stdout.txt").open("xb") as stdout, (folder / "stderr.txt").open("xb") as stderr:
                 with self._lock:
@@ -694,10 +753,18 @@ class JobManager:
                         if path.stat().st_size > MAX_LOG_BYTES:
                             raise ValueError("Запуск остановлен: журнал превысил лимит 20 МБ.")
                     stage_file = folder / "stage.json"
-                    if job["action"] in {"baseline", "extra_trees"} and stage_file.exists():
-                        current = _json(stage_file, self.state_root).get("stage")
+                    if job["action"] in OFFLINE_ACTIONS and stage_file.exists():
+                        evidence = _json(stage_file, self.state_root)
+                        current = evidence.get("stage")
+                        updates = {}
                         if current in {"training", "validating", "refitting", "finished"} and current != job["stage"]:
-                            self._set(job_id, stage=current)
+                            updates["stage"] = current
+                        if job["action"] == "automl" and "search" in evidence:
+                            search = validate_search_summary(evidence["search"], allow_running=True)
+                            if search != job.get("search"):
+                                updates["search"] = search
+                        if updates:
+                            self._set(job_id, **updates)
                     if job["action"] == "agent":
                         with self._lock:
                             if self._collect_agent(job):
@@ -784,18 +851,42 @@ class JobManager:
                 or not _valid_split(split) or not isinstance(evidence.get("model"), str)
                 or not isinstance(evidence.get("comparison_key"), str)):
             raise ValueError("Неполный отчёт о локальной валидации.")
-        requested_validation = normalize_validation(job.get("validation"))
-        if (split.get("strategy", "random") != requested_validation["strategy"]
+        requested_validation = _job_validation(job["action"], job.get("validation"))
+        if (requested_validation["strategy"] != "auto"
+                and split.get("strategy", "random") != requested_validation["strategy"]
                 or requested_validation["strategy"] == "time"
                 and split.get("time_column") != requested_validation["time_column"]):
             raise ValueError("Отчёт использует другую стратегию валидации.")
-        if "model_config" in job:
-            requested_config = validate_model_config(job["model_config"], action=job["action"])
+        if "model_config" in job and job["action"] != "automl":
+            requested_config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
             reported_config = validate_model_config(evidence.get("model_config"), action=job["action"])
             if reported_config != requested_config or evidence["model"] != reported_config["model"]:
                 raise ValueError("Параметры обученной модели не совпадают с настройками запуска.")
+        expected_key = hashlib.sha256(json.dumps({
+            "dataset_fingerprint": job["dataset_fingerprint"], "metric": metric["name"],
+            "higher_is_better": metric["higher_is_better"], "split": split,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+        if evidence["comparison_key"] != expected_key:
+            raise ValueError("Отпечаток сравнения не соответствует данным и проверочным строкам.")
+        if job["action"] == "automl":
+            reported_config = validate_model_config(evidence.get("model_config"))
+            if evidence["model"] != reported_config["model"]:
+                raise ValueError("Модель победителя не совпадает с параметрами отчёта.")
+            task_type = "classification" if metric["higher_is_better"] else "regression"
+            from app.model_config import model_options
+            if reported_config["model"] not in {option["model"] for option in model_options(task_type).values()}:
+                raise ValueError("Модель победителя не соответствует типу задачи.")
+            search = validate_search_summary(evidence.get("search"), metric=metric, model=evidence["model"])
+            job.update(model_config=reported_config, search=search)
         job.update(model=evidence["model"], metric=metric, split=split,
                    comparison_key=evidence["comparison_key"])
+        if "classification_diagnostics" in evidence:
+            job["classification_diagnostics"] = validate_classification_diagnostics(
+                evidence["classification_diagnostics"], metric=metric,
+                validation_rows=split["validation_rows"])
+            held = _safe(folder / "holdout_predictions.csv", self.state_root, required=True)
+            if held.stat().st_size <= MAX_DIAGNOSTIC_BYTES:
+                job["_holdout_sha256"] = self._file_hash(held)
 
     def _collect_agent(self, job):
         try:
@@ -832,9 +923,135 @@ class JobManager:
             return item
         return clean(value)
 
+    def diagnostics_for(self, task_id, job_id):
+        """Read a bounded, checked holdout; older jobs need no new training.
+
+        Early versions did not hash the prediction file. Their first read is
+        tied to the original staged dataset, held IDs/answers and saved Macro
+        F1 before pinning its hash. Later reads reject any changed evidence.
+        Missing diagnostics never make an otherwise usable CSV disappear.
+        """
+        with self._lock:
+            job = self._job(task_id, job_id)
+            metric, split = job.get("metric"), job.get("split")
+            if (job["status"] != "completed" or job["action"] not in OFFLINE_ACTIONS
+                    or not isinstance(metric, dict) or metric.get("name") != "Macro F1"
+                    or metric.get("higher_is_better") is not True or not _valid_split(split)):
+                return None
+            try:
+                folder = _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
+                held = _safe(folder / "holdout_predictions.csv", self.state_root, required=True)
+                with held.open("rb") as stream:
+                    raw = stream.read(MAX_DIAGNOSTIC_BYTES + 1)
+                if len(raw) > MAX_DIAGNOSTIC_BYTES:
+                    raise ValueError("Проверочные предсказания слишком велики для диагностики.")
+                digest = hashlib.sha256(raw).hexdigest()
+                if job.get("_holdout_sha256") not in (None, digest):
+                    raise ValueError("Проверочные предсказания изменены после завершения запуска.")
+                catalog = self._diagnostic_catalogs.get(job_id)
+                if catalog is None:
+                    catalog = DataCatalog(folder)
+                    if len(self._diagnostic_catalogs) >= 8:
+                        self._diagnostic_catalogs.pop(next(iter(self._diagnostic_catalogs)))
+                    self._diagnostic_catalogs[job_id] = catalog
+                fingerprint = catalog.fingerprint("task")
+                if fingerprint != job["dataset_fingerprint"]:
+                    raise ValueError("Копия данных запуска была изменена.")
+                signature = (digest, fingerprint, metric["value"], split["validation_hash"],
+                             split["validation_rows"])
+                cached = self._diagnostic_cache.get(job_id)
+                if cached and cached[0] == signature:
+                    if cached[1] is None:
+                        return None
+                    if job.get("classification_diagnostics") != cached[1]:
+                        job["classification_diagnostics"] = deepcopy(cached[1])
+                        self._save(job)
+                    return deepcopy(cached[1])
+                rows = csv.reader(io.StringIO(raw.decode("utf-8-sig")), strict=True)
+                if next(rows, None) != ["id", "actual", "prediction"]:
+                    raise ValueError("Некорректные столбцы проверочных предсказаний.")
+                ids, actual, predicted = [], [], []
+                for row in rows:
+                    if len(row) != 3 or len(ids) >= split["validation_rows"]:
+                        raise ValueError("Некорректное число проверочных строк.")
+                    identifier, answer, prediction = row
+                    if (not identifier.strip() or not answer.strip() or not prediction.strip()
+                            or max(len(identifier), len(answer), len(prediction)) > 2000):
+                        raise ValueError("Проверочные строки содержат пустые или слишком длинные значения.")
+                    ids.append(identifier)
+                    actual.append(answer)
+                    predicted.append(prediction)
+                if len(ids) != split["validation_rows"] or len(set(ids)) != len(ids):
+                    raise ValueError("ID проверочных строк должны быть уникальными.")
+                task = catalog.resolve("task")
+                _, inputs = catalog._inputs(task)
+                _, id_column, target, task_type = catalog._metadata(inputs)
+                if task_type != "classification":
+                    raise ValueError("Диагностика предназначена для классификации.")
+                identity = {"id_column": id_column, "target_column": target, "ids": ids, "actuals": actual}
+                payload = json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+                if hashlib.sha256(payload).hexdigest() != split["validation_hash"]:
+                    raise ValueError("Проверочные ID и ответы не совпадают с отчётом запуска.")
+                train_path = _safe(inputs["train.csv"], self.state_root, required=True)
+                if train_path.stat().st_size > MAX_DIAGNOSTIC_TRAIN_BYTES:
+                    raise ValueError("Копия train слишком велика для диагностики.")
+                expected = dict(zip(ids, actual))
+                found, seen, labels = set(), set(), set()
+                with train_path.open("rb") as stream:
+                    train_raw = stream.read(MAX_DIAGNOSTIC_TRAIN_BYTES + 1)
+                if len(train_raw) > MAX_DIAGNOSTIC_TRAIN_BYTES:
+                    raise ValueError("Копия train слишком велика для диагностики.")
+                with io.StringIO(train_raw.decode("utf-8-sig"), newline="") as stream:
+                    train_rows = csv.reader(stream, strict=True)
+                    header = next(train_rows)
+                    id_index, target_index = header.index(id_column), header.index(target)
+                    for row in train_rows:
+                        if len(row) != len(header):
+                            raise ValueError("Повреждена копия train запуска.")
+                        identifier, answer = row[id_index], row[target_index]
+                        if identifier in seen or not answer.strip():
+                            raise ValueError("Повреждены ID или ответы копии train.")
+                        seen.add(identifier)
+                        labels.add(answer)
+                        if identifier in expected:
+                            if answer != expected[identifier]:
+                                raise ValueError("Правильные ответы не совпадают с копией train.")
+                            found.add(identifier)
+                if found != set(ids) or not set(predicted) <= labels:
+                    raise ValueError("Проверочные ID или классы отсутствуют в копии train.")
+                diagnostics = classification_diagnostics(actual, predicted)
+                if diagnostics is None:
+                    if len(self._diagnostic_cache) >= 8:
+                        self._diagnostic_cache.pop(next(iter(self._diagnostic_cache)))
+                    self._diagnostic_cache[job_id] = (signature, None)
+                    return None
+                diagnostics = validate_classification_diagnostics(
+                    diagnostics, metric=metric, validation_rows=split["validation_rows"])
+                if catalog.fingerprint("task") != fingerprint or self._file_hash(held) != digest:
+                    raise ValueError("Проверочные предсказания или данные изменились во время чтения.")
+                if (job.get("classification_diagnostics") != diagnostics
+                        or job.get("_holdout_sha256") != digest):
+                    job["classification_diagnostics"] = diagnostics
+                    job["_holdout_sha256"] = digest
+                    self._save(job)
+                if len(self._diagnostic_cache) >= 8:
+                    self._diagnostic_cache.pop(next(iter(self._diagnostic_cache)))
+                self._diagnostic_cache[job_id] = (signature, diagnostics)
+                return deepcopy(diagnostics)
+            except (OSError, ValueError, KeyError, IndexError, StopIteration, csv.Error, UnicodeError):
+                self._diagnostic_cache.pop(job_id, None)
+                if job.pop("classification_diagnostics", None) is not None:
+                    try:
+                        self._save(job)
+                    except (OSError, ValueError):
+                        pass
+                return None
+
     def detail(self, task_id, job_id):
         with self._lock:
             job = self._job(task_id, job_id)
+            self.diagnostics_for(task_id, job_id)
             folder = self.jobs_root / job_id
             key = self._secrets.get(job_id, "")
             logs, truncated = {}, False
@@ -882,6 +1099,7 @@ class JobManager:
             path = reader.submission_path()
             if self._file_hash(path) != job.get("_output_sha256"):
                 raise ValueError("CSV был изменён после завершения запуска. Запустите эксперимент заново.")
+            self.diagnostics_for(task_id, job_id)
             return path
 
     def publish(self, task_id, job_id):

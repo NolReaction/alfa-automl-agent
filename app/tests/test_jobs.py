@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import csv
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -87,6 +89,51 @@ class JobTests(unittest.TestCase):
         # A terminal run replacing the file must clear the *current* published indicator.
         (self.task / "submission.csv").write_bytes(original["submission.csv"])
         self.assertFalse(self.manager.detail("example", results[1]["id"])["job"]["published"])
+
+    def test_automl_selects_best_without_api_and_survives_restore(self):
+        original = (self.task / "submission.csv").read_bytes()
+        with patch.object(jobs, "_settings_values", side_effect=AssertionError("AutoML must not read API settings")):
+            # Redaction may read settings, so patch it independently: the launch
+            # itself must never request or inject credentials into the worker.
+            with patch.object(self.manager, "redact", side_effect=lambda task, job, value: value):
+                job = self.manager.start("example", "automl", minutes=1)
+                result = self.wait(job, timeout=60)
+        self.assertEqual(result["status"], "completed", self.manager.detail("example", job["id"]))
+        self.assertEqual(result["validation"], {"strategy": "auto"})
+        self.assertEqual(result["split"]["strategy"], "random")
+        self.assertFalse(result["api_used"])
+        self.assertFalse(result["published"])
+        self.assertEqual((self.task / "submission.csv").read_bytes(), original)
+        search = result["search"]
+        completed = [row for row in search["candidates"] if row["status"] == "completed"]
+        self.assertEqual(search["completed"], len(completed))
+        self.assertGreaterEqual(len(completed), 2)
+        self.assertEqual(result["metric"]["value"], min(row["metric"] for row in completed))
+        selected = next(row for row in completed if row["selected"])
+        self.assertEqual(selected["id"], search["best_candidate"])
+        self.assertEqual(selected["model"], result["model_config"]["model"])
+        folder = self.state / "jobs" / job["id"]
+        config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["time_budget"], 60)
+        self.assertNotIn("model_params", config)
+        reference = self.wait(self.manager.start("example", "extra_trees",
+                                                 model_params={"n_estimators": 50}), timeout=60)
+        self.assertEqual(reference["status"], "completed")
+        self.assertEqual(result["comparison_key"], reference["comparison_key"])
+        self.manager.close()
+        restored = JobManager(self.data, self.state, self.catalog)
+        try:
+            saved = restored.detail("example", job["id"])["job"]
+            self.assertEqual(saved["search"], search)
+            self.assertEqual(saved["model_config"], result["model_config"])
+            self.assertTrue(restored.publish("example", job["id"])["published"])
+        finally:
+            restored.close()
+
+    def test_qwen_command_keeps_explicit_llm_mode(self):
+        command = self.manager._command({"action": "agent"}, self.task / "task.md", 2)
+        self.assertEqual(command[command.index("--mode") + 1], "llm")
+        self.assertEqual(command[command.index("--time-budget") + 1], "120")
 
     def test_changed_data_and_unfinished_jobs_cannot_be_published(self):
         job = self.manager.start("example", "baseline")
@@ -479,6 +526,145 @@ class JobTests(unittest.TestCase):
         restored = JobManager(self.data, self.state, self.catalog)
         self.addCleanup(restored.close)
         self.assertNotIn("unknown_private_value", restored.list()[0])
+
+
+class DiagnosticBackfillTests(unittest.TestCase):
+    """Old completed holdouts gain diagnostics without rerunning a model."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.data, self.state = self.root / "data", self.root / "state"
+        self.task = self.data / "example"
+        self.task.mkdir(parents=True)
+        (self.task / "task.md").write_text("Основная метрика: Macro F1", encoding="utf-8")
+        inputs = self.task / "inputs"
+        csv_file(inputs / "data_dictionary.csv", [
+            ["feature", "role", "dtype"], ["id", "id", "category"],
+            ["x", "feature", "numeric"], ["answer", "target", "category"],
+        ])
+        csv_file(inputs / "train.csv", [["id", "x", "answer"],
+                 ["fit0", 0, "NA"], ["fit1", 1, "Positive"],
+                 ["NA", 2, "NA"], ["001", 3, "Positive"],
+                 ["002", 4, "NA"], ["003", 5, "Positive"]])
+        csv_file(inputs / "test.csv", [["id", "x"], ["test-NA", 6], ["test-001", 7]])
+        csv_file(inputs / "sample_submission.csv", [["id", "answer"], ["test-NA", "NA"], ["test-001", "NA"]])
+        self.catalog = DataCatalog(self.data)
+        self.manager = JobManager(self.data, self.state, self.catalog)
+        self.addCleanup(self.manager.close)
+        self.identifier = "d" * 32
+        self.folder = self.state / "jobs" / self.identifier
+        self.folder.mkdir()
+        shutil.copytree(self.task, self.folder / "task")
+        csv_file(self.folder / "task" / "submission.csv", [["id", "answer"],
+                 ["test-NA", "NA"], ["test-001", "Positive"]])
+        self.held = self.folder / "holdout_predictions.csv"
+        self.held_rows = [["id", "actual", "prediction"],
+                          ["NA", "NA", "NA"], ["001", "Positive", "NA"],
+                          ["002", "NA", "NA"], ["003", "Positive", "Positive"]]
+        csv_file(self.held, self.held_rows)
+        identity = {"id_column": "id", "target_column": "answer",
+                    "ids": [row[0] for row in self.held_rows[1:]],
+                    "actuals": [row[1] for row in self.held_rows[1:]]}
+        split = {"seed": 42, "stratified": False, "shuffle": True,
+                 "train_rows": 2, "validation_rows": 4,
+                 "validation_fraction": 2 / 3, "train_fraction": 1 / 3,
+                 "strategy": "random", "validation_hash": self.hash_json(identity)}
+        metric = {"name": "Macro F1", "value": (0.8 + 2 / 3) / 2, "higher_is_better": True}
+        fingerprint = self.catalog.fingerprint("example")
+        self.job = {
+            "id": self.identifier, "task_id": "example", "action": "baseline", "status": "completed",
+            "stage": "finished", "author": "", "hypothesis": "", "started_at": "2026-10-20T12:00:00+00:00",
+            "finished_at": "2026-10-20T12:01:00+00:00", "elapsed_seconds": 60,
+            "model": "RandomForestClassifier", "metric": metric, "split": split,
+            "comparison_key": self.hash_json({"dataset_fingerprint": fingerprint, "metric": "Macro F1",
+                                                "higher_is_better": True, "split": split}),
+            "dataset_fingerprint": fingerprint, "error": None, "output_valid": True,
+            "published": False, "source": "local", "exit_code": 0, "api_used": False,
+            "_output_sha256": self.manager._file_hash(self.folder / "task" / "submission.csv"),
+        }
+        self.manager._jobs[self.identifier] = self.job
+        self.manager._save(self.job)
+
+    @staticmethod
+    def hash_json(value):
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def test_old_job_backfills_from_checked_holdout_and_survives_restart(self):
+        with patch.object(jobs, "classification_diagnostics", wraps=jobs.classification_diagnostics) as calculate:
+            detail = self.manager.detail("example", self.identifier)["job"]
+            again = self.manager.detail("example", self.identifier)["job"]
+            self.assertEqual(calculate.call_count, 1)
+        diagnostic = detail["classification_diagnostics"]
+        self.assertEqual(diagnostic["confusion_matrix"], [[2, 0], [1, 1]])
+        self.assertAlmostEqual(diagnostic["macro_f1"], self.job["metric"]["value"])
+        self.assertEqual(again["classification_diagnostics"], diagnostic)
+        self.assertNotIn("_holdout_sha256", detail)
+        self.assertEqual(self.job["status"], "completed")
+        self.manager.close()
+        restored = JobManager(self.data, self.state, self.catalog)
+        self.addCleanup(restored.close)
+        self.assertEqual(restored.detail("example", self.identifier)["job"]["classification_diagnostics"], diagnostic)
+
+    def test_new_collection_binds_holdout_and_rejects_later_same_metric_prediction_edit(self):
+        from agent.diagnostics import classification_diagnostics
+
+        diagnostics = classification_diagnostics([row[1] for row in self.held_rows[1:]],
+                                                 [row[2] for row in self.held_rows[1:]])
+        evidence = {key: self.job[key] for key in ("model", "metric", "split", "comparison_key")}
+        evidence["classification_diagnostics"] = diagnostics
+        (self.folder / "result.json").write_text(json.dumps(evidence), encoding="utf-8")
+        self.manager._collect(self.job)
+        self.assertIn("_holdout_sha256", self.job)
+        changed = deepcopy(self.held_rows)
+        changed[2][2], changed[4][2] = changed[4][2], changed[2][2]
+        csv_file(self.held, changed)
+        # Both changed rows have the same true class: the global metric stays
+        # identical, so only the pinned file hash catches this modification.
+        self.assertNotIn("classification_diagnostics", self.manager.detail("example", self.identifier)["job"])
+        self.assertEqual(self.job["status"], "completed")
+
+    def test_invalid_old_evidence_is_omitted_without_hiding_the_completed_job(self):
+        mutations = [
+            lambda rows: rows.__setitem__(1, ["different-id", "NA", "NA"]),
+            lambda rows: rows.__setitem__(1, ["NA", "Positive", "NA"]),
+            lambda rows: rows.__setitem__(1, ["NA", "NA", "Unknown"]),
+            lambda rows: rows.__setitem__(1, ["NA", "NA", "Positive"]),
+            lambda rows: rows.append(["extra", "NA", "NA"]),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                rows = deepcopy(self.held_rows)
+                mutate(rows)
+                csv_file(self.held, rows)
+                detail = self.manager.detail("example", self.identifier)["job"]
+                self.assertNotIn("classification_diagnostics", detail)
+                self.assertEqual(detail["status"], "completed")
+        self.held.unlink()
+        self.assertNotIn("classification_diagnostics", self.manager.detail("example", self.identifier)["job"])
+        self.assertEqual(len(self.manager.list()), 1)
+
+    def test_changed_staged_features_or_linked_evidence_never_backfill(self):
+        train = self.folder / "task" / "inputs" / "train.csv"
+        original = train.read_bytes()
+        train.write_bytes(original.replace(b"fit0,0,NA", b"fit0,9,NA"))
+        self.assertIsNone(self.manager.diagnostics_for("example", self.identifier))
+        train.write_bytes(original)
+        outside = self.root / "outside.csv"
+        outside.write_bytes(self.held.read_bytes())
+        self.held.unlink()
+        try:
+            self.held.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            return
+        self.assertIsNone(self.manager.diagnostics_for("example", self.identifier))
+
+    def test_artifact_backfills_for_result_export_without_retraining(self):
+        artifact = self.manager.artifact("example", self.identifier)
+        self.assertEqual(artifact.name, "submission.csv")
+        self.assertIn("classification_diagnostics", self.manager.list("example")[0])
 
 
 if __name__ == "__main__":

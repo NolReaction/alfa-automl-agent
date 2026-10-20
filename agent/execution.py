@@ -18,6 +18,9 @@ def child_environment() -> dict[str, str]:
     env = {name: os.environ[name] for name in allowed if name in os.environ}
     env.update({
         "PYTHONIOENCODING": "utf-8",
+        # The case files and research manifest are UTF-8. This also sets the
+        # default encoding for open()/Path.read_text() on Windows, unlike stdio.
+        "PYTHONUTF8": "1",
         "OMP_NUM_THREADS": "8",
         "OPENBLAS_NUM_THREADS": "8",
         "MKL_NUM_THREADS": "8",
