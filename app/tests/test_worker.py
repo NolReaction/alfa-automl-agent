@@ -119,10 +119,17 @@ class WorkerTests(unittest.TestCase):
                                             zero_division=0)
                         self.assertIn("NA", set(holdout["actual"]))
                         self.assertEqual(result["metric"]["name"], "Macro F1")
+                        diagnostics = result["classification_diagnostics"]
+                        self.assertAlmostEqual(diagnostics["macro_f1"], measured)
+                        self.assertEqual(diagnostics["rows"], len(holdout))
+                        self.assertIn("NA", diagnostics["labels"])
+                        self.assertEqual(metrics["classification_diagnostics"], diagnostics)
                     else:
                         measured = np.sqrt(mean_squared_error(holdout["actual"].astype(float),
                                                               holdout["prediction"].astype(float)))
                         self.assertEqual(result["metric"]["name"], "RMSE")
+                        self.assertNotIn("classification_diagnostics", result)
+                        self.assertNotIn("classification_diagnostics", metrics)
                     self.assertAlmostEqual(result["metric"]["value"], measured)
                     self.assertTrue(result["output_valid"])
                     self.assertEqual(result["split"]["seed"], 42)
@@ -210,6 +217,40 @@ class WorkerTests(unittest.TestCase):
                     self.assertEqual(worker.main(["--config", str(random_path)]), 0)
                 random_result = json.loads((random_job_dir / "result.json").read_text(encoding="utf-8"))
                 self.assertNotEqual(results[0]["comparison_key"], random_result["comparison_key"])
+
+    def test_automl_preserves_verified_winner_diagnostics_in_result_and_metrics(self):
+        from agent.diagnostics import classification_diagnostics
+
+        source = self.make_source(classification=True)
+        path, job_dir, staged = self.make_config(source, "automl")
+        diagnostics = classification_diagnostics(["NA", "Positive"], ["NA", "Positive"])
+        model_config = make_model_config("baseline", "classification")
+        evidence = {
+            "model": model_config["model"], "model_config": model_config,
+            "metric": {"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+            "split": {"validation_rows": 2}, "comparison_key": "b" * 64,
+            "output_valid": True, "task_type": "classification", "elapsed_seconds": 1.0,
+            "classification_diagnostics": diagnostics,
+            "search": {"status": "completed", "planned": 1, "completed": 1,
+                       "best_candidate": "candidate_1", "validation_reason": "Проверка",
+                       "candidates": [{"id": "candidate_1", "label": "Победитель",
+                                       "model": model_config["model"], "status": "completed",
+                                       "metric": 1.0, "selected": True,
+                                       "elapsed_seconds": 1.0, "error": None}]},
+        }
+
+        def completed_search(task_path, **kwargs):
+            write_csv(task_path.parent / "submission.csv", [
+                ["row_key", "answer"], ["NA", "NA"], ["0001", "Positive"],
+            ])
+            return evidence
+
+        with patch("agent.automl.run_automl", side_effect=completed_search), contextlib.redirect_stdout(io.StringIO()):
+            result = worker.run_job(worker.load_config(path))
+        self.assertEqual(result["classification_diagnostics"], diagnostics)
+        for name in ("result.json", "metrics.json"):
+            saved = json.loads((job_dir / name).read_text(encoding="utf-8"))
+            self.assertEqual(saved["classification_diagnostics"], diagnostics)
 
     def test_automl_config_accepts_auto_and_rejects_parameters_and_bad_budgets(self):
         source = self.make_source()

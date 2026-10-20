@@ -29,6 +29,7 @@ from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.metrics import f1_score, mean_squared_error
 from threadpoolctl import threadpool_limits
 
+from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from app.file_io import replace_file
 from app.model_config import make_model_config
 from app.splits import normalize_validation, split_rows
@@ -180,6 +181,10 @@ def _run_automl_job(config: dict) -> dict:
         "model", "model_config", "metric", "split", "comparison_key", "output_valid", "search")}
     result["model_config"] = validate_model_config(result["model_config"])
     result["search"] = validate_search_summary(result["search"], metric=result["metric"], model=result["model"])
+    if "classification_diagnostics" in evidence:
+        result["classification_diagnostics"] = validate_classification_diagnostics(
+            evidence["classification_diagnostics"], metric=result["metric"],
+            validation_rows=result["split"]["validation_rows"])
     output_check = validate_predictions(task_path.parent)
     if result["output_valid"] is not True or not output_check["valid"]:
         raise ValueError("Предсказания автоподбора не прошли проверку формата.")
@@ -314,6 +319,13 @@ def run_job(config: dict) -> dict:
         "model_config": model_config,
         "comparison_key": comparison_key, "output_valid": True,
     }
+    if classification:
+        diagnostics = classification_diagnostics(y.iloc[validation_rows].tolist(), holdout_predictions.tolist())
+        if diagnostics is not None:
+            diagnostics = validate_classification_diagnostics(
+                diagnostics, metric=metric, validation_rows=len(validation_rows))
+            result["classification_diagnostics"] = diagnostics
+            metrics["classification_diagnostics"] = diagnostics
     _atomic_json(job_dir / "metrics.json", metrics)
     _atomic_json(job_dir / "result.json", result)
     _atomic_json(job_dir / "stage.json", {"stage": "finished"})

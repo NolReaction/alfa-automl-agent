@@ -80,6 +80,24 @@ const rawValues = () => ({
   n_estimators: "160", max_depth: "", learning_rate: "0.2",
   class_weight: "null", max_features: "0.5",
 });
+function diagnosticJob(overrides = {}) {
+  const normal = 180 / 193, other = 10 / 13, macro = (normal + other) / 3;
+  return job({
+    metric: { name: "Macro F1", value: macro, higher_is_better: true },
+    split: { strategy: "grouped", validation_rows: 110 },
+    classification_diagnostics: {
+      version: 1, kind: "classification", labels: ["Normal", "Worms", "Other"], rows: 110,
+      confusion_matrix: [[90, 10, 0], [2, 0, 2], [1, 0, 5]],
+      per_class: [
+        { precision: 90 / 93, recall: 0.9, f1: normal, support: 100, predicted: 93 },
+        { precision: 0, recall: 0, f1: 0, support: 4, predicted: 10 },
+        { precision: 5 / 7, recall: 5 / 6, f1: other, support: 6, predicted: 7 },
+      ],
+      accuracy: 95 / 110, macro_f1: macro,
+    },
+    ...overrides,
+  });
+}
 
 const cases = {
   groups() {
@@ -307,6 +325,84 @@ const cases = {
     current.search.status = "failed";
     assert.match(get("autoSearchView")(current), /завершился с ошибкой/);
     assert.doesNotMatch(get("autoSearchView")(current), /В очереди|>Выбран</);
+  },
+  diagnostic_orientation() {
+    setup();
+    const current = diagnosticJob(), evidence = get("classificationDiagnosticEvidence")(current);
+    assert.deepEqual(plain(evidence.rows.map(row => row.label)), ["Worms", "Other", "Normal"], "Weakest measured classes come first");
+    assert.deepEqual(plain(evidence.confusions[0]), { actual: "Normal", prediction: "Worms", count: 10, fraction: 0.1 });
+    const html = get("classificationDiagnosticView")(current);
+    assert.match(html, /Где ошибается модель/);
+    assert.ok(html.indexOf('data-diagnostic-class="Worms"') < html.indexOf('data-diagnostic-class="Normal"'));
+    assert.match(html, /Истинный класс: Worms; предсказано: Normal; 2 из 4 \(50%\)/);
+    assert.match(html, /style="--cell-strength:0\.5000" title="Истинный класс: Worms; предсказано: Normal/);
+    assert.match(html, /style="--cell-strength:0\.1000" title="Истинный класс: Normal; предсказано: Worms/);
+    assert.match(html, /Прогнозов: 10/);
+    assert.match(html, /Строки — истинный класс, столбцы — прогноз/);
+    assert.match(get("jobMetricView")(current), /Разбор ошибок классификации/, "The panel is part of the selected job's metric view");
+  },
+  diagnostic_perfect_and_empty_class() {
+    setup();
+    const current = diagnosticJob({
+      metric: { name: "Macro F1", value: 1, higher_is_better: true },
+      split: { validation_rows: 3 },
+      classification_diagnostics: {
+        version: 1, kind: "classification", labels: ["A", "B"], rows: 3,
+        confusion_matrix: [[2, 0], [0, 1]],
+        per_class: [
+          { precision: 1, recall: 1, f1: 1, support: 2, predicted: 2 },
+          { precision: 1, recall: 1, f1: 1, support: 1, predicted: 1 },
+        ], accuracy: 1, macro_f1: 1,
+      },
+    });
+    assert.match(get("classificationDiagnosticView")(current), /Все проверочные примеры распознаны верно/);
+    assert.equal(get("classificationDiagnosticEvidence")(current).confusions.length, 0);
+    current.classification_diagnostics.confusion_matrix = [[2, 1], [0, 0]];
+    current.classification_diagnostics.per_class = [
+      { precision: 1, recall: 2 / 3, f1: 0.8, support: 3, predicted: 2 },
+      { precision: 0, recall: 0, f1: 0, support: 0, predicted: 1 },
+    ];
+    current.classification_diagnostics.accuracy = 2 / 3;
+    current.classification_diagnostics.macro_f1 = 0.4;
+    current.metric.value = 0.4;
+    const evidence = get("classificationDiagnosticEvidence")(current);
+    assert.deepEqual(plain(evidence.rows.map(row => row.label)), ["A", "B"], "An unobserved class is not presented as the weakest measured class");
+    const html = get("classificationDiagnosticView")(current);
+    assert.match(html, /Нет примеров в проверке/);
+    assert.doesNotMatch(html, /NaN|Infinity|Все проверочные примеры распознаны верно/);
+  },
+  diagnostic_boundaries() {
+    setup();
+    const view = get("classificationDiagnosticView");
+    assert.equal(view(job()), "", "Old jobs without predictions do not invent diagnostics");
+    assert.equal(view(diagnosticJob({ metric: { name: "RMSE", value: 1, higher_is_better: false } })), "");
+    assert.equal(view(diagnosticJob({ status: "running" })), "");
+    for (const change of [
+      current => { current.classification_diagnostics.rows = 111; },
+      current => { current.classification_diagnostics.confusion_matrix[0][0] = true; },
+      current => { current.classification_diagnostics.confusion_matrix[0][0] = -1; },
+      current => { current.classification_diagnostics.per_class[0].f1 = NaN; },
+      current => { current.classification_diagnostics.per_class[0].f1 = 1; },
+      current => { current.classification_diagnostics.labels[0] = current.classification_diagnostics.labels[1]; },
+      current => { current.split.validation_rows = 120; },
+      current => { current.metric.value = 0.999; },
+    ]) {
+      const current = diagnosticJob(); change(current);
+      assert.equal(view(current), "", "Malformed or mismatched evidence must not produce a misleading chart");
+    }
+  },
+  diagnostic_escaping_and_provenance() {
+    setup();
+    const current = diagnosticJob({ source: "imported" });
+    current.classification_diagnostics.labels[1] = '<img src=x onerror="evil()">';
+    const html = get("classificationDiagnosticView")(current);
+    assert.match(html, /&lt;img src=x onerror=&quot;evil\(\)&quot;&gt;/);
+    assert.doesNotMatch(html, /<img|onerror="evil\(\)"/);
+    assert.match(html, /Отчёт участника · не проверен локально/);
+    assert.doesNotMatch(html, /На проверочных строках этого запуска/);
+    current.source = "local";
+    assert.match(get("classificationDiagnosticView")(current), /На проверочных строках этого запуска/);
+    assert.doesNotMatch(get("classificationDiagnosticView")(current), /не проверен локально/);
   },
   escaping() {
     setup();

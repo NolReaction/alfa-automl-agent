@@ -54,6 +54,20 @@ def search_summary(**changes):
     return value
 
 
+def classification_job(**changes):
+    from agent.diagnostics import classification_diagnostics
+
+    diagnostics = classification_diagnostics(["NA", "NA", "Positive", "Positive"],
+                                           ["NA", "Positive", "Positive", "Positive"])
+    value = job(action="baseline", model="RandomForestClassifier",
+                metric={"name": "Macro F1", "value": diagnostics["macro_f1"], "higher_is_better": True},
+                split={"seed": 42, "validation_fraction": 0.2, "stratified": True,
+                       "validation_rows": 4, "validation_hash": "c" * 64},
+                classification_diagnostics=diagnostics)
+    value.update(changes)
+    return value
+
+
 class SharingTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -90,6 +104,108 @@ class SharingTests(unittest.TestCase):
         self.assertEqual(self.store.import_reports("regression", FINGERPRINT, exported_again),
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
+
+    def test_class_diagnostics_survive_exchange_without_becoming_verified(self):
+        original = classification_job()
+        envelope = self.envelope(original)
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("classification")
+        self.assertEqual(imported["classification_diagnostics"], original["classification_diagnostics"])
+        self.assertIs(imported["verified"], False)
+        self.assertIs(imported["published"], False)
+        self.assertEqual(imported["source"], "imported")
+        reexported = self.store.export("classification", FINGERPRINT, [imported])
+        self.assertEqual(reexported["reports"], envelope["reports"])
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": 1})
+
+    def test_diagnostic_matrix_changes_report_identity_at_the_same_macro_f1(self):
+        from agent.diagnostics import classification_diagnostics
+
+        first = classification_job()
+        second = classification_job(classification_diagnostics=classification_diagnostics(
+            ["NA", "NA", "Positive", "Positive"], ["NA", "NA", "NA", "Positive"]))
+        self.assertAlmostEqual(first["metric"]["value"], second["classification_diagnostics"]["macro_f1"])
+        for record in (first, second):
+            envelope = self.envelope(record)
+            self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                             {"imported": 1, "skipped": 0})
+        self.assertEqual(len({row["id"] for row in self.store.list("classification")}), 2)
+
+    def test_invalid_class_diagnostics_and_metric_mismatches_never_write_imports(self):
+        valid = self.envelope(classification_job())
+        mutations = [
+            lambda r: r["classification_diagnostics"]["confusion_matrix"][0].__setitem__(0, 100),
+            lambda r: r["classification_diagnostics"]["confusion_matrix"][0].__setitem__(0, True),
+            lambda r: r["classification_diagnostics"].update(accuracy=float("nan")),
+            lambda r: r["classification_diagnostics"].update(rows=99),
+            lambda r: r["classification_diagnostics"].update(path="/private/.env"),
+            lambda r: r["classification_diagnostics"]["per_class"][0].update(f1=1.0),
+            lambda r: r["metric"].update(value=0.123),
+            lambda r: r["metric"].update(name="RMSE", higher_is_better=False),
+            lambda r: r["split"].update(validation_rows=5),
+            lambda r: r.update(action="agent"),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                envelope = deepcopy(valid)
+                mutation(envelope["reports"][0])
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("classification", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_bounded_large_class_report_fits_without_removing_envelope_size_limit(self):
+        from agent.diagnostics import classification_diagnostics
+        from app import sharing
+
+        labels = ["К" * 190 + str(index) for index in range(50)]
+        diagnostics = classification_diagnostics(labels, labels)
+        original = classification_job(classification_diagnostics=diagnostics,
+                                      metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+                                      split={"validation_rows": 50})
+        envelope = self.envelope(original)
+        self.assertGreater(len(json.dumps(envelope, ensure_ascii=False).encode("utf-8")), 16 * 1024)
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("classification")
+        self.assertEqual(imported["classification_diagnostics"], diagnostics)
+        with patch.object(sharing, "MAX_BYTES", 100):
+            with self.assertRaisesRegex(ValueError, "1 МБ"):
+                self.envelope(original)
+        with patch.object(sharing, "MAX_RECORD_BYTES", 1024):
+            with self.assertRaisesRegex(ValueError, "КБ"):
+                self.envelope(original)
+
+    def test_many_full_class_matrices_roundtrip_near_the_envelope_byte_limit(self):
+        from agent.diagnostics import classification_diagnostics
+        from app import sharing
+
+        labels = [str(index) for index in range(50)]
+        diagnostics = classification_diagnostics(labels, labels)
+        original = classification_job(classification_diagnostics=diagnostics,
+                                      metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+                                      split={"validation_rows": 50})
+        single = self.envelope(original)
+        record_bytes = len(sharing._encoded(single["reports"][0]))
+        overhead = len(sharing._encoded(single)) - record_bytes
+        count = min(sharing.MAX_REPORTS, (sharing.MAX_BYTES - overhead + 1) // (record_bytes + 1))
+        jobs = [{**original, "id": f"{index:032x}"} for index in range(count)]
+        envelope = self.store.export("classification", FINGERPRINT, jobs)
+        size = len(sharing._encoded(envelope))
+        self.assertGreater(size, sharing.MAX_BYTES * .98)
+        self.assertLessEqual(size, sharing.MAX_BYTES)
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, envelope),
+                         {"imported": count, "skipped": 0})
+        imported = self.store.list("classification")
+        self.assertEqual(len(imported), count)
+        reexported = self.store.export("classification", FINGERPRINT, imported)
+        self.assertEqual(sorted(reexported["reports"], key=lambda row: row["id"]),
+                         sorted(envelope["reports"], key=lambda row: row["id"]))
+        self.assertEqual(self.store.import_reports("classification", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": count})
+        with self.assertRaisesRegex(ValueError, "1 МБ"):
+            self.store.export("classification", FINGERPRINT, jobs + [{**original, "id": f"{count:032x}"}])
 
     def test_automl_candidates_and_winner_survive_exchange_without_machine_diagnostics(self):
         config = make_model_config("extra_trees", "regression")

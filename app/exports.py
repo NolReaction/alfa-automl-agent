@@ -188,6 +188,38 @@ def _readable_report(report: dict) -> bytes:
                        f'<p>{text(search["validation_reason"])}</p><div class="table-scroll"><table>'
                        '<thead><tr><th>Модель</th><th>Метрика</th><th>Результат</th><th>Время</th></tr></thead>'
                        f'<tbody>{"".join(candidate_rows)}</tbody></table></div></section>')
+    diagnostics_html = ""
+    diagnostics = report.get("classification_diagnostics")
+    if diagnostics:
+        class_rows = []
+        for label, row in zip(diagnostics["labels"], diagnostics["per_class"]):
+            class_rows.append(
+                f'<tr><th scope="row">{text(label)}</th><td>{text(row["support"])}</td>'
+                f'<td>{text(row["predicted"])}</td>'
+                f'<td>{text(format(row["precision"], ".3f"))}</td>'
+                f'<td>{text(format(row["recall"], ".3f"))}</td>'
+                f'<td>{text(format(row["f1"], ".3f"))}</td></tr>')
+        confused = sorted(
+            ((count, diagnostics["labels"][actual], diagnostics["labels"][predicted])
+             for actual, row in enumerate(diagnostics["confusion_matrix"])
+             for predicted, count in enumerate(row) if actual != predicted and count),
+            key=lambda item: (-item[0], item[1], item[2]),
+        )[:5]
+        confusions = ("<ul>" + "".join(
+            f'<li>{text(actual)} → {text(predicted)}: {text(count)}</li>'
+            for count, actual, predicted in confused) + "</ul>"
+            if confused else "<p>Ошибок на проверочных строках нет.</p>")
+        provenance = ("Отчёт участника; предсказания не проверены на этом компьютере."
+                      if report.get("source") == "imported" else
+                      "Локальная проверочная выборка; это не оценка скрытого теста.")
+        diagnostics_html = (
+            f'<section><h2>Качество по классам</h2><p>{text(provenance)}</p>'
+            f'<p>Проверочных строк: {text(diagnostics["rows"])} · '
+            f'Accuracy: {text(format(diagnostics["accuracy"], ".3f"))}</p>'
+            '<div class="table-scroll"><table><thead><tr><th>Класс</th><th>Строк</th><th>Предсказано</th>'
+            '<th>Precision</th><th>Recall</th><th>F1</th></tr></thead>'
+            f'<tbody>{"".join(class_rows)}</tbody></table></div>'
+            f'<h3>Частые ошибки: настоящий класс → предсказанный</h3>{confusions}</section>')
     return f'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -201,7 +233,7 @@ footer{{border-top:1px solid #e7e9ee;padding-top:20px;margin-top:24px;color:#667
 .table-scroll{{overflow-x:auto}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px;text-align:left;border-bottom:1px solid #e7e9ee;vertical-align:top}}td small{{display:block;color:#667085;overflow-wrap:anywhere}}
 @media(max-width:600px){{body{{padding:12px}}main{{padding:20px}}dl{{grid-template-columns:1fr;gap:4px}}dd{{margin-bottom:12px}}}}</style>
 </head><body><main><h1>{text(action)}</h1><p class="status">{text(status)}</p>
-<section class="metric">{metric_html}</section><dl>{details}</dl>{search_html}
+<section class="metric">{metric_html}</section><dl>{details}</dl>{search_html}{diagnostics_html}
 <footer><p><b>В этом пакете:</b> submission.csv — предсказания этого запуска;
 reports.json — отчёт для кнопки «Добавить отчёт» в Alfa Lab;
 report.html — эта сводка. В Alfa Lab можно добавить весь ZIP целиком.</p><p>CSV прошёл проверку формата. Данные обучения, модель, ключи,

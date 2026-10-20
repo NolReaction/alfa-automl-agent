@@ -26,7 +26,7 @@ from app.profiling import DataCatalog
 from app.runs import RunReader
 from app.sharing import ReportStore
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -130,7 +130,10 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _json(self, value, status=200, *, filename=None):
-        body = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        # ReportStore bounds this compact representation. Extra whitespace can
+        # otherwise make our own near-limit download too large to import.
+        body = json.dumps(value, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":")).encode("utf-8")
         self._bytes(body, "application/json; charset=utf-8", status, filename=filename)
 
     def _local_request(self):

@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score, mean_squared_error
 
+from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from agent.execution import run_python
 from agent.file_io import replace_file
 from agent.model_config import make_model_config
@@ -329,6 +330,12 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         report.update(model=best["spec"]["model_config"]["model"], model_config=best["spec"]["model_config"],
                       metric={"name": metric_name, "value": value, "higher_is_better": classification},
                       output_valid=True)
+        if classification:
+            held = read_csv(winning_dir / "holdout_predictions.csv")
+            diagnostics = classification_diagnostics(held["actual"], held["prediction"])
+            if diagnostics is not None:
+                report["classification_diagnostics"] = validate_classification_diagnostics(
+                    diagnostics, metric=report["metric"], validation_rows=len(held_rows))
         _atomic_copy(winning_dir / "holdout_predictions.csv", output_dir / "holdout_predictions.csv")
         save("finished")
         _atomic_copy(winning_dir / "submission.csv", task_dir / "submission.csv")

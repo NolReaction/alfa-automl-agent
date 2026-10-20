@@ -21,7 +21,10 @@ FORMAT = "alfa-lab-reports"
 VERSION = 1
 MAX_REPORTS = 200
 MAX_BYTES = 1024 * 1024
-MAX_RECORD_BYTES = 16 * 1024
+MAX_RECORD_BYTES = 128 * 1024
+# A 50-class matrix has 2,500 scalar cells. The byte cap still bounds the
+# envelope; this separate traversal cap must also accommodate many such records.
+MAX_TREE_NODES = 400_000
 MAX_SAFE_INTEGER = (1 << 53) - 1
 FINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 ACTIONS = {"baseline", "extra_trees", "automl", "agent"}
@@ -197,6 +200,18 @@ def _summary(raw: dict, fingerprint: str) -> dict:
     if (raw["action"] == "automl" and raw["status"] == "completed"
             and ("search" not in result or "model_config" not in result or result["metric"] is None)):
         raise ValueError("У завершённого автоподбора нужны попытки, параметры победителя и метрика.")
+    if "classification_diagnostics" in raw:
+        from agent.diagnostics import validate_classification_diagnostics
+
+        if (raw["action"] not in {"baseline", "extra_trees", "automl"}
+                or result["metric"] is None or result["metric"]["name"] != "Macro F1"
+                or result["metric"]["higher_is_better"] is not True
+                or not result["split"] or "validation_rows" not in result["split"]):
+            raise ValueError("Диагностика классов доступна только для локальной классификации с проверочной выборкой.")
+        result["classification_diagnostics"] = validate_classification_diagnostics(
+            raw["classification_diagnostics"], metric=result["metric"],
+            validation_rows=result["split"]["validation_rows"],
+        )
     # Raw process/API errors can contain credentials, paths or response bodies.
     # User-authored hypotheses remain exact; machine diagnostics stay local.
     _text(raw.get("error"), "error", 1000)
@@ -220,7 +235,7 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         # Only stable reason codes travel; arbitrary machine diagnostics stay local.
         result["agent_reason"] = reason if reason in AGENT_REASONS else "unknown"
     if len(_encoded(result)) > MAX_RECORD_BYTES - 1024:
-        raise ValueError("Один отчёт превышает допустимый размер 16 КБ.")
+        raise ValueError(f"Один отчёт превышает допустимый размер {MAX_RECORD_BYTES // 1024} КБ.")
     return result
 
 
@@ -237,7 +252,7 @@ def _check_tree(value):
     while pending:
         item, depth = pending.pop()
         count += 1
-        if depth > 16 or count > 50_000:
+        if depth > 16 or count > MAX_TREE_NODES:
             raise ValueError("Отчёт содержит слишком сложную структуру.")
         if isinstance(item, dict):
             if any(not isinstance(key, str) for key in item):

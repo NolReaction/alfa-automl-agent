@@ -1394,7 +1394,67 @@ function jobMetricView(job) {
       ? '<button class="button small" data-launch="extra_trees">Следующий шаг: сравнить с ExtraTrees</button>'
       : '<button class="button small" data-workflow-view="result">Сравнить все результаты</button>'
     : "";
-  return `<section class="job-metric">${outcome ? `<div class="job-outcome ${outcome.tone}"><span class="job-outcome-icon">${icon(outcome.symbol)}</span><div><h3>${esc(outcome.title)}</h3><p>${esc(outcome.note)}</p></div></div>` : ""}<div class="job-metric-value"><strong>${number(job.metric.value, 6)}</strong><span>${esc(job.metric.name)}</span></div><p>${esc(job.model || ACTION_NAMES[job.action])} · проверка${job.split?.validation_fraction != null ? " на " + number(job.split.validation_fraction * 100, 1) + " % данных" : " на отложенных данных"} · ${job.metric.higher_is_better ? "больше лучше" : "меньше лучше"}</p>${validationView(job)}${modelParameterView(job)}${next ? `<div class="job-next-step">${next}</div>` : ""}</section>`;
+  return `<section class="job-metric">${outcome ? `<div class="job-outcome ${outcome.tone}"><span class="job-outcome-icon">${icon(outcome.symbol)}</span><div><h3>${esc(outcome.title)}</h3><p>${esc(outcome.note)}</p></div></div>` : ""}<div class="job-metric-value"><strong>${number(job.metric.value, 6)}</strong><span>${esc(job.metric.name)}</span></div><p>${esc(job.model || ACTION_NAMES[job.action])} · проверка${job.split?.validation_fraction != null ? " на " + number(job.split.validation_fraction * 100, 1) + " % данных" : " на отложенных данных"} · ${job.metric.higher_is_better ? "больше лучше" : "меньше лучше"}</p>${validationView(job)}${modelParameterView(job)}${next ? `<div class="job-next-step">${next}</div>` : ""}</section>${classificationDiagnosticView(job)}`;
+}
+function classificationDiagnosticEvidence(job) {
+  const data = job?.classification_diagnostics;
+  if (job?.status !== "completed" || job.metric?.name !== "Macro F1" ||
+      job.metric?.higher_is_better !== true || !Number.isFinite(job.metric?.value) ||
+      !data || data.version !== 1 || data.kind !== "classification" ||
+      !Array.isArray(data.labels) || !data.labels.length || data.labels.length > 50 ||
+      data.labels.some((label) => typeof label !== "string" || !label.trim() || Array.from(label).length > 200) ||
+      new Set(data.labels).size !== data.labels.length ||
+      !Number.isSafeInteger(data.rows) || data.rows <= 0 ||
+      !Array.isArray(data.confusion_matrix) || data.confusion_matrix.length !== data.labels.length ||
+      !Array.isArray(data.per_class) || data.per_class.length !== data.labels.length) return null;
+  const size = data.labels.length,
+    count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647,
+    unit = (value) => Number.isFinite(value) && value >= 0 && value <= 1,
+    close = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= 1e-10;
+  if (data.confusion_matrix.some((row) => !Array.isArray(row) || row.length !== size || row.some((value) => !count(value)))) return null;
+  const supports = data.confusion_matrix.map((row) => row.reduce((sum, value) => sum + value, 0)),
+    predicted = data.labels.map((_, index) => data.confusion_matrix.reduce((sum, row) => sum + row[index], 0));
+  if (supports.reduce((sum, value) => sum + value, 0) !== data.rows ||
+      (Number.isInteger(job.split?.validation_rows) && job.split.validation_rows !== data.rows)) return null;
+  const rows = data.labels.map((label, index) => {
+    const correct = data.confusion_matrix[index][index], support = supports[index], total = predicted[index],
+      precision = total ? correct / total : 0, recall = support ? correct / support : 0,
+      f1 = support + total ? 2 * correct / (support + total) : 0;
+    return { label, index, support, predicted: total, precision, recall, f1 };
+  });
+  if (rows.some((row, index) => {
+    const saved = data.per_class[index];
+    return !saved || saved.support !== row.support || saved.predicted !== row.predicted ||
+      ["precision", "recall", "f1"].some((key) => !unit(saved[key]) || !close(saved[key], row[key]));
+  })) return null;
+  const correct = data.confusion_matrix.reduce((sum, row, index) => sum + row[index], 0),
+    macro = rows.reduce((sum, row) => sum + row.f1, 0) / size;
+  if (!unit(data.accuracy) || !unit(data.macro_f1) || !close(data.accuracy, correct / data.rows) ||
+      !close(data.macro_f1, macro) || !close(job.metric.value, macro)) return null;
+  const confusions = [];
+  data.confusion_matrix.forEach((row, actual) => row.forEach((value, prediction) => {
+    if (actual !== prediction && value > 0) confusions.push({
+      actual: data.labels[actual], prediction: data.labels[prediction], count: value,
+      fraction: value / supports[actual],
+    });
+  }));
+  confusions.sort((a, b) => b.count - a.count || b.fraction - a.fraction || a.actual.localeCompare(b.actual));
+  rows.sort((a, b) => Number(!a.support) - Number(!b.support) || a.f1 - b.f1 || a.label.localeCompare(b.label));
+  return { data, rows, confusions, correct, supports };
+}
+function classificationDiagnosticView(job) {
+  const evidence = classificationDiagnosticEvidence(job);
+  if (!evidence) return "";
+  const { data, rows, confusions, correct, supports } = evidence,
+    percent = (value) => `${number(value * 100, 1)}%`,
+    imported = job.source === "imported",
+    table = rows.map((row) => `<tr data-diagnostic-class="${esc(row.label)}"><th scope="row">${esc(row.label)}<small class="diagnostic-class-predicted">Прогнозов: ${number(row.predicted)}</small>${row.support === 0 ? '<small class="diagnostic-empty-class">Нет примеров в проверке</small>' : ""}</th><td><div class="diagnostic-f1"><span class="diagnostic-bar" aria-hidden="true"><i style="width:${(row.f1 * 100).toFixed(3)}%"></i></span><strong>${number(row.f1, 3)}</strong></div></td><td>${row.support ? percent(row.recall) : "—"}</td><td>${row.predicted ? percent(row.precision) : "—"}</td><td class="diagnostic-count">${number(row.support)}</td></tr>`).join(""),
+    matrixRows = data.confusion_matrix.map((row, actual) => `<tr><th scope="row">${esc(data.labels[actual])}</th>${row.map((count, prediction) => {
+      const fraction = supports[actual] ? count / supports[actual] : 0,
+        caption = `Истинный класс: ${data.labels[actual]}; предсказано: ${data.labels[prediction]}; ${count} из ${supports[actual]} (${percent(fraction)})`;
+      return `<td class="${actual === prediction ? "diagnostic-correct" : "diagnostic-error"}" style="--cell-strength:${fraction.toFixed(4)}" title="${esc(caption)}"><span>${number(count)}</span><small>${supports[actual] ? percent(fraction) : "—"}</small></td>`;
+    }).join("")}</tr>`).join("");
+  return `<section class="classification-diagnostics" aria-label="Разбор ошибок классификации"><div class="diagnostic-heading"><div><h3>Где ошибается модель</h3><p>${imported ? "Отчёт участника · не проверен локально" : "На проверочных строках этого запуска"}</p></div><span class="badge ${imported ? "amber" : ""}">${number(data.labels.length)} классов</span></div><div class="diagnostic-totals"><span><b>${number(correct)}</b> верно из ${number(data.rows)}</span><span><b>${percent(data.accuracy)}</b> accuracy</span></div><div class="table-wrap diagnostic-class-table"><table aria-label="Качество по классам, от слабых к сильным"><thead><tr><th scope="col">Класс</th><th scope="col">F1</th><th scope="col" title="Recall: какую долю примеров этого класса удалось найти">Найдено</th><th scope="col" title="Precision: какая доля предсказаний этого класса верна">Точность</th><th scope="col">В проверке</th></tr></thead><tbody>${table}</tbody></table></div><div class="diagnostic-confusions"><h4>Чаще всего путает</h4>${confusions.length ? `<ul>${confusions.slice(0, 5).map((pair) => `<li><span class="diagnostic-pair"><b>${esc(pair.actual)}</b><span aria-hidden="true">→</span><b>${esc(pair.prediction)}</b></span><span class="diagnostic-pair-count"><strong>${number(pair.count)}</strong><small>${percent(pair.fraction)} класса ${esc(pair.actual)}</small></span></li>`).join("")}</ul>` : '<p class="diagnostic-perfect">Все проверочные примеры распознаны верно.</p>'}</div><details class="diagnostic-matrix"><summary>Матрица ошибок</summary><p>Строки — истинный класс, столбцы — прогноз. Цвет и проценты показывают долю внутри строки.</p><div class="table-wrap diagnostic-matrix-scroll" tabindex="0" role="region" aria-label="Матрица ошибок: строки — истинный класс, столбцы — прогноз"><table><caption class="sr-only">Количество и доля предсказаний для каждого истинного класса</caption><thead><tr><th scope="col">Истинный ↓ / прогноз →</th>${data.labels.map((label) => `<th scope="col">${esc(label)}</th>`).join("")}</tr></thead><tbody>${matrixRows}</tbody></table></div><div class="diagnostic-legend"><span>Зелёный — верно</span><span>Красный — ошибка</span></div></details></section>`;
 }
 function autoSearchView(job) {
   if (job?.action !== "automl") return "";

@@ -83,6 +83,7 @@ class AutoMLTests(unittest.TestCase):
         self.assertEqual(pd.read_csv(self.root / "submission.csv")["y"].tolist(), [1, 1])
         self.assertEqual(result["api"], {"used": False, "calls": 0})
         self.assertTrue(validate_predictions(self.root)["valid"])
+        self.assertNotIn("classification_diagnostics", result)
 
     def test_later_strict_improvement_wins_with_identical_split_comparison_identity(self):
         fingerprint = "a" * 64
@@ -107,6 +108,31 @@ class AutoMLTests(unittest.TestCase):
         self.assertEqual(result["search"]["best_candidate"], "candidate_2")
         self.assertEqual(automl.read_csv(self.root / "submission.csv")["id"].tolist(), ["0001", "NA"])
         self.assertEqual(automl.read_csv(self.root / "submission.csv")["y"].tolist(), ["NA", "classA"])
+        diagnostics = result["classification_diagnostics"]
+        self.assertEqual(diagnostics["labels"], ["NA", "classA"])
+        self.assertEqual(diagnostics["macro_f1"], result["metric"]["value"])
+        self.assertEqual(diagnostics["rows"], result["split"]["validation_rows"])
+        self.assertEqual(sum(map(sum, diagnostics["confusion_matrix"])), diagnostics["rows"])
+        saved = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(saved["classification_diagnostics"], diagnostics)
+
+    def test_classification_diagnostics_describe_winner_not_last_candidate(self):
+        self.make_data(classification=True)
+        result = self.run_search([{"wrong": .25}, {"wrong": 0}, {"wrong": .5}, {"wrong": 1}])
+        self.assertEqual(result["search"]["best_candidate"], "candidate_2")
+        diagnostics = result["classification_diagnostics"]
+        self.assertEqual(diagnostics["accuracy"], 1.)
+        self.assertEqual(diagnostics["macro_f1"], 1.)
+        self.assertEqual(diagnostics["confusion_matrix"][0][1], 0)
+        self.assertEqual(diagnostics["confusion_matrix"][1][0], 0)
+
+    def test_omitted_optional_classification_detail_preserves_success(self):
+        self.make_data(classification=True)
+        with patch.object(automl, "classification_diagnostics", return_value=None):
+            result = self.run_search([{"wrong": .5}, {"wrong": 0}, {"wrong": .5}, {"wrong": .25}])
+        self.assertTrue(result["output_valid"])
+        self.assertNotIn("classification_diagnostics", result)
+        self.assertEqual(result["metric"]["value"], 1.)
 
     def test_failed_timeout_and_forged_holdout_cannot_replace_previous_winner(self):
         result = self.run_search([{"error": 2}, {"error": 0, "exit_code": 1},
