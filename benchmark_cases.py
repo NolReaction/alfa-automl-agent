@@ -19,6 +19,9 @@ CASE_NAMES = (
     "linear_regression", "nonlinear_regression", "temporal_drift",
     "imbalanced_binary", "multiclass_duplicates", "categorical_shift",
 )
+# Opt-in families keep existing commands and their input bytes unchanged.
+MAE_CASE_NAMES = ("mae_signed_nonlinear", "mae_symmetric_linear", "mae_heavy_tailed")
+ALL_CASE_NAMES = CASE_NAMES + MAE_CASE_NAMES
 TRAIN_ROWS = 600
 AUDIT_ROWS = 150
 MULTICLASS_LABELS = ("01", "NA", "class c")
@@ -93,6 +96,47 @@ def _regression(name: str, seed: int, rng) -> BenchmarkCase:
     train, test, audit = _frames(features, target)
     return BenchmarkCase(name, seed, "RMSE" if name == "linear_regression" else "MAE",
                          (), None, {"strategy": "random"},
+                         ("measurement", "auxiliary", "large_scale"), ("segment",),
+                         train, test, audit, description)
+
+
+def _mae_regression(name: str, seed: int, rng) -> BenchmarkCase:
+    """Three fixed mechanisms, declared before observing solver outcomes.
+
+    They test signed nonlinear responses, a linear conditional median under
+    symmetric Gaussian noise, and nonlinear responses with symmetric heavy
+    tails/contamination. None uses the positive exponential response from the
+    original MAE family. These cases are opt-in, not extra default workloads.
+    """
+    count = TRAIN_ROWS + AUDIT_ROWS
+    x1, x2 = rng.normal(size=(2, count))
+    scale = rng.normal(0, 1000, count)
+    segment = rng.integers(0, 4, count)
+    offsets = np.asarray([-.9, -.3, .3, .9])[segment]
+    if name == "mae_symmetric_linear":
+        target = 3 * x1 - 1.8 * x2 + .0015 * scale + offsets + rng.normal(0, .7, count)
+        description = ("Predict a signed continuous measurement using MAE. The response follows a "
+                       "linear relationship with additive symmetric measurement noise. Numeric "
+                       "columns use different scales; empty feature cells are missing observations.")
+    elif name == "mae_signed_nonlinear":
+        target = 2.5 * np.sin(1.3 * x1) + .75 * x2 ** 2 + .5 * x1 * x2 - 1.5 + offsets
+        target += rng.normal(0, .35, count)
+        description = ("Predict a signed continuous measurement using MAE. Both negative and positive "
+                       "responses are valid, and feature interactions and nonlinear effects may "
+                       "matter. Empty feature cells are missing observations.")
+    else:
+        target = 2 * np.sin(1.4 * x1) + .6 * x2 ** 2 + 1.2 * x1 * x2 + offsets
+        target += .6 * rng.standard_t(3, count)
+        contaminated = rng.choice(count, size=count // 25, replace=False)
+        target[contaminated] += rng.normal(0, 20, len(contaminated))
+        description = ("Predict a signed continuous measurement using MAE. Nonlinear effects and "
+                       "interactions coexist with heavy-tailed measurement noise and occasional "
+                       "large valid observations of either sign. Empty feature cells are missing observations.")
+    features = pd.DataFrame({"measurement": x1, "auxiliary": x2, "large_scale": scale,
+                             "segment": [f"segment-{value}" for value in segment]})
+    features = _missing(features, rng, ("measurement", "segment"), fraction=.05)
+    train, test, audit = _frames(features, target)
+    return BenchmarkCase(name, seed, "MAE", (), None, {"strategy": "random"},
                          ("measurement", "auxiliary", "large_scale"), ("segment",),
                          train, test, audit, description)
 
@@ -191,13 +235,15 @@ def _categorical(seed: int, rng) -> BenchmarkCase:
 
 def make_case(name: str, seed: int) -> BenchmarkCase:
     """Generate fixed-size data from one explicit seed, without external data."""
-    if name not in CASE_NAMES:
+    if name not in ALL_CASE_NAMES:
         raise ValueError("Unknown benchmark case: " + str(name))
     if type(seed) is not int or not 0 <= seed < 2 ** 32:
         raise ValueError("Benchmark seed must be an integer from 0 through 4294967295")
     rng = np.random.default_rng(seed)
     if name in {"linear_regression", "nonlinear_regression"}:
         result = _regression(name, seed, rng)
+    elif name in MAE_CASE_NAMES:
+        result = _mae_regression(name, seed, rng)
     else:
         result = {"temporal_drift": _temporal, "imbalanced_binary": _binary,
                   "multiclass_duplicates": _duplicates, "categorical_shift": _categorical}[name](seed, rng)
