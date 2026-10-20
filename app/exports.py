@@ -114,11 +114,25 @@ def _readable_report(report: dict) -> bytes:
     split = report.get("split") or {}
     fraction = split.get("validation_fraction")
     validation = (f'{fraction * 100:g}% данных' if fraction is not None else "Не указана")
+    scheme = {"random": "Случайная 80/20", "time": "По последнему периоду",
+              "grouped": "По группам одинаковых признаков"}.get(split.get("strategy"),
+                  "Прежняя проверка 80/20" if split and report["action"] in {"baseline", "extra_trees"}
+                  else "Схема не указана")
+    evidence = []
+    if split.get("strategy") == "time":
+        evidence.append(("Периоды обучения → проверки",
+                         f'{split.get("time_column", "—")}: {split.get("train_period_min", "—")}–'
+                         f'{split.get("train_period_max", "—")} → {split.get("validation_period", "—")}'))
+    elif split.get("strategy") == "grouped":
+        evidence.extend([("Групп в обучении / проверке",
+                          f'{split.get("train_groups", "—")} / {split.get("validation_groups", "—")}'),
+                         ("Пересечение групп", split.get("group_overlap"))])
     rows = [
         ("Модель", report.get("model") or action), ("Автор", report.get("author") or "Не указан"),
         ("Заметка / гипотеза", report.get("hypothesis") or "Не указана"),
         ("Начало", report.get("started_at")), ("Окончание", report.get("finished_at")),
         ("Время", f'{report["elapsed_seconds"]:g} с' if report.get("elapsed_seconds") is not None else None),
+        ("Схема проверки", scheme), *evidence,
         ("Проверочная выборка", validation), ("Проверочных строк", split.get("validation_rows")),
         ("Seed разбиения", split.get("seed")), ("API использовался", "Да" if report.get("api_used") else "Нет"),
         ("Идентификатор запуска", report["id"]), ("SHA-256 данных", report["dataset_fingerprint"]),

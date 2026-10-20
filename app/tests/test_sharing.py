@@ -66,6 +66,83 @@ class SharingTests(unittest.TestCase):
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
 
+    def test_validation_metadata_survives_import_and_reexport(self):
+        common = {**job()["split"], "train_fraction": 0.8, "train_rows": 42648,
+                  "shuffle": False}
+        splits = [
+            {**common, "strategy": "random", "shuffle": True},
+            {**common, "strategy": "time", "time_column": "timestamp",
+             "train_period_min": "2024-01-01", "train_period_max": "2024-06-30",
+             "validation_period": "2024-07-01 — 2024-09-30"},
+            {**common, "strategy": "grouped", "group_count": 10, "train_groups": 8,
+             "validation_groups": 2, "group_overlap": 0, "n_splits": 5, "fold": 3},
+        ]
+        for split in splits:
+            with self.subTest(strategy=split["strategy"]):
+                envelope = self.envelope(job(split=split))
+                self.assertEqual(envelope["reports"][0]["split"], split)
+                self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                                 {"imported": 1, "skipped": 0})
+                imported = next(row for row in self.store.list("regression")
+                                if row["split"]["strategy"] == split["strategy"])
+                self.assertEqual(imported["split"], split)
+                self.assertIs(imported["verified"], False)
+                self.assertIs(imported["published"], False)
+                reexported = self.store.export("regression", FINGERPRINT, [imported])
+                self.assertEqual(reexported["reports"], envelope["reports"])
+                self.assertEqual(self.store.import_reports("regression", FINGERPRINT, reexported),
+                                 {"imported": 0, "skipped": 1})
+
+    def test_validation_metadata_is_part_of_imported_report_identity(self):
+        common = job()["split"]
+        variants = [
+            {**common, "strategy": "time", "validation_period": "2024-01"},
+            {**common, "strategy": "time", "validation_period": "2024-02"},
+            {**common, "strategy": "grouped", "n_splits": 5, "fold": 0},
+            {**common, "strategy": "grouped", "n_splits": 5, "fold": 1},
+        ]
+        for split in variants:
+            self.assertEqual(self.store.import_reports("regression", FINGERPRINT,
+                                                      self.envelope(job(split=split))),
+                             {"imported": 1, "skipped": 0})
+        reports = self.store.list("regression")
+        self.assertEqual(len({row["id"] for row in reports}), len(variants))
+        self.assertTrue(all(row["origin_id"] == job()["id"] for row in reports))
+
+    def test_legacy_reports_do_not_gain_validation_metadata(self):
+        legacy_split = job()["split"]
+        envelope = self.envelope()
+        self.assertEqual(envelope["version"], 1)
+        self.assertEqual(envelope["reports"][0]["split"], legacy_split)
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["split"], legacy_split)
+        reexported = self.store.export("regression", FINGERPRINT, [imported])
+        self.assertEqual(reexported["reports"], envelope["reports"])
+
+    def test_invalid_validation_metadata_is_rejected_before_import_writes(self):
+        changes = [{"strategy": value} for value in (None, "", "unknown", [], True)]
+        for field, limit in (("time_column", 500), ("train_period_min", 100),
+                             ("train_period_max", 100), ("validation_period", 100)):
+            changes.extend({field: value} for value in (None, "", " ", 1, "x\x00", "x" * (limit + 1)))
+        for field in ("train_rows", "group_count", "train_groups", "validation_groups",
+                      "group_overlap", "n_splits", "fold"):
+            changes.extend({field: value} for value in (None, True, 0.5, -1, 1 << 31, "2"))
+        changes.extend({field: 0} for field in ("train_rows", "group_count", "train_groups",
+                                               "validation_groups", "n_splits"))
+        changes.extend([
+            {"n_splits": 1}, {"n_splits": 5, "fold": 5}, {"n_splits": 2, "fold": 3},
+            {"train_fraction": True}, {"train_fraction": 0}, {"train_fraction": 1},
+            {"shuffle": 0}, {"shuffle": "false"}, {"shuffle": None},
+        ])
+        for change in changes:
+            with self.subTest(change=change):
+                envelope = self.envelope()
+                envelope["reports"][0]["split"].update(change)
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
     def test_qwen_fallback_survives_export_import_without_raw_reason_diagnostics(self):
         envelope = self.envelope(job(action="agent", metric=None, agent_status="fallback",
                                      agent_reason="api_error"))

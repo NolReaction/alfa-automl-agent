@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from app.profiling import DataCatalog, _metric
 from app.runs import RunReader, _check_json_tree
+from app.splits import normalize_validation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,8 +37,51 @@ POLL_SECONDS = 0.2
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation"}
+SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
+                     "validation_period": 100}
+SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
+SPLIT_FIELDS = {"seed", "validation_fraction", "stratified", "validation_rows", "validation_hash",
+                "train_fraction", "shuffle", "train_rows", "strategy", *SPLIT_TEXT_FIELDS, *SPLIT_COUNT_FIELDS}
+
+
+def _valid_split(split):
+    """Accept legacy holdouts and bounded evidence from the supported recipes."""
+    if (not isinstance(split, dict) or type(split.get("seed")) is not int
+            or type(split.get("stratified")) is not bool or type(split.get("validation_rows")) is not int
+            or split["validation_rows"] < 1 or isinstance(split.get("validation_fraction"), bool)
+            or not isinstance(split.get("validation_fraction"), (int, float))
+            or not 0 < split["validation_fraction"] < 1
+            or not isinstance(split.get("validation_hash"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", split["validation_hash"])):
+        return False
+    if "train_fraction" in split and (isinstance(split["train_fraction"], bool)
+            or not isinstance(split["train_fraction"], (int, float))
+            or not 0 < split["train_fraction"] < 1):
+        return False
+    if "train_rows" in split and (type(split["train_rows"]) is not int
+                                  or not 1 <= split["train_rows"] <= (1 << 31) - 1):
+        return False
+    if "shuffle" in split and type(split["shuffle"]) is not bool:
+        return False
+    if "strategy" in split and (not isinstance(split["strategy"], str)
+                                 or split["strategy"] not in {"random", "time", "grouped"}):
+        return False
+    for name, limit in SPLIT_TEXT_FIELDS.items():
+        if name in split and (not isinstance(split[name], str) or not split[name].strip()
+                              or len(split[name]) > limit):
+            return False
+    for name in SPLIT_COUNT_FIELDS:
+        if name in split and (type(split[name]) is not int or not 0 <= split[name] <= (1 << 31) - 1):
+            return False
+    if split.get("strategy") == "time" and not SPLIT_TEXT_FIELDS.keys() <= split.keys():
+        return False
+    if split.get("strategy") == "grouped":
+        if (not SPLIT_COUNT_FIELDS <= split.keys() or not 2 <= split["n_splits"] <= 5
+                or not 0 <= split["fold"] < split["n_splits"] or split["group_overlap"] != 0):
+            return False
+    return True
 
 
 def _linked(path):
@@ -308,6 +352,14 @@ class JobManager:
                 or job["action"] != "prepare" and (not isinstance(task_id, str)
                                                   or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id))):
             return False
+        if "validation" in job:
+            if job["action"] not in {"baseline", "extra_trees"}:
+                return False
+            try:
+                if normalize_validation(job["validation"]) != job["validation"]:
+                    return False
+            except ValueError:
+                return False
         for name, limit in (("author", 80), ("hypothesis", 500), ("stage", 40), ("started_at", 64)):
             if not isinstance(job.get(name), str) or len(job[name]) > limit:
                 return False
@@ -336,18 +388,14 @@ class JobManager:
                 or not -((1 << 53) - 1) <= metric["value"] <= (1 << 53) - 1):
             return False
         split = job.get("split")
-        if split is not None:
-            if (not isinstance(split, dict) or type(split.get("seed")) is not int
-                    or type(split.get("stratified")) is not bool or type(split.get("validation_rows")) is not int
-                    or split["validation_rows"] < 1 or isinstance(split.get("validation_fraction"), bool)
-                    or not isinstance(split.get("validation_fraction"), (int, float))
-                    or not 0 < split["validation_fraction"] < 1
-                    or not isinstance(split.get("validation_hash"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", split["validation_hash"])):
-                return False
-            for name in ("train_fraction", "train_rows", "shuffle"):
-                if name in split and not isinstance(split[name], (int, float, bool)):
-                    return False
+        if split is not None and not _valid_split(split):
+            return False
+        if (split is not None and "validation" in job
+                and split.get("strategy", "random") != job["validation"]["strategy"]):
+            return False
+        if (split is not None and job.get("validation", {}).get("strategy") == "time"
+                and split.get("time_column") != job["validation"]["time_column"]):
+            return False
         api = job.get("api")
         if api is not None:
             if not isinstance(api, dict) or api.get("state") not in {"none", "unknown", "partial", "reported"}:
@@ -373,8 +421,10 @@ class JobManager:
                                  if key in {"name", "value", "higher_is_better"}}
         if isinstance(summary.get("split"), dict):
             summary["split"] = {key: value for key, value in summary["split"].items()
-                                if key in {"seed", "validation_fraction", "stratified", "validation_rows",
-                                           "validation_hash", "train_fraction", "shuffle", "train_rows"}}
+                                if key in SPLIT_FIELDS}
+        if isinstance(summary.get("validation"), dict):
+            summary["validation"] = {key: value for key, value in summary["validation"].items()
+                                     if key in {"strategy", "time_column"}}
         if isinstance(summary.get("api"), dict):
             summary["api"] = {key: value for key, value in summary["api"].items()
                               if key in {"state", "attempts", "responses", "reported_responses", "prompt_tokens",
@@ -427,9 +477,12 @@ class JobManager:
         _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
         return job
 
-    def start(self, task_id, action, author="", hypothesis="", minutes=175):
+    def start(self, task_id, action, author="", hypothesis="", minutes=175, validation=None):
         if not isinstance(action, str) or action not in ACTIONS:
             raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, agent и prepare.")
+        if validation is not None and action not in {"baseline", "extra_trees"}:
+            raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
+        validation = normalize_validation(validation) if action in {"baseline", "extra_trees"} else None
         if not isinstance(author, str) or len(author) > 80 or not isinstance(hypothesis, str) or len(hypothesis) > 500:
             raise ValueError("Имя автора: до 80 символов; гипотеза: до 500 символов.")
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 175:
@@ -459,13 +512,23 @@ class JobManager:
                     raise ValueError("Рабочая папка запусков должна находиться отдельно от исходной задачи.")
                 if action in {"baseline", "extra_trees"}:
                     _, inputs = self.catalog._inputs(task_folder)
-                    task_type = self.catalog._metadata(inputs)[3]
+                    metadata, _, _, task_type = self.catalog._metadata(inputs)
                     expected = {"regression": "RMSE", "classification": "Macro F1"}.get(task_type)
                     if expected is None:
                         raise ValueError("Локальные рецепты поддерживают числовую регрессию и классификацию. Для другой задачи запустите агента.")
                     declared = _metric(self.catalog.task_text(task_id))["name"]
                     if declared not in {"Не определена", expected}:
                         raise ValueError(f"Этот рецепт оценивает {expected}, а в задаче указана {declared}. Для этой метрики запустите агента.")
+                    if validation["strategy"] == "time":
+                        if task_type != "regression":
+                            raise ValueError("Хронологическая валидация доступна для регрессии.")
+                        column = validation["time_column"]
+                        if column not in metadata.index or metadata.loc[column, "role"] != "feature":
+                            raise ValueError("Выберите существующий признак времени из словаря данных.")
+                        if metadata.loc[column, "dtype"] not in {"numeric", "binary"}:
+                            raise ValueError("Признак времени должен быть числовым.")
+                    if validation["strategy"] == "grouped" and task_type != "classification":
+                        raise ValueError("Групповая валидация доступна для классификации.")
                 fingerprint = self.catalog.fingerprint(task_id)
             job_id = uuid4().hex
             folder = _safe(self.jobs_root / job_id, self.state_root)
@@ -478,6 +541,8 @@ class JobManager:
                    "dataset_fingerprint": fingerprint, "split": None, "error": None,
                    "output_valid": None, "published": False, "source": "local",
                    "exit_code": None, "api_used": False}
+            if validation is not None:
+                job["validation"] = validation
             self._jobs[job_id] = job
             self._save(job)
             active = {"id": job_id, "cancel": threading.Event(), "process": None,
@@ -548,7 +613,8 @@ class JobManager:
                     "--max-steps", "12", "--time-budget", str(minutes * 60)]
         folder = self.jobs_root / job["id"]
         config = {"job_dir": str(folder), "task_path": str(task_path), "action": job["action"],
-                  "dataset_fingerprint": job["dataset_fingerprint"]}
+                  "dataset_fingerprint": job["dataset_fingerprint"],
+                  "validation": normalize_validation(job.get("validation"))}
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 
@@ -686,9 +752,14 @@ class JobManager:
                 or isinstance(metric.get("value"), bool) or not isinstance(metric.get("value"), (int, float))
                 or not -((1 << 53) - 1) <= metric["value"] <= (1 << 53) - 1
                 or not isinstance(metric.get("higher_is_better"), bool)
-                or not isinstance(split, dict) or not isinstance(evidence.get("model"), str)
+                or not _valid_split(split) or not isinstance(evidence.get("model"), str)
                 or not isinstance(evidence.get("comparison_key"), str)):
             raise ValueError("Неполный отчёт о локальной валидации.")
+        requested_validation = normalize_validation(job.get("validation"))
+        if (split.get("strategy", "random") != requested_validation["strategy"]
+                or requested_validation["strategy"] == "time"
+                and split.get("time_column") != requested_validation["time_column"]):
+            raise ValueError("Отчёт использует другую стратегию валидации.")
         job.update(model=evidence["model"], metric=metric, split=split,
                    comparison_key=evidence["comparison_key"])
 

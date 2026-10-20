@@ -27,11 +27,11 @@ import pandas as pd
 from sklearn.base import clone
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.metrics import f1_score, mean_squared_error
-from sklearn.model_selection import train_test_split
 from threadpoolctl import threadpool_limits
 
+from app.splits import normalize_validation, split_rows
 from offline_baseline import (
-    SEED, VALIDATION_FRACTION, find_data, load_data, make_pipeline, prepare_features,
+    SEED, find_data, load_data, make_pipeline, prepare_features,
 )
 from validation import validate_predictions
 
@@ -96,12 +96,14 @@ def load_config(config_path: Path) -> dict:
         raise ValueError("Файл настроек запуска слишком большой.")
     config = json.loads(raw.decode("utf-8-sig"))
     required = {"job_dir", "task_path", "action", "dataset_fingerprint"}
-    if not isinstance(config, dict) or set(config) != required:
+    if (not isinstance(config, dict) or not required <= set(config)
+            or set(config) - required - {"validation"}):
         raise ValueError("Некорректные настройки запуска.")
     if any(not isinstance(config[key], str) for key in required):
         raise ValueError("Настройки запуска должны содержать строковые значения.")
     if config["action"] not in ACTIONS:
         raise ValueError("Неизвестный рецепт обучения.")
+    config["validation"] = normalize_validation(config.get("validation"))
     if not re.fullmatch(r"[0-9a-f]{64}", config["dataset_fingerprint"]):
         raise ValueError("Некорректный отпечаток набора данных.")
     job_dir = _plain_path(Path(config["job_dir"]), directory=True, required=True)
@@ -147,22 +149,17 @@ def run_job(config: dict) -> dict:
      numeric, categorical, classification) = load_data(data_dir)
     x = prepare_features(train, features, numeric, categorical)
     test_x = prepare_features(test, features, numeric, categorical)
-    fit_rows, validation_rows = train_test_split(
-        np.arange(len(train)), test_size=VALIDATION_FRACTION, random_state=SEED,
-        shuffle=True, stratify=y if classification else None,
-    )
+    validation = normalize_validation(config.get("validation"))
+    if validation["strategy"] == "time" and validation["time_column"] not in numeric:
+        raise ValueError("Столбец периода должен быть числовым признаком по словарю данных.")
+    fit_rows, validation_rows, split = split_rows(train, y, features, classification, validation)
     metric_name = "Macro F1" if classification else "RMSE"
     validation_hash = _json_hash({
         "id_column": id_column, "target_column": target,
         "ids": train[id_column].iloc[validation_rows].tolist(),
         "actuals": train[target].iloc[validation_rows].tolist(),
     })
-    split = {
-        "seed": SEED, "train_fraction": 1 - VALIDATION_FRACTION,
-        "validation_fraction": VALIDATION_FRACTION, "shuffle": True,
-        "stratified": classification, "train_rows": len(fit_rows),
-        "validation_rows": len(validation_rows), "validation_hash": validation_hash,
-    }
+    split["validation_hash"] = validation_hash
     # This comparison identity deliberately excludes the recipe/model.
     comparison_key = _json_hash({
         "dataset_fingerprint": config["dataset_fingerprint"],

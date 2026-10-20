@@ -70,6 +70,25 @@ class ExportTests(unittest.TestCase):
         self.assertIn("Качество не измерено", html)
         self.assertIn("reports.json", html)
 
+    def test_readable_report_identifies_validation_scheme_and_escapes_period_column(self):
+        report = {"id": "a" * 32, "action": "baseline", "dataset_fingerprint": "b" * 64,
+                  "metric": {"name": "RMSE", "value": 50.0, "higher_is_better": False},
+                  "split": {"strategy": "time", "time_column": "<script>Year</script>",
+                            "train_period_min": "1", "train_period_max": "4", "validation_period": "5",
+                            "validation_fraction": 0.34, "validation_rows": 34}}
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("По последнему периоду", html)
+        self.assertIn("1–4 → 5", html)
+        self.assertIn("34% данных", html)
+        self.assertIn("&lt;script&gt;Year&lt;/script&gt;", html)
+        self.assertNotIn("<script>", html)
+        report["split"] = {"strategy": "grouped", "train_groups": 12, "validation_groups": 3,
+                           "group_overlap": 0, "validation_fraction": 0.25, "validation_rows": 4}
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("По группам одинаковых признаков", html)
+        self.assertIn("12 / 3", html)
+        self.assertIn("Пересечение групп</dt><dd>0", html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,67 @@ class WorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             worker.load_config(path)
 
+    def test_time_and_grouped_recipes_keep_their_evidence_and_comparison_identity(self):
+        for classification, validation in (
+            (False, {"strategy": "time", "time_column": "x"}),
+            (True, {"strategy": "grouped"}),
+        ):
+            with self.subTest(validation=validation):
+                source = self.make_source(classification)
+                original_train_path = source / "nested/participants/train.csv"
+                original = pd.read_csv(original_train_path, dtype=str, keep_default_na=False)
+                original["x"] = [str(i // 4 if classification else i // 16) for i in range(80)]
+                if classification:
+                    original["flag"] = [str((i // 4) % 2) for i in range(80)]
+                original.to_csv(original_train_path, index=False)
+                results = []
+                for action in ("baseline", "extra_trees"):
+                    path, job_dir, _ = self.make_config(source, action)
+                    config = json.loads(path.read_text(encoding="utf-8"))
+                    config["validation"] = validation
+                    path.write_text(json.dumps(config), encoding="utf-8")
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        code = worker.main(["--config", str(path)])
+                    self.assertEqual(code, 0)
+                    result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+                    results.append(result)
+                    self.assertEqual(result["split"]["strategy"], validation["strategy"])
+                    holdout = pd.read_csv(job_dir / "holdout_predictions.csv", dtype=str, keep_default_na=False)
+                    mask = original["row_key"].isin(holdout["id"])
+                    if classification:
+                        features = ["x", "flag", "protocol"]
+                        fitted = set(map(tuple, original.loc[~mask, features].to_numpy()))
+                        held = set(map(tuple, original.loc[mask, features].to_numpy()))
+                        self.assertFalse(fitted & held)
+                        self.assertEqual(result["split"]["group_overlap"], 0)
+                    else:
+                        self.assertEqual(set(original.loc[mask, "x"]), {"4"})
+                        self.assertEqual(result["split"]["validation_period"], "4")
+                    self.assertAlmostEqual(result["split"]["validation_fraction"], len(holdout) / len(original))
+                    self.assertTrue(result["output_valid"])
+                self.assertEqual(results[0]["comparison_key"], results[1]["comparison_key"])
+                self.assertEqual(results[0]["split"]["validation_hash"], results[1]["split"]["validation_hash"])
+
+                random_path, random_job_dir, _ = self.make_config(source, "baseline", source.name + "-random-reference")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(worker.main(["--config", str(random_path)]), 0)
+                random_result = json.loads((random_job_dir / "result.json").read_text(encoding="utf-8"))
+                self.assertNotEqual(results[0]["comparison_key"], random_result["comparison_key"])
+
+    def test_config_accepts_legacy_and_rejects_unknown_validation_options(self):
+        source = self.make_source()
+        path, _, _ = self.make_config(source, "baseline")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(worker.load_config(path)["validation"], {"strategy": "random"})
+        for value in ({"strategy": "time"}, {"strategy": "shell"}, {"strategy": "random", "code": "x"}):
+            with self.subTest(validation=value):
+                path.write_text(json.dumps({**config, "validation": value}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    worker.load_config(path)
+        path.write_text(json.dumps({**config, "unexpected": True}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            worker.load_config(path)
+
     def test_existing_symlink_output_is_refused_before_training(self):
         source = self.make_source()
         path, job_dir, _ = self.make_config(source, "baseline")

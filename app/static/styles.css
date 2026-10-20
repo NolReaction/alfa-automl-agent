@@ -2949,6 +2949,7 @@ th {
   color: #7f8b9b;
 }
 .form-field input,
+.form-field select,
 .form-field textarea {
   display: block;
   width: 100%;
@@ -2974,6 +2975,106 @@ th {
   font-size: 10px;
   color: #a1aab7;
   margin-top: 5px;
+}
+.validation-controls {
+  border: 0;
+  padding: 0;
+  margin: 0 0 22px;
+  min-width: 0;
+}
+.validation-controls legend {
+  padding: 0;
+  margin-bottom: 9px;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+.validation-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.validation-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+}
+.validation-option:has(input:checked) {
+  background: #fff5f6;
+  border-color: #e87d85;
+}
+.validation-option:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.validation-option input {
+  accent-color: var(--red);
+  margin: 2px 0 0;
+  flex: none;
+}
+.validation-option strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+}
+.validation-option small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 4px;
+}
+.validation-time-column {
+  margin-top: 12px;
+}
+.validation-summary {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 13px;
+  min-width: 0;
+}
+.validation-summary.compact {
+  gap: 5px;
+  margin-top: 0;
+}
+.validation-tag {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #dfe5ec;
+  border-radius: 5px;
+  background: #f6f8fb;
+  padding: 4px 7px;
+  color: #52657e;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.validation-time {
+  background: #f4f1fb;
+  border-color: #e4ddef;
+  color: #76618c;
+}
+.validation-grouped {
+  background: #eff7f4;
+  border-color: #dbece5;
+  color: #327c64;
+}
+.validation-legacy {
+  color: #737d89;
+  background: #f7f8fa;
+}
+.validation-evidence {
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.job-validation-label {
+  color: #64768b;
 }
 .form-actions {
   display: flex;
@@ -3005,7 +3106,11 @@ th {
 }
 .experiment-table table {
   white-space: normal;
-  min-width: 850px;
+  min-width: 1000px;
+}
+.experiment-table .validation-cell {
+  min-width: 180px;
+  max-width: 250px;
 }
 .experiment-table th,
 .experiment-table td {
@@ -3281,6 +3386,9 @@ th {
     margin-top: 3px;
   }
   .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .validation-options {
     grid-template-columns: 1fr;
   }
   .form-field.full {

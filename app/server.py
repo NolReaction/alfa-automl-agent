@@ -315,13 +315,16 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                     raise ValueError("Сборка решения не принимает дополнительные параметры.")
                 self._bytes(delivery_archive(), "application/zip", filename="solution.zip")
             elif is_job:
-                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes"}:
+                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation"}:
                     raise ValueError("Неизвестные параметры запуска.")
+                if "validation" in body and body.get("action") not in ("baseline", "extra_trees"):
+                    raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
                 job = self.server.jobs.start(task_id, body.get("action"),
                                              author=body.get("author", ""),
                                              hypothesis=body.get("hypothesis", ""),
-                                             minutes=body.get("minutes", 20))
+                                             minutes=body.get("minutes", 20),
+                                             validation=body.get("validation"))
                 self._json({"job": job}, 202)
             elif is_job_action:
                 if set(body) != {"task_id"}:

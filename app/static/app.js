@@ -103,6 +103,7 @@ const state = {
   publishJob: null,
   deliveryBusy: false,
   launchTask: null,
+  launchGeneration: 0,
   workflowUpdated: 0,
   experimentFingerprint: null,
   inspectJob: null,
@@ -1072,7 +1073,7 @@ function renderJobList() {
     state.jobs
       .map(
         (job) =>
-          `<button class="job-item ${job.id === state.selectedJob ? "selected" : ""}" data-job="${esc(job.id)}" aria-pressed="${job.id === state.selectedJob}"><h3>${esc(ACTION_NAMES[job.action] || job.model || "Эксперимент")}</h3>${statusBadge(job.agent_status === "fallback" ? "fallback" : job.status)}<p>${esc(job.author || "Без автора")} · ${duration(job.elapsed_seconds)}</p><p>${esc(date(job.started_at))}</p></button>`,
+          `<button class="job-item ${job.id === state.selectedJob ? "selected" : ""}" data-job="${esc(job.id)}" aria-pressed="${job.id === state.selectedJob}"><h3>${esc(ACTION_NAMES[job.action] || job.model || "Эксперимент")}</h3>${statusBadge(job.agent_status === "fallback" ? "fallback" : job.status)}<p>${esc(job.author || "Без автора")} · ${duration(job.elapsed_seconds)}</p>${["baseline", "extra_trees"].includes(job.action) ? `<p class="job-validation-label">${esc(validationLabel(job))}</p>` : ""}<p>${esc(date(job.started_at))}</p></button>`,
       )
       .join("") || '<p class="subtle-text">Запусков пока нет</p>';
 }
@@ -1090,6 +1091,57 @@ function currentLocalResult(job) {
 function jobBundleLink(job, label = "Скачать пакет запуска", small = false) {
   if (!currentLocalResult(job) || job.output_valid !== true) return "";
   return `<a class="button${small ? " small" : ""}" href="/api/jobs/${encodeURIComponent(job.id)}/bundle?task_id=${encodeURIComponent(state.task)}" download>${icon("download")} ${esc(label)}</a>`;
+}
+function validationStrategy(job) {
+  const strategy = job?.split?.strategy || job?.validation?.strategy;
+  return ["random", "time", "grouped"].includes(strategy) ? strategy : null;
+}
+function validationLabel(job) {
+  const strategy = validationStrategy(job);
+  if (strategy)
+    return {
+      random: "Случайные 80/20",
+      time: "По последнему периоду",
+      grouped: "По группам дублей",
+    }[strategy];
+  return job?.source === "local" &&
+    ["baseline", "extra_trees"].includes(job?.action) &&
+    job?.split
+    ? "Прежняя проверка 80/20"
+    : "Схема не указана";
+}
+function validationEvidence(job) {
+  const split = job?.split || {},
+    strategy = validationStrategy(job);
+  if (strategy === "time") {
+    const lower = split.train_period_min,
+      upper = split.train_period_max,
+      latest = split.validation_period;
+    const periods =
+      lower != null && upper != null && latest != null
+        ? `Обучение ${lower === upper ? lower : `${lower}–${upper}`} → проверка ${latest}`
+        : "Ранние периоды → последний";
+    return `${split.time_column || job?.validation?.time_column || "Период"} · ${periods}`;
+  }
+  if (strategy === "grouped") {
+    const counts =
+      Number.isFinite(split.train_groups) &&
+      Number.isFinite(split.validation_groups)
+        ? `Группы ${number(split.train_groups)} / ${number(split.validation_groups)}`
+        : "Одинаковые строки в одной части";
+    return `${counts}${Number.isFinite(split.group_overlap) ? ` · пересечений ${number(split.group_overlap)}` : ""}`;
+  }
+  return [
+    split.stratified === true ? "Со стратификацией" : "",
+    Number.isFinite(split.seed) ? `seed ${number(split.seed)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+function validationView(job, compact = false) {
+  const evidence = validationEvidence(job),
+    fraction = job?.split?.validation_fraction;
+  return `<div class="validation-summary${compact ? " compact" : ""}"><span class="validation-tag validation-${validationStrategy(job) || "legacy"}">${esc(validationLabel(job))}</span>${evidence ? `<span class="validation-evidence">${esc(evidence)}</span>` : ""}${compact && Number.isFinite(fraction) ? `<span class="validation-evidence">Проверка ${number(fraction * 100, 1)} % строк</span>` : ""}</div>`;
 }
 function measuredComparison(job) {
   if (
@@ -1126,7 +1178,7 @@ function measuredComparison(job) {
     return {
       title:
         job.action === "baseline" ? "Стартовая точка" : "Первая оценка модели",
-      note: "Теперь есть измеренный результат для сравнения.",
+      note: "Первая оценка на этой схеме проверки.",
       tone: "neutral",
       symbol: "test",
     };
@@ -1154,7 +1206,7 @@ function jobMetricView(job) {
       ? '<button class="button small" data-launch="extra_trees">Следующий шаг: сравнить с ExtraTrees</button>'
       : '<button class="button small" data-workflow-view="result">Сравнить все результаты</button>'
     : "";
-  return `<section class="job-metric">${outcome ? `<div class="job-outcome ${outcome.tone}"><span class="job-outcome-icon">${icon(outcome.symbol)}</span><div><h3>${esc(outcome.title)}</h3><p>${esc(outcome.note)}</p></div></div>` : ""}<div class="job-metric-value"><strong>${number(job.metric.value, 6)}</strong><span>${esc(job.metric.name)}</span></div><p>${esc(job.model || ACTION_NAMES[job.action])} · проверка${job.split?.validation_fraction != null ? " на " + number(job.split.validation_fraction * 100) + " % данных" : " на отложенных данных"} · ${job.metric.higher_is_better ? "больше лучше" : "меньше лучше"}</p>${next ? `<div class="job-next-step">${next}</div>` : ""}</section>`;
+  return `<section class="job-metric">${outcome ? `<div class="job-outcome ${outcome.tone}"><span class="job-outcome-icon">${icon(outcome.symbol)}</span><div><h3>${esc(outcome.title)}</h3><p>${esc(outcome.note)}</p></div></div>` : ""}<div class="job-metric-value"><strong>${number(job.metric.value, 6)}</strong><span>${esc(job.metric.name)}</span></div><p>${esc(job.model || ACTION_NAMES[job.action])} · проверка${job.split?.validation_fraction != null ? " на " + number(job.split.validation_fraction * 100, 1) + " % данных" : " на отложенных данных"} · ${job.metric.higher_is_better ? "больше лучше" : "меньше лучше"}</p>${validationView(job)}${next ? `<div class="job-next-step">${next}</div>` : ""}</section>`;
 }
 async function selectJob(id) {
   state.selectedJob = id;
@@ -1235,13 +1287,80 @@ function renderJobLog() {
     button.setAttribute("aria-selected", String(selected));
   });
 }
-function showLaunch(action = "baseline") {
+function launchValidationConfig(action, profile) {
+  const numeric = (profile?.columns || []).filter(
+    (column) => column.role === "feature" && column.dtype === "numeric",
+  );
+  const fallback = {
+    strategy: "random",
+    time_column: numeric.find((column) => column.name === "Year_Factor")?.name || "",
+  };
+  if (action !== "extra_trees") return fallback;
+  const eligible = (job) =>
+    currentLocalResult(job) &&
+    ["baseline", "extra_trees"].includes(job.action);
+  const selected =
+    state.jobDetail?.job?.id === state.selectedJob
+      ? state.jobDetail.job
+      : state.jobs.find((job) => job.id === state.selectedJob);
+  const reference = eligible(selected)
+    ? selected
+    : [...state.jobs, ...state.experimentReports]
+        .filter(eligible)
+        .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)))[0];
+  if (!reference) return fallback;
+  const strategy = validationStrategy(reference) || "random",
+    timeColumn = reference.split?.time_column || reference.validation?.time_column;
+  if (
+    strategy === "time" &&
+    profile.task_type === "regression" &&
+    numeric.some((column) => column.name === timeColumn)
+  )
+    return { strategy, time_column: timeColumn };
+  if (strategy === "grouped" && profile.task_type === "classification")
+    return { ...fallback, strategy };
+  return fallback;
+}
+function validationFields(profile, selected) {
+  const numeric = (profile?.columns || []).filter(
+    (column) => column.role === "feature" && column.dtype === "numeric",
+  );
+  const options = [["random", "Случайные 80/20", "С фиксированным seed 42", true]];
+  if (profile?.task_type === "regression")
+    options.push(["time", "Последний период", "Ранние → последний", numeric.length > 0]);
+  if (profile?.task_type === "classification")
+    options.push(["grouped", "Разделить дубли", "Копии только в одной части", true]);
+  return `<fieldset id="validation-controls" class="validation-controls"><legend>Проверка качества</legend><div class="validation-options">${options.map(([value, label, description, enabled]) => `<label class="validation-option"><input type="radio" name="validation_strategy" value="${value}" ${selected.strategy === value ? "checked" : ""} ${enabled ? "" : "disabled"}><span><strong>${label}</strong><small>${enabled ? description : "Нет числовых признаков"}</small></span></label>`).join("")}</div><label class="form-field validation-time-column" id="validation-time-field" hidden>Столбец периода<select name="time_column" required disabled><option value="">Выберите столбец периода</option>${numeric.map((column) => `<option value="${esc(column.name)}" ${selected.time_column === column.name ? "selected" : ""}>${esc(column.name)}</option>`).join("")}</select></label></fieldset>`;
+}
+function updateLaunchFields() {
+  const form = $("#launch-form"),
+    value = $('input[name="recipe"]:checked', form)?.value,
+    offline = ["baseline", "extra_trees"].includes(value),
+    strategy = $('input[name="validation_strategy"]:checked', form)?.value;
+  $("#launch-cost").textContent =
+    value === "agent"
+      ? "Qwen · расходует общий API-бюджет"
+      : "Без API · обучение на этом компьютере";
+  $("#launch-cost").classList.toggle("paid", value === "agent");
+  $("#qwen-time-field").hidden = value !== "agent";
+  $("#hypothesis-label").textContent =
+    value === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту";
+  form.elements.minutes.disabled = value !== "agent";
+  $("#validation-controls").hidden = !offline;
+  $("#validation-controls").disabled = !offline;
+  $("#validation-time-field").hidden = !offline || strategy !== "time";
+  form.elements.time_column.disabled = !offline || strategy !== "time";
+}
+async function showLaunch(action = "baseline") {
   if (action === "prepare") {
     startPrepare();
     return;
   }
   if (!state.task) return;
-  state.launchTask = state.task;
+  const task = state.task,
+    generation = ++state.launchGeneration,
+    viewGeneration = state.generation;
+  state.launchTask = task;
   $("#launch-title").textContent =
     action === "agent"
       ? "Исследование с Qwen"
@@ -1253,6 +1372,19 @@ function showLaunch(action = "baseline") {
     showHelp();
     return;
   }
+  let profile = state.profiles.get(task);
+  const fingerprint = state.workflow?.dataset_fingerprint || state.currentDatasetFingerprint;
+  try {
+    if (!profile || (fingerprint && profile.dataset_fingerprint !== fingerprint))
+      profile = await api(`${apiBase(task)}/profile`);
+  } catch (error) {
+    if (state.task === task && generation === state.launchGeneration && viewGeneration === state.generation)
+      toast("Не удалось подготовить запуск: " + error.message);
+    return;
+  }
+  if (state.task !== task || generation !== state.launchGeneration || viewGeneration !== state.generation) return;
+  state.profiles.set(task, profile);
+  const selectedValidation = launchValidationConfig(action, profile);
   let author = "";
   try {
     author = localStorage.getItem("alfa-author") || "";
@@ -1268,19 +1400,9 @@ function showLaunch(action = "baseline") {
     )
     .join(
       "",
-    )}</div><div class="form-grid"><label class="form-field">Ваше имя<input name="author" maxlength="80" value="${esc(author)}" placeholder="Необязательно" autocomplete="name"></label><label class="form-field" id="qwen-time-field" ${action === "agent" ? "" : "hidden"}>Время исследования Qwen, минут<input name="minutes" type="number" min="1" max="175" value="20" ${action === "agent" ? "" : "disabled"} required></label><label class="form-field full"><span id="hypothesis-label">${action === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту"}</span><textarea name="hypothesis" maxlength="500" placeholder="Необязательно"></textarea></label></div><p class="launch-note">Каждый запуск сохранит свой результат. Текущий CSV изменится только после выбора «Использовать CSV».</p><p id="launch-error" class="form-error" role="alert"></p><div class="form-actions"><span id="launch-cost" class="form-cost">${action === "agent" ? "Qwen · расходует общий API-бюджет" : "Без API · обучение на этом компьютере"}</span><button class="button primary" type="submit" id="launch-submit">Запустить ${icon("activity")}</button></div>`;
-  $("#launch-form").onchange = () => {
-    const value = $('input[name="recipe"]:checked', $("#launch-form"))?.value;
-    $("#launch-cost").textContent =
-      value === "agent"
-        ? "Qwen · расходует общий API-бюджет"
-        : "Без API · обучение на этом компьютере";
-    $("#launch-cost").classList.toggle("paid", value === "agent");
-    $("#qwen-time-field").hidden = value !== "agent";
-    $("#hypothesis-label").textContent =
-      value === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту";
-    $("#launch-form").elements.minutes.disabled = value !== "agent";
-  };
+    )}</div>${validationFields(profile, selectedValidation)}<div class="form-grid"><label class="form-field">Ваше имя<input name="author" maxlength="80" value="${esc(author)}" placeholder="Необязательно" autocomplete="name"></label><label class="form-field" id="qwen-time-field" ${action === "agent" ? "" : "hidden"}>Время исследования Qwen, минут<input name="minutes" type="number" min="1" max="175" value="20" ${action === "agent" ? "" : "disabled"} required></label><label class="form-field full"><span id="hypothesis-label">${action === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту"}</span><textarea name="hypothesis" maxlength="500" placeholder="Необязательно"></textarea></label></div><p class="launch-note">Каждый запуск сохранит свой результат. Текущий CSV изменится только после выбора «Использовать CSV».</p><p id="launch-error" class="form-error" role="alert"></p><div class="form-actions"><span id="launch-cost" class="form-cost">${action === "agent" ? "Qwen · расходует общий API-бюджет" : "Без API · обучение на этом компьютере"}</span><button class="button primary" type="submit" id="launch-submit">Запустить ${icon("activity")}</button></div>`;
+  $("#launch-form").onchange = updateLaunchFields;
+  updateLaunchFields();
   $("#launch-dialog").showModal();
 }
 async function startPrepare() {
@@ -1317,11 +1439,28 @@ $("#launch-form").addEventListener("submit", async (event) => {
   const action = $('input[name="recipe"]:checked', form)?.value,
     author = form.elements.author.value.trim(),
     hypothesis = form.elements.hypothesis.value.trim(),
-    minutes = Number(form.elements.minutes.value),
+    minutes = action === "agent" ? Number(form.elements.minutes.value) : 20,
     task = state.launchTask;
   if (!action || !Number.isInteger(minutes) || minutes < 1 || minutes > 175) {
     $("#launch-error").textContent = "Укажите целое число минут от 1 до 175.";
     return;
+  }
+  let validation;
+  if (["baseline", "extra_trees"].includes(action)) {
+    const strategy = $('input[name="validation_strategy"]:checked', form)?.value;
+    if (!["random", "time", "grouped"].includes(strategy)) {
+      $("#launch-error").textContent = "Выберите способ проверки качества.";
+      return;
+    }
+    validation = { strategy };
+    if (strategy === "time") {
+      const column = form.elements.time_column.value;
+      if (!column) {
+        $("#launch-error").textContent = "Выберите столбец периода.";
+        return;
+      }
+      validation.time_column = column;
+    }
   }
   button.disabled = true;
   $("#launch-error").textContent = "";
@@ -1332,6 +1471,7 @@ $("#launch-form").addEventListener("submit", async (event) => {
       author,
       hypothesis,
       minutes,
+      ...(validation ? { validation } : {}),
     });
     try {
       localStorage.setItem("alfa-author", author);
@@ -1467,7 +1607,7 @@ function comparisonWinners(reports) {
 }
 function experimentsPanel(reports) {
   const { winners, groupCount } = comparisonWinners(reports);
-  return `<section class="panel" id="experiment-history"><div class="panel-head result-history-head"><div><h2>Эксперименты команды</h2><p>Метрики, гипотезы и авторы</p></div><div class="action-buttons"><button class="button small" data-launch="extra_trees">Сравнить модели</button></div></div>${reports.length ? `<div class="table-wrap experiment-table"><table aria-label="Результаты экспериментов"><thead><tr><th scope="col">Модель и гипотеза</th><th scope="col">Метрика</th><th scope="col">Автор</th><th scope="col">Время / статус</th><th scope="col">Результат</th></tr></thead><tbody>${reports.map((r) => `<tr class="${r.source === "imported" ? "experiment-row-imported" : winners.has(r.id) ? "experiment-row-best" : ""}"><td><span class="model-name">${esc(r.model || ACTION_NAMES[r.action] || "Эксперимент")}</span><span class="report-hypothesis">${esc(r.hypothesis || "Гипотеза не указана")}</span><span class="report-source ${r.source === "imported" ? "source-imported" : ""}">${r.source === "imported" ? "От участника · не проверено локально" : "На этом компьютере"}</span>${r.dataset_fingerprint && state.currentDatasetFingerprint && r.dataset_fingerprint !== state.currentDatasetFingerprint ? badge("Другая версия данных", "amber") : ""}</td><td class="metric-cell">${r.metric && Number.isFinite(r.metric.value) ? number(r.metric.value, 6) : "—"}<small>${esc(r.metric?.name || "Нет метрики")}</small>${winners.has(r.id) ? badge("Лучший в группе", "green") : ""}</td><td>${esc(r.author || "Не указан")}</td><td>${duration(r.elapsed_seconds)}<br>${statusBadge(r.agent_status === "fallback" ? "fallback" : r.status)}</td><td>${r.source === "local" && r.status === "completed" && r.output_valid === true && r.dataset_fingerprint === state.currentDatasetFingerprint ? `<div class="result-row-actions">${r.published ? badge("CSV используется", "green") : `<button class="button small" data-action="publish-job" data-publish-id="${esc(r.id)}">Использовать CSV</button>`}${jobBundleLink(r, "CSV и отчёт ZIP", true)}</div>` : r.source === "imported" ? '<span class="subtle-text">Только отчёт</span>' : '<span class="subtle-text">—</span>'}</td></tr>`).join("")}</tbody></table></div><div class="comparison-note">${groupCount ? `${groupCount} групп сравнения: одна задача, метрика и одинаковые проверочные строки.` : "Пока нет пары локальных результатов с одинаковой схемой проверки."}</div>` : '<div class="job-empty"><p>Запустите baseline — появится первая метрика для сравнения.</p><button class="button primary" data-launch="baseline">Обучить baseline</button></div>'}</section>`;
+  return `<section class="panel" id="experiment-history"><div class="panel-head result-history-head"><div><h2>Эксперименты команды</h2><p>Метрики, гипотезы и авторы</p></div><div class="action-buttons"><button class="button small" data-launch="extra_trees">Сравнить модели</button></div></div>${reports.length ? `<div class="table-wrap experiment-table"><table aria-label="Результаты экспериментов"><thead><tr><th scope="col">Модель и гипотеза</th><th scope="col">Метрика</th><th scope="col">Проверка</th><th scope="col">Автор</th><th scope="col">Время / статус</th><th scope="col">Результат</th></tr></thead><tbody>${reports.map((r) => `<tr class="${r.source === "imported" ? "experiment-row-imported" : winners.has(r.id) ? "experiment-row-best" : ""}"><td><span class="model-name">${esc(r.model || ACTION_NAMES[r.action] || "Эксперимент")}</span><span class="report-hypothesis">${esc(r.hypothesis || "Гипотеза не указана")}</span><span class="report-source ${r.source === "imported" ? "source-imported" : ""}">${r.source === "imported" ? "От участника · не проверено локально" : "На этом компьютере"}</span>${r.dataset_fingerprint && state.currentDatasetFingerprint && r.dataset_fingerprint !== state.currentDatasetFingerprint ? badge("Другая версия данных", "amber") : ""}</td><td class="metric-cell">${r.metric && Number.isFinite(r.metric.value) ? number(r.metric.value, 6) : "—"}<small>${esc(r.metric?.name || "Нет метрики")}</small>${winners.has(r.id) ? badge("Лучший в группе", "green") : ""}</td><td class="validation-cell">${validationView(r, true)}</td><td>${esc(r.author || "Не указан")}</td><td>${duration(r.elapsed_seconds)}<br>${statusBadge(r.agent_status === "fallback" ? "fallback" : r.status)}</td><td>${r.source === "local" && r.status === "completed" && r.output_valid === true && r.dataset_fingerprint === state.currentDatasetFingerprint ? `<div class="result-row-actions">${r.published ? badge("CSV используется", "green") : `<button class="button small" data-action="publish-job" data-publish-id="${esc(r.id)}">Использовать CSV</button>`}${jobBundleLink(r, "CSV и отчёт ZIP", true)}</div>` : r.source === "imported" ? '<span class="subtle-text">Только отчёт</span>' : '<span class="subtle-text">—</span>'}</td></tr>`).join("")}</tbody></table></div><div class="comparison-note">${groupCount ? `${groupCount} групп сравнения: одна задача, схема, метрика и одинаковые проверочные строки.` : "Пока нет пары локальных результатов с одинаковой схемой проверки."} Метрики разных схем не ранжируются вместе.</div>` : '<div class="job-empty"><p>Запустите baseline — появится первая метрика для сравнения.</p><button class="button primary" data-launch="baseline">Обучить baseline</button></div>'}</section>`;
 }
 function downloadsPanel() {
   return `<section class="panel downloads-panel"><div class="panel-head"><div><h2>Выгрузить по кнопке</h2><p>Выберите, кому нужен результат</p></div>${icon("download")}</div><div class="download-options"><div class="download-option"><span class="download-kind">КОМАНДЕ</span><h3>Отчёт об экспериментах</h3><p>Метрики, авторы и заметки. Можно добавить JSON или ZIP-пакет коллеги.</p><div class="action-buttons"><a class="button" href="${apiBase()}/export" download>${icon("download")} Скачать отчёт JSON</a><button class="button" data-action="import-reports">Добавить отчёт коллеги</button></div></div><div class="download-option"><span class="download-kind">НА ХАКАТОН</span><h3>Архив с агентом</h3><p>Код решения для сдачи. Данные и ключи в архив не входят.</p><button class="button primary" data-action="build-delivery" ${state.deliveryBusy ? "disabled" : ""}>${state.deliveryBusy ? '<span class="spinner"></span> Собираем…' : `${icon("download")} Собрать solution.zip`}</button></div></div></section>`;

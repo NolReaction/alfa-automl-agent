@@ -93,21 +93,43 @@ def _split(value):
     if "seed" in value:
         result["seed"] = _number(value["seed"], "split.seed", minimum=0,
                                  maximum=(1 << 32) - 1, integer=True)
-    if "validation_fraction" in value:
-        fraction = _number(value["validation_fraction"], "split.validation_fraction",
-                           minimum=0, maximum=1)
+    for field in ("validation_fraction", "train_fraction"):
+        if field not in value:
+            continue
+        fraction = _number(value[field], f"split.{field}", minimum=0, maximum=1)
         if not 0 < fraction < 1:
-            raise ValueError("Доля валидации должна быть больше 0 и меньше 1.")
-        result["validation_fraction"] = fraction
-    if "stratified" in value:
-        if not isinstance(value["stratified"], bool):
-            raise ValueError("Поле split.stratified должно быть логическим значением.")
-        result["stratified"] = value["stratified"]
-    if "validation_rows" in value:
-        result["validation_rows"] = _number(value["validation_rows"], "split.validation_rows",
-                                            minimum=1, maximum=(1 << 31) - 1, integer=True)
+            name = "валидации" if field == "validation_fraction" else "обучения"
+            raise ValueError(f"Доля {name} должна быть больше 0 и меньше 1.")
+        result[field] = fraction
+    for field in ("stratified", "shuffle"):
+        if field not in value:
+            continue
+        if not isinstance(value[field], bool):
+            raise ValueError(f"Поле split.{field} должно быть логическим значением.")
+        result[field] = value[field]
+    for field, minimum in (("validation_rows", 1), ("train_rows", 1),
+                           ("group_count", 1), ("train_groups", 1), ("validation_groups", 1),
+                           ("group_overlap", 0), ("n_splits", 2), ("fold", 0)):
+        if field in value:
+            result[field] = _number(value[field], f"split.{field}", minimum=minimum,
+                                    maximum=(1 << 31) - 1, integer=True)
     if "validation_hash" in value:
         result["validation_hash"] = _hash(value["validation_hash"], "split.validation_hash")
+    if "strategy" in value:
+        strategy = value["strategy"]
+        if not isinstance(strategy, str) or strategy not in {"random", "time", "grouped"}:
+            raise ValueError("У разбиения некорректная стратегия.")
+        result["strategy"] = strategy
+    for field, limit in (("time_column", 500), ("train_period_min", 100),
+                         ("train_period_max", 100), ("validation_period", 100)):
+        if field not in value:
+            continue
+        text = _text(value[field], f"split.{field}", limit)
+        if not text.strip():
+            raise ValueError(f"Поле split.{field} не должно быть пустым.")
+        result[field] = text
+    if "fold" in result and "n_splits" in result and result["fold"] >= result["n_splits"]:
+        raise ValueError("Номер fold должен быть меньше числа разбиений n_splits.")
     return result
 
 
