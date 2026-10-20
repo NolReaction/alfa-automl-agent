@@ -591,6 +591,8 @@ class JobTests(unittest.TestCase):
         run = self.state / "jobs" / job["id"] / "task" / ".agent_runs" / ("a" * 32)
         run.mkdir(parents=True)
         report = {"status": "failed", "events": [], "error": "API failed", "model": "fake",
+                  "research_protocol_version": 3, "stage": "inner_research", "stages": [
+                      {"id": "inner_research", "status": "failed", "reason": "secret-for-test"}],
                   "api": {"attempts": 1, "responses": 0, "usage_reported_responses": 0,
                           "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
         (run / "run.json").write_text(json.dumps(report), encoding="utf-8")
@@ -601,6 +603,9 @@ class JobTests(unittest.TestCase):
             result = self.manager.detail("example", job["id"])["job"]
             self.assertTrue(result["api_used"])
             self.assertEqual(result["api"]["state"], "unknown")
+            self.assertEqual(result["research"]["protocol_version"], 3)
+            self.assertEqual(result["research"]["stage"], "inner_research")
+            self.assertEqual(result["research"]["stages"][0]["reason"], "[REDACTED]")
             self.assertIsNone(result["metric"])
             detail = self.manager.detail("example", job["id"])
             self.assertNotIn("secret-for-test", detail["stdout"])

@@ -26,6 +26,7 @@ from app.splits import normalize_validation
 from app.model_config import make_model_config, validate_model_config, model_task_type, winner_feature_evidence, feature_evidence
 from app.file_io import replace_file
 from app.search_summary import validate_search_summary
+from app.research_summary import validate_research_summary
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from agent.llm import API_FIELDS, DEFAULT_MODEL, REQUIRED_API_FIELDS
 
@@ -46,8 +47,8 @@ MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
@@ -466,6 +467,13 @@ class JobManager:
                     return False
         if job.get("agent_run_id") is not None and (not isinstance(job["agent_run_id"], str) or not JOB_ID.fullmatch(job["agent_run_id"])):
             return False
+        if "research" in job:
+            if job["action"] != "agent":
+                return False
+            try:
+                validate_research_summary(job["research"])
+            except ValueError:
+                return False
         runtime = job.get("_runtime")
         if runtime is not None and (not isinstance(runtime, dict) or type(runtime.get("pid")) is not int
                 or runtime["pid"] <= 1 or runtime.get("identity") is not None and not isinstance(runtime["identity"], str)):
@@ -515,6 +523,8 @@ class JobManager:
             summary["api"] = {key: value for key, value in summary["api"].items()
                               if key in {"state", "attempts", "responses", "reported_responses", "prompt_tokens",
                                          "completion_tokens", "total_tokens"}}
+        if "research" in summary:
+            summary["research"] = validate_research_summary(summary["research"])
         if summary.get("published"):
             summary["published"] = self._publication_current(job)
         active = self._active
@@ -911,7 +921,8 @@ class JobManager:
                 detail = reader.detail(reports[0]["id"])
                 updates = dict(agent_status=detail["report"]["status"], agent_reason=detail["report"].get("reason"),
                                api=detail["usage"], model=detail["report"].get("model"),
-                               api_used=bool(detail["usage"].get("attempts")), agent_run_id=detail["id"])
+                               api_used=bool(detail["usage"].get("attempts")), agent_run_id=detail["id"],
+                               research=detail["research"])
                 updates = self.redact(job["task_id"], job["id"], updates)
                 changed = any(job.get(name) != value for name, value in updates.items())
                 job.update(updates)

@@ -469,6 +469,82 @@ const cases = {
     assert.match(get("classificationDiagnosticView")(current), /На проверочных строках этого запуска/);
     assert.doesNotMatch(get("classificationDiagnosticView")(current), /не проверен локально/);
   },
+  research_stages_and_provenance() {
+    setup();
+    const summary = {
+      protocol_version: 3, stage: "outer_validation",
+      stages: [
+        { id: "inner_research", status: "completed" },
+        { id: "candidate_frozen", status: "completed" },
+        { id: "outer_validation", status: "running" },
+        { id: "full_refit", status: "skipped", reason: '<img src=x onerror="evil()">' },
+      ],
+      evaluations: {
+        selection: { scope: "inner_selection", metric: { name: "R2", value: -0.25, higher_is_better: true }, split: { strategy: "time", train_rows: 40, validation_rows: 10 } },
+        final_check: { baseline: { name: "R2", value: -0.5, higher_is_better: true }, candidate: { name: "R2", value: -0.75, higher_is_better: true }, selected: "baseline" },
+      },
+      frozen_candidate: { code_hash: "a".repeat(64), recipe_hash: "b".repeat(64) },
+    };
+    const html = get("researchView")(summary, { status: "fallback" });
+    assert.match(html, /aria-current="step"/);
+    assert.equal((html.match(/class="research-stage /g) || []).length, 6);
+    assert.match(html, /Внутренний подбор/);
+    assert.match(html, /Внешняя приёмка/);
+    assert.match(html, /Сохранён стартовый рецепт/);
+    assert.match(html, /не является независимой оценкой/);
+    assert.match(html, /резервный результат/);
+    assert.match(html, /-0,25/);
+    assert.match(html, /Условия этапа не выполнены/);
+    assert.doesNotMatch(html, /<img|onerror="evil/);
+    const imported = get("researchView")(summary, { imported: true });
+    assert.match(imported, /отчёт участника, локальная проверка не выполнялась/);
+    const legacy = get("researchView")({ protocol_version: 2 });
+    assert.match(legacy, /Прежний протокол v2/);
+    assert.doesNotMatch(legacy, /Внутренний подбор|Протокол v3/);
+    assert.match(get("usageView")({ state: "unknown", total_tokens: 0 }), /неизвестно/);
+  },
+  research_not_better_is_normal() {
+    const html = get("eventView")({ kind: "experiment", step: 1, tool_index: 1,
+      result: { exit_code: 0, elapsed_seconds: 1.2, selection: {
+        verified: true, accepted: false, reason: "not_better", hypothesis: "<script>evil()</script>",
+        scope: "inner_selection", recipe_summary: { family: "Ridge" },
+        metric: { name: "RMSE", value: 4.2, higher_is_better: false },
+      } } }, 0);
+    assert.match(html, /timeline-event success/);
+    assert.match(html, /улучшения нет/);
+    assert.match(html, /RMSE/);
+    assert.match(html, /Внутренняя проверка · подбор рецепта/);
+    assert.match(html, /Ridge/);
+    assert.match(html, /&lt;script&gt;/);
+    assert.doesNotMatch(html, /timeline-event error|<script>/);
+  },
+  research_fallback_reasons_and_private_paths() {
+    const labels = {
+      context_budget: /лимит контекста модели/,
+      inner_validation_unavailable: /внутреннюю проверку/,
+      refit_failed: /обучение на всех данных/,
+    };
+    for (const [reason, label] of Object.entries(labels)) {
+      assert.match(get("researchView")({ protocol_version: 2 }, { status: "fallback", reason }), label);
+      const current = get("researchView")({ protocol_version: 3, stage: "inner_research",
+        stages: [{ id: "inner_research", status: "failed", reason: "/workspace/private/run.json" }] },
+        { status: "fallback", reason });
+      assert.match(current, label);
+      assert.match(current, /Не выполнялся/);
+      assert.doesNotMatch(current, /workspace|private|run\.json|Ожидает/);
+    }
+    const unknown = get("researchView")({ protocol_version: 2 }, { status: "fallback", reason: "/workspace/private/error.log" });
+    assert.doesNotMatch(unknown, /workspace|private|error\.log/);
+    const event = get("eventView")({ kind: "experiment", result: { exit_code: 0, selection: {
+      verified: true, scope: "inner_selection", recipe_summary: { family: "/workspace/private/model.py" },
+    } } }, 0);
+    assert.match(event, /Пользовательский рецепт/);
+    assert.doesNotMatch(event, /workspace|private|model\.py/);
+    const interrupted = get("researchView")({ protocol_version: 3, stage: "inner_research",
+      stages: [{ id: "inner_research", status: "running" }] }, { status: "interrupted" });
+    assert.match(interrupted, /Остановлен/);
+    assert.doesNotMatch(interrupted, /spinner|Выполняется|Ожидает/);
+  },
   api_required_fields() {
     const state = setup();
     state.session = { api: { ready: false } };
