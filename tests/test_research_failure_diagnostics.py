@@ -31,6 +31,7 @@ class ResearchFailureDiagnosticTests(unittest.TestCase):
                 run_agent_v3(task, client, max_steps=1, time_budget=90)
         reports = list((task.parent / ".agent_runs").glob("*/run.json"))
         self.assertEqual(len(reports), 1)
+        report_path = str(reports[0].resolve())
         report = json.loads(reports[0].read_text(encoding="utf-8"))
         self.assertEqual(report["status"], "failed")
         self.assertFalse((task.parent / "submission.csv").exists())
@@ -39,9 +40,9 @@ class ResearchFailureDiagnosticTests(unittest.TestCase):
         self.assertNotIn(key, json.dumps(report))
         self.assertNotIn(key, str(raised.exception))
         self.assertIn("No verified full-data predictions", str(raised.exception))
-        self.assertIn(str(reports[0]), str(raised.exception))
+        self.assertIn(report_path, str(raised.exception))
         self.assertEqual(report["error"], str(raised.exception))
-        self.assertEqual(report["finalization_failure"]["report_path"], str(reports[0]))
+        self.assertEqual(report["finalization_failure"]["report_path"], report_path)
         return str(raised.exception), report
 
     def test_outer_file_error_before_child_execution_retains_the_underlying_path_failure(self):
