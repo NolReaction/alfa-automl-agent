@@ -11,6 +11,7 @@ from unittest.mock import patch
 from app import file_io
 from app.sharing import ReportStore
 from app.model_config import make_model_config
+from app.search_summary import validate_search_summary
 
 
 FINGERPRINT = "a" * 64
@@ -30,6 +31,26 @@ def job(**overrides):
         "error": "", "output_valid": True, "api_used": False, "exit_code": 0,
     }
     value.update(overrides)
+    return value
+
+
+def search_summary(**changes):
+    value = {
+        "status": "completed", "planned": 4, "completed": 2,
+        "best_candidate": "extra", "validation_reason": "Одинаковые проверочные строки",
+        "candidates": [
+            {"id": "baseline", "label": "Стартовая модель", "model": "HistGradientBoostingRegressor",
+             "status": "completed", "metric": 50.0, "selected": False, "elapsed_seconds": 1.0, "error": None},
+            {"id": "extra", "label": "ExtraTrees", "model": "ExtraTreesRegressor",
+             "status": "completed", "metric": 43.25, "selected": True, "elapsed_seconds": 2.0, "error": None},
+            {"id": "failed", "label": "Изменённая модель", "model": "ExtraTreesRegressor",
+             "status": "failed", "metric": None, "selected": False, "elapsed_seconds": 0.2,
+             "error": "private-key from C:\\Users\\Private\\train.csv"},
+            {"id": "skipped", "label": "Последняя модель", "model": "ExtraTreesRegressor",
+             "status": "skipped", "metric": None, "selected": False, "elapsed_seconds": 0.0, "error": None},
+        ],
+    }
+    value.update(changes)
     return value
 
 
@@ -69,6 +90,92 @@ class SharingTests(unittest.TestCase):
         self.assertEqual(self.store.import_reports("regression", FINGERPRINT, exported_again),
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
+
+    def test_automl_candidates_and_winner_survive_exchange_without_machine_diagnostics(self):
+        config = make_model_config("extra_trees", "regression")
+        original = job(action="automl", model_config=config, search=search_summary())
+        envelope = self.envelope(original)
+        serialized = json.dumps(envelope)
+        self.assertNotIn("private-key", serialized)
+        self.assertNotIn("Users", serialized)
+        self.assertEqual(original["search"]["candidates"][2]["error"],
+                         "private-key from C:\\Users\\Private\\train.csv")
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                         {"imported": 1, "skipped": 0})
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["search"], envelope["reports"][0]["search"])
+        self.assertEqual(imported["search"]["best_candidate"], "extra")
+        self.assertEqual(imported["model_config"], config)
+        self.assertFalse(imported["verified"])
+        self.assertFalse(imported["published"])
+        reexported = self.envelope(imported)
+        self.assertEqual(reexported["reports"], envelope["reports"])
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, reexported),
+                         {"imported": 0, "skipped": 1})
+
+    def test_automl_attempt_evidence_changes_identity(self):
+        for score in (50.0, 51.0):
+            search = search_summary()
+            search["candidates"][0]["metric"] = score
+            envelope = self.envelope(job(action="automl", search=search,
+                                         model_config=make_model_config("extra_trees", "regression")))
+            self.assertEqual(self.store.import_reports("regression", FINGERPRINT, envelope),
+                             {"imported": 1, "skipped": 0})
+        self.assertEqual(len({row["id"] for row in self.store.list("regression")}), 2)
+
+    def test_invalid_automl_winner_and_evidence_rejected_before_import_writes(self):
+        valid = self.envelope(job(action="automl", search=search_summary(),
+                                  model_config=make_model_config("extra_trees", "regression")))
+        mutations = [
+            lambda row: row["search"].update(best_candidate="absent"),
+            lambda row: row["search"].update(completed=1),
+            lambda row: row["search"].update(planned=99),
+            lambda row: row["search"].update(path="/private/.env"),
+            lambda row: row["search"]["candidates"][0].update(selected=True),
+            lambda row: row["search"]["candidates"][0].update(metric=42),
+            lambda row: row["search"]["candidates"][0].update(metric=float("nan")),
+            lambda row: row["search"]["candidates"][0].update(id="extra"),
+            lambda row: row["search"]["candidates"][0].update(error="x" * 2001),
+            lambda row: row["search"]["candidates"][1].update(model="RandomForestClassifier"),
+            lambda row: row["search"]["candidates"][1].update(status="failed"),
+            lambda row: row["metric"].update(value=44),
+            lambda row: row.pop("model_config"),
+            lambda row: row.pop("search"),
+            lambda row: row.update(action="extra_trees"),
+        ]
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                envelope = deepcopy(valid)
+                mutation(envelope["reports"][0])
+                with self.assertRaises(ValueError):
+                    self.store.import_reports("regression", FINGERPRINT, envelope)
+        self.assertFalse((self.root / ".workspace").exists())
+
+    def test_search_progress_can_be_valid_before_first_winner_but_not_final(self):
+        summary = search_summary(status="running", completed=0, best_candidate=None)
+        for row in summary["candidates"]:
+            row.update(status="pending", selected=False, metric=None, error=None)
+        summary["candidates"][0]["status"] = "running"
+        validated = validate_search_summary(summary, allow_running=True)
+        self.assertEqual(validated, summary)
+        self.assertIsNot(validated["candidates"], summary["candidates"])
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary)
+        summary["status"] = "completed"
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary, allow_running=True)
+
+    def test_failed_search_progress_preserves_failure_with_or_without_a_winner(self):
+        summary = search_summary(status="failed")
+        self.assertEqual(validate_search_summary(summary, allow_running=True), summary)
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary)
+        summary.update(completed=0, best_candidate=None)
+        for row in summary["candidates"]:
+            row.update(status="failed", selected=False, metric=None, error="Training failed")
+        self.assertEqual(validate_search_summary(summary, allow_running=True), summary)
+        with self.assertRaises(ValueError):
+            validate_search_summary(summary)
 
     def test_selected_model_parameters_survive_import_reexport_and_deduplication(self):
         config = make_model_config("extra_trees", "regression", {"n_estimators": 200, "max_depth": 12})

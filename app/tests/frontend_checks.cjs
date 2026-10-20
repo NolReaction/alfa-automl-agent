@@ -225,6 +225,89 @@ const cases = {
       assert.equal("model_params" in value, false, action);
     }
   },
+  automl_payload() {
+    setup();
+    const automatic = get("launchPayload")({
+      task_id: "case", action: "automl", author: "Дима", hypothesis: "Подбор", minutes: 10,
+      validation: { strategy: "auto" }, model_params: { n_estimators: 600 },
+    });
+    assert.equal(automatic.minutes, 10);
+    assert.deepEqual(plain(automatic.validation), { strategy: "auto" });
+    assert.equal("model_params" in automatic, false, "Search owns candidate parameters even if a previous recipe had edits");
+    const explicit = get("launchPayload")({ ...automatic, validation: { strategy: "time", time_column: "Year_Factor" } });
+    assert.deepEqual(plain(explicit.validation), { strategy: "time", time_column: "Year_Factor" });
+    const qwen = get("launchPayload")({ ...automatic, action: "agent" });
+    assert.equal("validation" in qwen, false);
+    assert.equal("model_params" in qwen, false);
+  },
+  automl_validation() {
+    const state = setup();
+    const defaults = get("launchValidationConfig")("automl", profile);
+    assert.equal(defaults.strategy, "auto");
+    const automatic = get("validationFields")(profile, defaults, "automl");
+    assert.match(automatic, /value="auto" checked/);
+    const ordinary = get("validationFields")(profile, { strategy: "random" }, "baseline");
+    assert.match(ordinary, /id="validation-auto-option" hidden/);
+    assert.match(ordinary, /value="auto"\s+disabled/);
+    const reference = job({ action: "automl", validation: { strategy: "auto" }, split: { strategy: "grouped" } });
+    state.jobs = [reference]; state.selectedJob = reference.id; state.jobDetail = { job: reference };
+    assert.equal(get("launchValidationConfig")("extra_trees", profile).strategy, "grouped", "A later manual comparison inherits the resolved search split");
+    assert.equal(get("validationLabel")(reference), "По группам дублей");
+    assert.equal(get("validationLabel")({ ...reference, split: null }), "Автоматический выбор проверки");
+  },
+  automl_results() {
+    setup();
+    const search = {
+      status: "time_limit", planned: 4, completed: 2, best_candidate: "earlier",
+      validation_reason: '<script>reason()</script>',
+      candidates: [
+        { id: "earlier", label: 'Первый <img src=x>', model: "RandomForestClassifier", status: "completed", metric: 0.6, selected: true, elapsed_seconds: 10, error: null },
+        { id: "later", label: "Поздний", model: "ExtraTreesClassifier", status: "completed", metric: 0.59, selected: false, elapsed_seconds: 12, error: null },
+        { id: "timeout", label: "Не успел", model: "ExtraTreesClassifier", status: "timed_out", metric: null, selected: false, elapsed_seconds: 60, error: '<svg/onload=evil()>' },
+        { id: "skipped", label: "Не запускался", model: "ExtraTreesClassifier", status: "skipped", metric: null, selected: false, elapsed_seconds: 0, error: null },
+      ],
+    };
+    const current = job({ action: "automl", search });
+    const html = get("autoSearchView")(current);
+    assert.match(html, /Лимит времени · лучший сохранён/);
+    assert.match(html, /Оценено 2 \/ 4 вариантов/);
+    assert.equal((html.match(/search-selected/g) || []).length, 1);
+    assert.match(html, /search-selected[^]*Первый &lt;img/);
+    assert.match(html, /Пропущен/);
+    assert.doesNotMatch(html, /<script>|<img|<svg\/onload/);
+    assert.match(html, /&lt;svg\/onload/);
+    const unsupported = get("autoSearchView")({ ...current, search: { ...search, best_candidate: "unknown" } });
+    assert.doesNotMatch(unsupported, /search-selected|лучший сохранён/);
+    assert.equal(get("autoSearchView")({ ...current, action: "agent" }), "");
+    const grouped = get("comparisonGroups")([current, job({ id: "manual", metric: { name: "Macro F1", value: 0.5, higher_is_better: true } })]);
+    assert.equal(grouped.length, 1);
+    assert.equal(grouped[0].best.id, current.id, "The measured search result participates in existing comparison groups");
+  },
+  automl_progress() {
+    setup();
+    const current = job({ action: "automl", status: "running", metric: null, output_valid: null,
+      search: { status: "running", planned: 4, completed: 0, best_candidate: null,
+        validation_reason: "Одинаковые строки остаются вместе", candidates: [
+          { id: "a", status: "running", metric: null, selected: false },
+          { id: "b", status: "skipped", metric: null, selected: false },
+          { id: "c", status: "skipped", metric: null, selected: false },
+          { id: "d", status: "skipped", metric: null, selected: false },
+        ] },
+    });
+    const html = get("autoSearchView")(current);
+    assert.match(html, /Оценено 0 \/ 4 вариантов/);
+    assert.match(html, /value="0"/);
+    assert.match(html, /Выполняется/);
+    assert.match(html, /В очереди/);
+    assert.doesNotMatch(html, /Пропущен|Выбран|лучший сохранён/);
+    current.search.candidates[0] = { id: "a", status: "completed", metric: 0.5, selected: true };
+    current.search.best_candidate = "a";
+    assert.match(get("autoSearchView")(current), /Пока лучший/);
+    assert.doesNotMatch(get("autoSearchView")(current), />Выбран</);
+    current.search.status = "failed";
+    assert.match(get("autoSearchView")(current), /завершился с ошибкой/);
+    assert.doesNotMatch(get("autoSearchView")(current), /В очереди|>Выбран</);
+  },
   escaping() {
     setup();
     const malicious = job({ model_config: { model: '<img src=x onerror="evil()">', parameters: { '<script>evil()</script>': '"<svg/onload=evil()>"' } } });

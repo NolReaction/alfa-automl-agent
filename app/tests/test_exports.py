@@ -13,6 +13,7 @@ import build_submission
 from app.exports import delivery_archive, result_archive, _readable_report
 from app.model_config import make_model_config
 from app.sharing import ReportStore
+from app.tests.test_sharing import search_summary
 
 
 class ExportTests(unittest.TestCase):
@@ -142,6 +143,26 @@ class ExportTests(unittest.TestCase):
         html = _readable_report(report).decode("utf-8")
         self.assertNotIn("<img ", html)
         self.assertIn("&lt;img src=x onerror=&quot;evil()&quot;&gt;", html)
+
+    def test_automl_report_shows_attempts_winner_and_escapes_text(self):
+        search = search_summary(status="time_limit")
+        search["validation_reason"] = "<script>validation</script>"
+        search["candidates"][0]["label"] = '<img src=x onerror="evil()">'
+        search["candidates"][2]["error"] = "<script>error</script>"
+        report = {"id": "a" * 32, "action": "automl", "model": "ExtraTreesRegressor",
+                  "dataset_fingerprint": "b" * 64, "search": search,
+                  "metric": {"name": "RMSE", "value": 43.25, "higher_is_better": False},
+                  "model_config": make_model_config("extra_trees", "regression")}
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("Автоподбор моделей", html)
+        self.assertIn("Попытки автоподбора", html)
+        self.assertIn("Победитель", html)
+        self.assertIn("Лимит времени: сохранён лучший завершённый результат.", html)
+        self.assertIn("43.25", html)
+        self.assertNotIn("<script>", html)
+        self.assertNotIn("<img ", html)
+        self.assertIn("&lt;script&gt;validation&lt;/script&gt;", html)
+        self.assertIn("&lt;script&gt;error&lt;/script&gt;", html)
 
 
 if __name__ == "__main__":

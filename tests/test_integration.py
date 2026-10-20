@@ -87,7 +87,7 @@ print('predictions-written')
                 })
                 result = subprocess.run(
                     [sys.executable, str(Path(__file__).resolve().parents[1] / "solution.py"),
-                     str(task_dir / "task.md"), "--max-steps", "3", "--time-budget", "30"],
+                     str(task_dir / "task.md"), "--mode", "llm", "--max-steps", "3", "--time-budget", "30"],
                     env=env, capture_output=True, text=True, timeout=45,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)

@@ -14,6 +14,7 @@ import tempfile
 import threading
 
 from app.file_io import replace_file
+from app.search_summary import validate_search_summary
 
 
 FORMAT = "alfa-lab-reports"
@@ -23,7 +24,7 @@ MAX_BYTES = 1024 * 1024
 MAX_RECORD_BYTES = 16 * 1024
 MAX_SAFE_INTEGER = (1 << 53) - 1
 FINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
-ACTIONS = {"baseline", "extra_trees", "agent"}
+ACTIONS = {"baseline", "extra_trees", "automl", "agent"}
 AGENT_STATUSES = {"running", "completed", "fallback", "failed"}
 AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "unknown"}
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
@@ -146,7 +147,7 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         raise ValueError("У отчёта некорректный идентификатор.")
     if (not isinstance(raw.get("action"), str) or raw["action"] not in ACTIONS
             or not isinstance(raw.get("status"), str) or raw["status"] not in FINAL_STATUSES):
-        raise ValueError("Можно передавать только завершённые запуски baseline, extra_trees или agent.")
+        raise ValueError("Можно передавать только завершённые запуски baseline, extra_trees, automl или agent.")
     if _hash(raw.get("dataset_fingerprint"), "dataset_fingerprint") != fingerprint:
         raise ValueError("Отчёт относится к другим данным. Скачайте одинаковую версию задачи и экспортируйте заново.")
     output_valid = raw.get("output_valid")
@@ -172,12 +173,30 @@ def _summary(raw: dict, fingerprint: str) -> dict:
     if "model_config" in raw:
         from app.model_config import validate_model_config
 
-        if raw["action"] not in {"baseline", "extra_trees"}:
+        if raw["action"] not in {"baseline", "extra_trees", "automl"}:
             raise ValueError("Параметры модели доступны только для локальных рецептов.")
-        model_config = validate_model_config(raw["model_config"], action=raw["action"])
+        model_config = validate_model_config(raw["model_config"],
+                                             action=None if raw["action"] == "automl" else raw["action"])
         if result["model"] is not None and result["model"] != model_config["model"]:
             raise ValueError("Название модели не совпадает с параметрами запуска.")
         result["model_config"] = model_config
+    if "search" in raw:
+        if raw["action"] != "automl":
+            raise ValueError("Отчёт о подборе доступен только для автоподбора.")
+        search = validate_search_summary(raw["search"], metric=result["metric"], model=result["model"],
+                                         allow_running=raw["status"] != "completed")
+        # Machine diagnostics may mention local paths or credentials. Share a
+        # stable explanation while preserving measured candidates and winner.
+        for candidate in search["candidates"]:
+            if candidate["error"] is not None:
+                candidate["error"] = {
+                    "timed_out": "Превышен лимит времени попытки",
+                    "skipped": "Попытка пропущена",
+                }.get(candidate["status"], "Попытка завершилась с ошибкой")
+        result["search"] = search
+    if (raw["action"] == "automl" and raw["status"] == "completed"
+            and ("search" not in result or "model_config" not in result or result["metric"] is None)):
+        raise ValueError("У завершённого автоподбора нужны попытки, параметры победителя и метрика.")
     # Raw process/API errors can contain credentials, paths or response bodies.
     # User-authored hypotheses remain exact; machine diagnostics stay local.
     _text(raw.get("error"), "error", 1000)
@@ -200,6 +219,8 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         reason = _text(raw["agent_reason"], "agent_reason", 120)
         # Only stable reason codes travel; arbitrary machine diagnostics stay local.
         result["agent_reason"] = reason if reason in AGENT_REASONS else "unknown"
+    if len(_encoded(result)) > MAX_RECORD_BYTES - 1024:
+        raise ValueError("Один отчёт превышает допустимый размер 16 КБ.")
     return result
 
 

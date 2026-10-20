@@ -88,6 +88,51 @@ class JobTests(unittest.TestCase):
         (self.task / "submission.csv").write_bytes(original["submission.csv"])
         self.assertFalse(self.manager.detail("example", results[1]["id"])["job"]["published"])
 
+    def test_automl_selects_best_without_api_and_survives_restore(self):
+        original = (self.task / "submission.csv").read_bytes()
+        with patch.object(jobs, "_settings_values", side_effect=AssertionError("AutoML must not read API settings")):
+            # Redaction may read settings, so patch it independently: the launch
+            # itself must never request or inject credentials into the worker.
+            with patch.object(self.manager, "redact", side_effect=lambda task, job, value: value):
+                job = self.manager.start("example", "automl", minutes=1)
+                result = self.wait(job, timeout=60)
+        self.assertEqual(result["status"], "completed", self.manager.detail("example", job["id"]))
+        self.assertEqual(result["validation"], {"strategy": "auto"})
+        self.assertEqual(result["split"]["strategy"], "random")
+        self.assertFalse(result["api_used"])
+        self.assertFalse(result["published"])
+        self.assertEqual((self.task / "submission.csv").read_bytes(), original)
+        search = result["search"]
+        completed = [row for row in search["candidates"] if row["status"] == "completed"]
+        self.assertEqual(search["completed"], len(completed))
+        self.assertGreaterEqual(len(completed), 2)
+        self.assertEqual(result["metric"]["value"], min(row["metric"] for row in completed))
+        selected = next(row for row in completed if row["selected"])
+        self.assertEqual(selected["id"], search["best_candidate"])
+        self.assertEqual(selected["model"], result["model_config"]["model"])
+        folder = self.state / "jobs" / job["id"]
+        config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["time_budget"], 60)
+        self.assertNotIn("model_params", config)
+        reference = self.wait(self.manager.start("example", "extra_trees",
+                                                 model_params={"n_estimators": 50}), timeout=60)
+        self.assertEqual(reference["status"], "completed")
+        self.assertEqual(result["comparison_key"], reference["comparison_key"])
+        self.manager.close()
+        restored = JobManager(self.data, self.state, self.catalog)
+        try:
+            saved = restored.detail("example", job["id"])["job"]
+            self.assertEqual(saved["search"], search)
+            self.assertEqual(saved["model_config"], result["model_config"])
+            self.assertTrue(restored.publish("example", job["id"])["published"])
+        finally:
+            restored.close()
+
+    def test_qwen_command_keeps_explicit_llm_mode(self):
+        command = self.manager._command({"action": "agent"}, self.task / "task.md", 2)
+        self.assertEqual(command[command.index("--mode") + 1], "llm")
+        self.assertEqual(command[command.index("--time-budget") + 1], "120")
+
     def test_changed_data_and_unfinished_jobs_cannot_be_published(self):
         job = self.manager.start("example", "baseline")
         with self.assertRaises(ValueError):

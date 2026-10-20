@@ -99,7 +99,7 @@ def _readable_report(report: dict) -> bytes:
         return escape(str(value if value is not None else "—"), quote=True)
 
     action = {"baseline": "Стартовая модель", "extra_trees": "ExtraTrees",
-              "agent": "Исследование с Qwen"}.get(report["action"], "Эксперимент")
+              "automl": "Автоподбор моделей", "agent": "Исследование с Qwen"}.get(report["action"], "Эксперимент")
     fallback = report.get("agent_status") == "fallback"
     status = "Резервный CSV: исследование не завершилось штатно" if fallback else "Запуск завершён"
     metric = report.get("metric")
@@ -167,6 +167,27 @@ def _readable_report(report: dict) -> bytes:
         ("Идентификатор запуска", report["id"]), ("SHA-256 данных", report["dataset_fingerprint"]),
     ]
     details = "".join(f"<dt>{text(label)}</dt><dd>{text(value)}</dd>" for label, value in rows)
+    search_html = ""
+    search = report.get("search")
+    if search:
+        states = {"completed": "Завершена", "failed": "Ошибка", "timed_out": "Лимит времени",
+                  "skipped": "Пропущена", "running": "Выполняется", "pending": "Ожидает"}
+        candidate_rows = []
+        for candidate in search["candidates"]:
+            value = candidate.get("metric")
+            score = format(value, ".6g") if isinstance(value, (int, float)) else "—"
+            state = "Победитель" if candidate.get("selected") else states.get(candidate["status"], candidate["status"])
+            explanation = f'<small>{text(candidate["error"])}</small>' if candidate.get("error") else ""
+            candidate_rows.append(
+                f'<tr><td>{text(candidate["label"])}<small>{text(candidate["model"])}</small></td>'
+                f'<td>{text(score)}</td><td>{text(state)}{explanation}</td>'
+                f'<td>{text(candidate["elapsed_seconds"])} с</td></tr>')
+        ending = ("Лимит времени: сохранён лучший завершённый результат."
+                  if search["status"] == "time_limit" else "Сохранён лучший завершённый результат.")
+        search_html = (f'<section><h2>Попытки автоподбора</h2><p>{text(ending)}</p>'
+                       f'<p>{text(search["validation_reason"])}</p><div class="table-scroll"><table>'
+                       '<thead><tr><th>Модель</th><th>Метрика</th><th>Результат</th><th>Время</th></tr></thead>'
+                       f'<tbody>{"".join(candidate_rows)}</tbody></table></div></section>')
     return f'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -177,9 +198,10 @@ main{{max-width:850px;margin:auto;background:white;padding:32px;border-radius:12
 .metric strong{{display:block;font-size:32px}}.metric span{{color:#667085}}p{{margin:8px 0}}
 dl{{display:grid;grid-template-columns:190px minmax(0,1fr);gap:12px 20px}}dt{{color:#667085}}dd{{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}}
 footer{{border-top:1px solid #e7e9ee;padding-top:20px;margin-top:24px;color:#667085}}
+.table-scroll{{overflow-x:auto}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px;text-align:left;border-bottom:1px solid #e7e9ee;vertical-align:top}}td small{{display:block;color:#667085;overflow-wrap:anywhere}}
 @media(max-width:600px){{body{{padding:12px}}main{{padding:20px}}dl{{grid-template-columns:1fr;gap:4px}}dd{{margin-bottom:12px}}}}</style>
 </head><body><main><h1>{text(action)}</h1><p class="status">{text(status)}</p>
-<section class="metric">{metric_html}</section><dl>{details}</dl>
+<section class="metric">{metric_html}</section><dl>{details}</dl>{search_html}
 <footer><p><b>В этом пакете:</b> submission.csv — предсказания этого запуска;
 reports.json — отчёт для кнопки «Добавить отчёт» в Alfa Lab;
 report.html — эта сводка. В Alfa Lab можно добавить весь ZIP целиком.</p><p>CSV прошёл проверку формата. Данные обучения, модель, ключи,

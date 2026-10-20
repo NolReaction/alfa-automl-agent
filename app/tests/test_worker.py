@@ -211,6 +211,27 @@ class WorkerTests(unittest.TestCase):
                 random_result = json.loads((random_job_dir / "result.json").read_text(encoding="utf-8"))
                 self.assertNotEqual(results[0]["comparison_key"], random_result["comparison_key"])
 
+    def test_automl_config_accepts_auto_and_rejects_parameters_and_bad_budgets(self):
+        source = self.make_source()
+        path, _, _ = self.make_config(source, "automl")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        loaded = worker.load_config(path)
+        self.assertEqual(loaded["validation"], {"strategy": "auto"})
+        self.assertEqual(loaded["time_budget"], 600)
+        for updates in (
+            {"model_params": None}, {"model_params": {"n_estimators": 50}},
+            {"time_budget": True}, {"time_budget": "60"}, {"time_budget": 0},
+            {"time_budget": float("nan")}, {"time_budget": 10501},
+            {"validation": {"strategy": "auto", "time_column": "x"}},
+        ):
+            with self.subTest(updates=updates):
+                path.write_text(json.dumps({**config, **updates}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    worker.load_config(path)
+        path.write_text(json.dumps({**config, "action": "baseline", "validation": {"strategy": "auto"}}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            worker.load_config(path)
+
     def test_config_accepts_legacy_and_rejects_unknown_validation_options(self):
         source = self.make_source()
         path, _, _ = self.make_config(source, "baseline")

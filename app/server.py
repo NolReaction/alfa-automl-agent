@@ -26,7 +26,7 @@ from app.profiling import DataCatalog
 from app.runs import RunReader
 from app.sharing import ReportStore
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -319,15 +319,15 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             elif is_job:
                 if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params"}:
                     raise ValueError("Неизвестные параметры запуска.")
-                if "validation" in body and body.get("action") not in ("baseline", "extra_trees"):
-                    raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
+                if "validation" in body and body.get("action") not in ("baseline", "extra_trees", "automl"):
+                    raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
                 if "model_params" in body and body.get("action") not in ("baseline", "extra_trees"):
                     raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
                 job = self.server.jobs.start(task_id, body.get("action"),
                                              author=body.get("author", ""),
                                              hypothesis=body.get("hypothesis", ""),
-                                             minutes=body.get("minutes", 20),
+                                             minutes=body.get("minutes", 10 if body.get("action") == "automl" else 20),
                                              validation=body.get("validation"),
                                              model_params=body.get("model_params"))
                 self._json({"job": job}, 202)

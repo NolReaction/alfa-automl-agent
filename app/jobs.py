@@ -1,4 +1,4 @@
-"""Fixed local training actions, isolated workspaces and explicit publication."""
+"""Local model training and search, isolated workspaces and explicit publication."""
 
 from __future__ import annotations
 
@@ -23,10 +23,12 @@ from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
 from app.model_config import make_model_config, validate_model_config
 from app.file_io import replace_file
+from app.search_summary import validate_search_summary
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ACTIONS = {"baseline", "extra_trees", "agent", "prepare"}
+ACTIONS = {"baseline", "extra_trees", "automl", "agent", "prepare"}
+OFFLINE_ACTIONS = {"baseline", "extra_trees", "automl"}
 ACTIVE = {"queued", "running"}
 JOB_ID = re.compile(r"[0-9a-f]{32}\Z")
 API_FIELDS = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
@@ -39,13 +41,23 @@ POLL_SECONDS = 0.2
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
 SPLIT_FIELDS = {"seed", "validation_fraction", "stratified", "validation_rows", "validation_hash",
                 "train_fraction", "shuffle", "train_rows", "strategy", *SPLIT_TEXT_FIELDS, *SPLIT_COUNT_FIELDS}
+
+
+def _job_validation(action, value=None):
+    if action == "automl" and (value is None or value == {"strategy": "auto"}):
+        return {"strategy": "auto"}
+    return normalize_validation(value)
+
+
+def _config_action(action):
+    return None if action == "automl" else action
 
 
 def _valid_split(split):
@@ -356,18 +368,18 @@ class JobManager:
                                                   or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id))):
             return False
         if "validation" in job:
-            if job["action"] not in {"baseline", "extra_trees"}:
+            if job["action"] not in OFFLINE_ACTIONS:
                 return False
             try:
-                if normalize_validation(job["validation"]) != job["validation"]:
+                if _job_validation(job["action"], job["validation"]) != job["validation"]:
                     return False
             except ValueError:
                 return False
         if "model_config" in job:
-            if job["action"] not in {"baseline", "extra_trees"}:
+            if job["action"] not in OFFLINE_ACTIONS:
                 return False
             try:
-                config = validate_model_config(job["model_config"], action=job["action"])
+                config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
                 if config != job["model_config"] or job.get("model") not in (None, config["model"]):
                     return False
             except ValueError:
@@ -403,10 +415,22 @@ class JobManager:
         if split is not None and not _valid_split(split):
             return False
         if (split is not None and "validation" in job
+                and job["validation"]["strategy"] != "auto"
                 and split.get("strategy", "random") != job["validation"]["strategy"]):
             return False
         if (split is not None and job.get("validation", {}).get("strategy") == "time"
                 and split.get("time_column") != job["validation"]["time_column"]):
+            return False
+        if "search" in job:
+            if job["action"] != "automl":
+                return False
+            try:
+                validate_search_summary(job["search"], metric=job.get("metric"), model=job.get("model"),
+                                        allow_running=job["status"] != "completed")
+            except ValueError:
+                return False
+        if job["action"] == "automl" and job["status"] == "completed" and (
+                "search" not in job or "model_config" not in job):
             return False
         api = job.get("api")
         if api is not None:
@@ -439,9 +463,16 @@ class JobManager:
                                      if key in {"strategy", "time_column"}}
         if "model_config" in summary:
             try:
-                summary["model_config"] = validate_model_config(summary["model_config"], action=job["action"])
+                summary["model_config"] = validate_model_config(summary["model_config"], action=_config_action(job["action"]))
             except ValueError:
                 summary.pop("model_config")
+        if "search" in summary:
+            try:
+                summary["search"] = validate_search_summary(
+                    summary["search"], metric=job.get("metric"), model=job.get("model"),
+                    allow_running=job["status"] != "completed")
+            except ValueError:
+                summary.pop("search")
         if isinstance(summary.get("api"), dict):
             summary["api"] = {key: value for key, value in summary["api"].items()
                               if key in {"state", "attempts", "responses", "reported_responses", "prompt_tokens",
@@ -494,21 +525,23 @@ class JobManager:
         _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
         return job
 
-    def start(self, task_id, action, author="", hypothesis="", minutes=175, validation=None, model_params=None):
+    def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None):
         if not isinstance(action, str) or action not in ACTIONS:
-            raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, agent и prepare.")
-        if validation is not None and action not in {"baseline", "extra_trees"}:
-            raise ValueError("Выбор валидации доступен только для baseline и ExtraTrees.")
+            raise ValueError("Неизвестное действие. Доступны baseline, extra_trees, automl, agent и prepare.")
+        if validation is not None and action not in OFFLINE_ACTIONS:
+            raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
         if model_params is not None and action not in {"baseline", "extra_trees"}:
             raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
         if model_params is not None and not isinstance(model_params, dict):
             raise ValueError("Параметры модели должны быть объектом.")
-        validation = normalize_validation(validation) if action in {"baseline", "extra_trees"} else None
+        validation = _job_validation(action, validation) if action in OFFLINE_ACTIONS else None
         model_config = None
         if not isinstance(author, str) or len(author) > 80 or not isinstance(hypothesis, str) or len(hypothesis) > 500:
             raise ValueError("Имя автора: до 80 символов; гипотеза: до 500 символов.")
+        if minutes is None:
+            minutes = 10 if action == "automl" else 175
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 175:
-            raise ValueError("Бюджет агента должен быть целым числом от 1 до 175 минут.")
+            raise ValueError("Бюджет запуска должен быть целым числом от 1 до 175 минут.")
         with self._lock:
             if self._closed:
                 raise RuntimeError("Менеджер запусков остановлен.")
@@ -532,7 +565,7 @@ class JobManager:
                 state_folder = self.state_root.resolve()
                 if state_folder.is_relative_to(task_location) or task_location.is_relative_to(state_folder):
                     raise ValueError("Рабочая папка запусков должна находиться отдельно от исходной задачи.")
-                if action in {"baseline", "extra_trees"}:
+                if action in OFFLINE_ACTIONS:
                     _, inputs = self.catalog._inputs(task_folder)
                     metadata, _, _, task_type = self.catalog._metadata(inputs)
                     expected = {"regression": "RMSE", "classification": "Macro F1"}.get(task_type)
@@ -551,7 +584,8 @@ class JobManager:
                             raise ValueError("Признак времени должен быть числовым.")
                     if validation["strategy"] == "grouped" and task_type != "classification":
                         raise ValueError("Групповая валидация доступна для классификации.")
-                    model_config = make_model_config(action, task_type, model_params)
+                    if action != "automl":
+                        model_config = make_model_config(action, task_type, model_params)
                 fingerprint = self.catalog.fingerprint(task_id)
             job_id = uuid4().hex
             folder = _safe(self.jobs_root / job_id, self.state_root)
@@ -635,13 +669,15 @@ class JobManager:
             return [sys.executable, "-u", str(ROOT / "prepare_data.py"), "all", "--data-dir", str(self.data_root)]
         if job["action"] == "agent":
             return [sys.executable, "-u", str(ROOT / "solution.py"), str(task_path),
-                    "--max-steps", "12", "--time-budget", str(minutes * 60)]
+                    "--mode", "llm", "--max-steps", "12", "--time-budget", str(minutes * 60)]
         folder = self.jobs_root / job["id"]
         config = {"job_dir": str(folder), "task_path": str(task_path), "action": job["action"],
                   "dataset_fingerprint": job["dataset_fingerprint"],
-                  "validation": normalize_validation(job.get("validation"))}
-        if "model_config" in job:
-            config["model_params"] = validate_model_config(job["model_config"], action=job["action"])["parameters"]
+                  "validation": _job_validation(job["action"], job.get("validation"))}
+        if job["action"] == "automl":
+            config["time_budget"] = minutes * 60
+        if "model_config" in job and job["action"] != "automl":
+            config["model_params"] = validate_model_config(job["model_config"], action=_config_action(job["action"]))["parameters"]
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 
@@ -664,7 +700,7 @@ class JobManager:
             from agent.execution import child_environment
             environment = child_environment()
             environment.update(settings)
-            timeout = PREPARE_TIMEOUT if job["action"] == "prepare" else minutes * 60 + 30 if job["action"] == "agent" else LOCAL_TIMEOUT
+            timeout = PREPARE_TIMEOUT if job["action"] == "prepare" else minutes * 60 + 30 if job["action"] in {"agent", "automl"} else LOCAL_TIMEOUT
             stage = {"prepare": "downloading", "agent": "research"}.get(job["action"], "training")
             with (folder / "stdout.txt").open("xb") as stdout, (folder / "stderr.txt").open("xb") as stderr:
                 with self._lock:
@@ -694,10 +730,18 @@ class JobManager:
                         if path.stat().st_size > MAX_LOG_BYTES:
                             raise ValueError("Запуск остановлен: журнал превысил лимит 20 МБ.")
                     stage_file = folder / "stage.json"
-                    if job["action"] in {"baseline", "extra_trees"} and stage_file.exists():
-                        current = _json(stage_file, self.state_root).get("stage")
+                    if job["action"] in OFFLINE_ACTIONS and stage_file.exists():
+                        evidence = _json(stage_file, self.state_root)
+                        current = evidence.get("stage")
+                        updates = {}
                         if current in {"training", "validating", "refitting", "finished"} and current != job["stage"]:
-                            self._set(job_id, stage=current)
+                            updates["stage"] = current
+                        if job["action"] == "automl" and "search" in evidence:
+                            search = validate_search_summary(evidence["search"], allow_running=True)
+                            if search != job.get("search"):
+                                updates["search"] = search
+                        if updates:
+                            self._set(job_id, **updates)
                     if job["action"] == "agent":
                         with self._lock:
                             if self._collect_agent(job):
@@ -784,16 +828,33 @@ class JobManager:
                 or not _valid_split(split) or not isinstance(evidence.get("model"), str)
                 or not isinstance(evidence.get("comparison_key"), str)):
             raise ValueError("Неполный отчёт о локальной валидации.")
-        requested_validation = normalize_validation(job.get("validation"))
-        if (split.get("strategy", "random") != requested_validation["strategy"]
+        requested_validation = _job_validation(job["action"], job.get("validation"))
+        if (requested_validation["strategy"] != "auto"
+                and split.get("strategy", "random") != requested_validation["strategy"]
                 or requested_validation["strategy"] == "time"
                 and split.get("time_column") != requested_validation["time_column"]):
             raise ValueError("Отчёт использует другую стратегию валидации.")
-        if "model_config" in job:
-            requested_config = validate_model_config(job["model_config"], action=job["action"])
+        if "model_config" in job and job["action"] != "automl":
+            requested_config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
             reported_config = validate_model_config(evidence.get("model_config"), action=job["action"])
             if reported_config != requested_config or evidence["model"] != reported_config["model"]:
                 raise ValueError("Параметры обученной модели не совпадают с настройками запуска.")
+        expected_key = hashlib.sha256(json.dumps({
+            "dataset_fingerprint": job["dataset_fingerprint"], "metric": metric["name"],
+            "higher_is_better": metric["higher_is_better"], "split": split,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+        if evidence["comparison_key"] != expected_key:
+            raise ValueError("Отпечаток сравнения не соответствует данным и проверочным строкам.")
+        if job["action"] == "automl":
+            reported_config = validate_model_config(evidence.get("model_config"))
+            if evidence["model"] != reported_config["model"]:
+                raise ValueError("Модель победителя не совпадает с параметрами отчёта.")
+            task_type = "classification" if metric["higher_is_better"] else "regression"
+            from app.model_config import model_options
+            if reported_config["model"] not in {option["model"] for option in model_options(task_type).values()}:
+                raise ValueError("Модель победителя не соответствует типу задачи.")
+            search = validate_search_summary(evidence.get("search"), metric=metric, model=evidence["model"])
+            job.update(model_config=reported_config, search=search)
         job.update(model=evidence["model"], metric=metric, split=split,
                    comparison_key=evidence["comparison_key"])
 

@@ -1,4 +1,4 @@
-"""Competition entry point: python solution.py /path/to/task.md."""
+"""Run offline AutoML, or explicitly select the API-backed LLM research loop."""
 
 from __future__ import annotations
 
@@ -48,26 +48,51 @@ def check_setup() -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task", nargs="?", default="task.md")
+    parser.add_argument("--mode", choices=("offline", "llm"), default="offline",
+                        help="offline: compare fixed ML recipes without API (default); llm: Qwen research")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Offline environment check; no API calls")
     mode.add_argument("--check-api", action="store_true", help="Make one short request to the configured API")
     parser.add_argument("--max-steps", type=int, default=12)
-    parser.add_argument("--time-budget", type=float, default=10500, help="Seconds; maximum 10500")
+    parser.add_argument("--time-budget", type=float, default=None,
+                        help="Seconds; default 600 offline / 10500 llm; maximum 10500")
+    parser.add_argument("--validation", choices=("auto", "random", "grouped", "time"), default=None,
+                        help="Offline holdout strategy; defaults to auto")
+    parser.add_argument("--time-column", help="Numeric period feature for --validation time")
     args = parser.parse_args()
     try:
-        load_local_env()
         if args.check:
+            load_local_env()
             return 0 if check_setup() else 1
         if args.check_api:
+            load_local_env()
             check_api()
             return 0
-        if args.max_steps < 1 or not 0 < args.time_budget <= 10500:
+        time_budget = args.time_budget if args.time_budget is not None else (600 if args.mode == "offline" else 10500)
+        if args.max_steps < 1 or not 0 < time_budget <= 10500:
             raise ValueError("max-steps must be positive; time-budget must be in (0, 10500].")
+        if args.mode == "llm" and (args.validation is not None or args.time_column is not None):
+            raise ValueError("--validation and --time-column are available only in offline mode.")
+        if args.mode == "offline" and (args.validation == "time") != (args.time_column is not None):
+            raise ValueError("Use --validation time and --time-column together.")
         task_path = Path(args.task)
         if not task_path.is_file():
             raise FileNotFoundError(f"Task file not found: {task_path}")
-        with make_client() as client:
-            run_agent(task_path, client, max_steps=args.max_steps, time_budget=args.time_budget)
+        if args.mode == "offline":
+            from agent.automl import run_automl
+
+            validation = {"strategy": args.validation or "auto"}
+            if args.time_column is not None:
+                validation["time_column"] = args.time_column
+            result = run_automl(task_path, time_budget=time_budget, validation=validation)
+            metric = result["metric"]
+            print(f"Best model: {result['model']}; {metric['name']}: {metric['value']:.6f}")
+            print(f"Saved: {task_path.resolve().parent / 'submission.csv'}. API calls: 0.")
+            print(f"Run report: {result['report_path']}")
+        else:
+            load_local_env()
+            with make_client() as client:
+                run_agent(task_path, client, max_steps=args.max_steps, time_budget=time_budget)
         return 0
     except Exception as error:
         detail = str(error)

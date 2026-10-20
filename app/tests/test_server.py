@@ -152,6 +152,21 @@ class ServerTests(unittest.TestCase):
             stream.write("\nChanged data description")
         self.assertEqual(self.request(f"/api/jobs/{job_id}/bundle?task_id=case")[0], 400)
 
+    def test_automl_http_preserves_auto_validation_and_budget_without_model_controls(self):
+        body = {"task_id": "case", "action": "automl", "validation": {"strategy": "auto"}}
+        for model_params in (None, {}, {"n_estimators": 50}):
+            self.assertEqual(self.post("/api/jobs", {**body, "model_params": model_params})[0], 400)
+        for minutes in (True, 0, 176, "10"):
+            self.assertEqual(self.post("/api/jobs", {**body, "minutes": minutes})[0], 400)
+        self.assertEqual(self.post("/api/jobs", {**body, "validation": {"strategy": "auto", "command": "x"}})[0], 400)
+        self.assertIsNone(self.server.jobs.active_job())
+        with patch.object(self.server.jobs, "start", return_value={"id": "example", "action": "automl"}) as start:
+            status, _, response = self.post("/api/jobs", body)
+        self.assertEqual(status, 202, response)
+        self.assertEqual(start.call_args.kwargs["validation"], {"strategy": "auto"})
+        self.assertEqual(start.call_args.kwargs["minutes"], 10)
+        self.assertIsNone(start.call_args.kwargs["model_params"])
+
     def test_invalid_validation_is_rejected_before_starting_or_creating_artifacts(self):
         body = {"task_id": "case", "action": "baseline"}
         invalid = [True, [], "random", {}, {"strategy": []}, {"strategy": "unknown"},
