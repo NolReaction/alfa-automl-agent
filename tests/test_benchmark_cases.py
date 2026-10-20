@@ -67,7 +67,7 @@ class BenchmarkCaseTests(unittest.TestCase):
                     write_case(case, roots[0])
                     write_case(replace(case, audit_actuals=replacement), roots[1])
                     paths = sorted(path.relative_to(roots[0]) for path in roots[0].rglob("*") if path.is_file())
-                    self.assertEqual(set(map(str, paths)), {"task.md", "inputs/train.csv", "inputs/test.csv",
+                    self.assertEqual({path.as_posix() for path in paths}, {"task.md", "inputs/train.csv", "inputs/test.csv",
                                      "inputs/data_dictionary.csv", "inputs/sample_submission.csv"})
                     for relative in paths:
                         self.assertEqual((roots[0] / relative).read_bytes(), (roots[1] / relative).read_bytes())
