@@ -409,6 +409,40 @@ def _outer_evidence(state, result, actuals):
     return spec.holdout_frame(state.gate.expected_ids, actuals, values, prediction_classes=classes)
 
 
+FINAL_FAILURE_MESSAGE_LIMIT = 1024
+FINAL_FAILURE_STDERR_LIMIT = 4096
+
+
+def _failure_text(value, limit, *, tail=False):
+    """Bound and redact host-only failure details before saving or printing."""
+    error = value if isinstance(value, Exception) else RuntimeError(str(value))
+    text = safe_error_message(error)
+    if len(text) <= limit:
+        return text
+    marker = "[truncated]"
+    return (marker + "\n" + text[-(limit - len(marker) - 1):] if tail
+            else text[:limit - len(marker) - 1] + "\n" + marker)
+
+
+def _finalization_cause(error, *, phase, recipe):
+    """Keep terminal diagnostics out of the already-closed research dialogue."""
+    cause = {"phase": phase, "recipe": recipe, "error_type": type(error).__name__,
+             "message": _failure_text(error, FINAL_FAILURE_MESSAGE_LIMIT)}
+    if isinstance(error, CandidateExecutionError) and isinstance(error.execution, dict):
+        execution = error.execution
+        detail = {"exit_code": execution.get("exit_code")
+                  if type(execution.get("exit_code")) is int else None,
+                  "timed_out": execution.get("timed_out") is True,
+                  "memory_limit_exceeded": execution.get("memory_limit_exceeded") is True}
+        for source, destination, limit, tail in (
+                ("error", "error", FINAL_FAILURE_MESSAGE_LIMIT, False),
+                ("stderr", "stderr_tail", FINAL_FAILURE_STDERR_LIMIT, True)):
+            if isinstance(execution.get(source), str) and execution[source]:
+                detail[destination] = _failure_text(execution[source], limit, tail=tail)
+        cause["execution"] = detail
+    return cause
+
+
 def finalize(state, reason):
     """Once entered, this function cannot request the model or select a new recipe."""
     state.dialogue_closed = True
@@ -426,6 +460,7 @@ def finalize(state, reason):
     state.transition("outer_validation")
     gate = state.gate
     results, errors = {}, {}
+    terminal_causes = []
     completed_stages = []
 
     def stage_timeout(stage):
@@ -458,6 +493,7 @@ def finalize(state, reason):
             results[name] = result
         except (OSError, ValueError, RuntimeError, TimeoutError) as error:
             errors[name] = safe_error_message(error)
+            terminal_causes.append(_finalization_cause(error, phase="outer_validation", recipe=name))
             if isinstance(error, CandidateExecutionError):
                 state.event("outer_execution_failed", recipe=name, execution=error.execution)
         finally:
@@ -522,13 +558,31 @@ def finalize(state, reason):
                 # the convenience export cannot undo an already committed CSV.
                 state.event("evidence_export_unavailable", error=safe_error_message(error))
         except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+            terminal_causes.append(_finalization_cause(error, phase="full_refit", recipe=name))
             state.event("refit_failed", recipe=name, error=safe_error_message(error),
                         execution=error.execution if isinstance(error, CandidateExecutionError) else None)
         finally:
             completed_stages.append(name + "_refit")
     state.check_source()
     if not published and not state.recover():
-        raise RuntimeError("No verified full-data predictions; no successful output can be reported")
+        report_path = _failure_text(state.run_dir / "run.json", FINAL_FAILURE_MESSAGE_LIMIT)
+        state.report["finalization_failure"] = {
+            "reason": "no_verified_output_or_recovery", "causes": terminal_causes,
+            "report_path": report_path,
+        }
+        detail = ""
+        if terminal_causes:
+            last = terminal_causes[-1]
+            message = last["message"]
+            execution = last.get("execution", {})
+            if execution.get("stderr_tail", "").strip():
+                message += "; child stderr: " + execution["stderr_tail"].strip().splitlines()[-1]
+            elif execution.get("error"):
+                message += "; execution error: " + execution["error"]
+            detail = (f" Last {last['phase']} failure ({last['recipe']}): "
+                      + _failure_text(message, FINAL_FAILURE_MESSAGE_LIMIT))
+        raise RuntimeError("No verified full-data predictions; no successful output can be reported."
+                           + detail + " Diagnostics: " + report_path) from None
     if not published:
         reason = "refit_failed"
     elif state.report.get("published_recipe") != selected:
