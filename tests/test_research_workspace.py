@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import csv
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PureWindowsPath
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,6 +15,7 @@ import numpy as np
 from agent.research_validation import ResearchValidation
 from agent.research_workspace import (
     DESCRIPTION_LIMIT_BYTES, DESCRIPTION_NAME, DESCRIPTION_PREVIEW_BYTES, ResearchWorkspace,
+    _sanitize_description,
 )
 from agent.task_spec import load_task
 from offline_baseline import read_csv
@@ -125,6 +127,75 @@ class ResearchWorkspaceTests(unittest.TestCase):
             self.assertIn(allowed, cleaned)
         self.assertEqual(read_csv(view.work_data / "test.csv")["key"].tolist(), view.expected_inner_ids)
         self.assertFalse(set(view.expected_test_ids) & set(read_csv(view.work_data / "test.csv")["key"]))
+
+    def test_windows_short_long_mixed_roots_and_case_are_remapped_portably(self):
+        long_root = PureWindowsPath(r"C:\Users\runneradmin\AppData\Local\Temp\LongTemporaryFolder\source")
+        short_root = PureWindowsPath(r"C:\Users\RUNNER~1\AppData\Local\Temp\LONGTE~1\source")
+        mixed = str(long_root).replace("runneradmin", "RUNNER~1")
+        forward = mixed.replace("\\", "/").lower()
+
+        def aliases(value):
+            relative = PureWindowsPath(value).relative_to(long_root)
+            return (value, str(short_root / relative))
+
+        text = (f"Keep annual kWh/m2 and A/B. Root {mixed}; lower [{forward}]. "
+                f"Data {str(short_root / 'data').upper()}; long {long_root}. "
+                f"Different folder {long_root}-archive must remain described. "
+                "Feature source/path and https://example.org/energy/units stay literal.")
+        with patch("agent.research_workspace._windows_path_names", side_effect=aliases):
+            cleaned, counts = _sanitize_description(
+                text, task_path=long_root / "task.md", data_dir=long_root / "data")
+        self.assertIn("Root [source task directory]", cleaned)
+        self.assertIn("lower [[source task directory]]", cleaned)
+        self.assertIn("Data data", cleaned)
+        self.assertIn("long [source task directory]", cleaned)
+        self.assertIn(str(long_root) + "-archive", cleaned)
+        for fragment in ("kWh/m2", "A/B", "source/path", "https://example.org/energy/units"):
+            self.assertIn(fragment, cleaned)
+        self.assertGreaterEqual(counts["known_paths"], 4)
+
+    def test_windows_alias_lookup_failure_keeps_literal_case_insensitive_root_matching(self):
+        root = PureWindowsPath(r"C:\Users\runneradmin\Temporary Folder\source")
+        with patch("agent.research_workspace._windows_path_names", return_value=()):
+            cleaned, _ = _sanitize_description(
+                "Root: " + str(root).upper(), task_path=root / "task.md", data_dir=root / "data")
+        self.assertEqual(cleaned, "Root: [source task directory]")
+
+    def test_lexical_parent_alias_is_retained_for_known_root_redaction(self):
+        component = self.case / "lexical-alias"
+        component.mkdir()
+        alias_task = component / ".." / self.task.name
+        alias_parent = alias_task.parent
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write(f"\nSource root: {alias_parent}; data root: {alias_parent / 'data'}.\n")
+        view = ResearchWorkspace(alias_task, self.root / "alias-view")
+        self.assertNotIn(str(alias_parent), view.description_text)
+        self.assertIn("Source root: [source task directory]", view.description_text)
+        self.assertIn("data root: data", view.description_text)
+
+    @unittest.skipUnless(os.name == "nt", "Real Windows 8.3 aliases are checked on Windows")
+    def test_real_windows_short_root_alias_is_removed_after_resolve(self):
+        import ctypes
+        from ctypes import wintypes
+
+        canonical = self.case.resolve()
+        function = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        function.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        function.restype = wintypes.DWORD
+        required = function(str(canonical), None, 0)
+        if not required:
+            self.skipTest("8.3 aliases are unavailable on this Windows filesystem")
+        buffer = ctypes.create_unicode_buffer(required)
+        length = function(str(canonical), buffer, len(buffer))
+        if not 0 < length < len(buffer) or os.path.normcase(buffer.value) == os.path.normcase(str(canonical)):
+            self.skipTest("This path has no distinct 8.3 alias")
+        short = buffer.value
+        with self.task.open("a", encoding="utf-8") as stream:
+            stream.write(f"\nShort root: {short}; lower root: {short.lower()}. Preserve annual kWh/m2.\n")
+        view = ResearchWorkspace(self.task.resolve(), self.root / "windows-view")
+        self.assertNotIn(short.casefold(), view.description_text.casefold())
+        self.assertIn("Short root: [source task directory]", view.description_text)
+        self.assertIn("Preserve annual kWh/m2", view.description_text)
 
     def test_quoted_instructions_keep_their_constraints_when_embedded_file_paths_are_remapped(self):
         with self.task.open("a", encoding="utf-8") as stream:

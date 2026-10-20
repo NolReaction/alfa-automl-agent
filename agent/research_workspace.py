@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -55,7 +56,75 @@ def _utf8_prefix(text: str, limit: int) -> str:
     return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 
 
-def _sanitize_description(text: str, *, task_path: Path, data_dir: Path) -> tuple[str, dict]:
+def _windows_path_names(value: str) -> tuple[str, ...]:
+    """Ask Windows for existing long/8.3 spellings; never guess short names."""
+    if os.name != "nt":
+        return ()
+    import ctypes
+    from ctypes import wintypes
+
+    names = {value}
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        for name in ("GetLongPathNameW", "GetShortPathNameW"):
+            function = getattr(kernel, name)
+            function.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+            function.restype = wintypes.DWORD
+            required = function(value, None, 0)
+            # Disabled 8.3 creation or an unavailable path is not a fatal error.
+            if not 0 < required <= 32768:
+                continue
+            buffer = ctypes.create_unicode_buffer(required)
+            length = function(value, buffer, len(buffer))
+            if 0 < length < len(buffer):
+                names.add(buffer.value)
+    except (OSError, AttributeError):
+        pass
+    return tuple(sorted(names))
+
+
+def _known_root_patterns(path: Path) -> list[tuple[str, int]]:
+    """Match only a known root, including mixed long/8.3 Windows components."""
+    value = str(path)
+    windows = os.name == "nt" or bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", value))
+    if not windows:
+        spellings = {value, value.replace("\\", "/"), value.replace("/", "\\")}
+        return [(re.escape(item), 0) for item in sorted(spellings, key=len, reverse=True)]
+    spellings = {value, *_windows_path_names(value)}
+    patterns = []
+    groups = {}
+    for item in spellings:
+        normalized = item.replace("/", "\\")
+        if normalized.startswith("\\\\?\\UNC\\"):
+            normalized = "\\\\" + normalized[8:]
+        elif normalized.startswith("\\\\?\\"):
+            normalized = normalized[4:]
+        anchor, tail = ntpath.splitdrive(normalized)
+        components = tuple(part for part in re.split(r"[\\/]+", tail.strip("\\/")) if part)
+        if not anchor or not components or any(part in {".", ".."} for part in components):
+            patterns.append((re.escape(item), re.IGNORECASE))
+            continue
+        groups.setdefault((anchor.casefold(), len(components)), []).append((anchor, components))
+        # Keep the literal spelling too, including any extended-path prefix.
+        patterns.append((re.escape(item), re.IGNORECASE))
+    for items in groups.values():
+        anchor = items[0][0]
+        if anchor.startswith("\\\\"):
+            server_share = [part for part in anchor.split("\\") if part]
+            prefix = "(?:" + r"[\\/]{2}" + "|" + re.escape("\\\\?\\UNC\\") + ")"
+            anchor_pattern = prefix + r"[\\/]+".join(re.escape(part) for part in server_share)
+        else:
+            anchor_pattern = "(?:" + re.escape("\\\\?\\") + ")?" + re.escape(anchor)
+        parts = []
+        for index in range(len(items[0][1])):
+            alternatives = sorted({components[index] for _, components in items}, key=len, reverse=True)
+            parts.append("(?:" + "|".join(re.escape(part) for part in alternatives) + ")")
+        patterns.append((anchor_pattern + r"[\\/]+" + r"[\\/]+".join(parts), re.IGNORECASE))
+    return sorted(set(patterns), key=lambda item: len(item[0]), reverse=True)
+
+
+def _sanitize_description(text: str, *, task_path: Path, data_dir: Path,
+                          source_task_path: Path | None = None) -> tuple[str, dict]:
     """Remap declared file references, without treating units or ratios as paths.
 
     The source description is data, not a second host policy. This redacts
@@ -121,16 +190,27 @@ def _sanitize_description(text: str, *, task_path: Path, data_dir: Path) -> tupl
     text, glob_count = re.subn(
         r"(?<![\w.])(?:[^\s<>\"'`|()\[\]{},;]*[\\/])?\*\.csv(?!\w|\.[A-Za-z0-9_])", "data/*.csv", text)
     counts["file_references"] += glob_count
-    for path, replacement in ((data_dir, "data"), (task_path.parent, "[source task directory]")):
-        for spelling in sorted({str(path), path.as_posix(), str(path).replace("/", "\\")}, key=len, reverse=True):
-            text, count = re.subn(re.escape(spelling) + r"(?=$|[\\/\s`\"'.,;:)])",
-                                  lambda _: replacement, text)
+    data_roots, task_roots = [data_dir], [task_path.parent]
+    if source_task_path is not None:
+        task_roots.append(source_task_path.parent)
+        try:
+            data_roots.append(source_task_path.parent / data_dir.relative_to(task_path.parent))
+        except ValueError:
+            pass
+    roots = [(path, "data") for path in data_roots]
+    roots += [(path, "[source task directory]") for path in task_roots]
+    for path, replacement in roots:
+        for pattern, flags in _known_root_patterns(path):
+            text, count = re.subn(r"(?<![\w])" + pattern + r"(?=$|[\\/\s`\"'.,;:)\]}])",
+                                  lambda _: replacement, text, flags=flags)
             counts["known_paths"] += count
     return text, counts
 
 
-def _description_view(text: str, *, task_path: Path, data_dir: Path) -> tuple[str, str, dict]:
-    cleaned, redactions = _sanitize_description(text, task_path=task_path, data_dir=data_dir)
+def _description_view(text: str, *, task_path: Path, data_dir: Path,
+                      source_task_path: Path | None = None) -> tuple[str, str, dict]:
+    cleaned, redactions = _sanitize_description(
+        text, task_path=task_path, data_dir=data_dir, source_task_path=source_task_path)
     cleaned_bytes = len(cleaned.encode("utf-8"))
     complete = cleaned_bytes <= DESCRIPTION_LIMIT_BYTES
     retained = cleaned if complete else _utf8_prefix(cleaned, DESCRIPTION_LIMIT_BYTES)
@@ -204,6 +284,7 @@ class ResearchWorkspace:
     """
 
     def __init__(self, task_path: Path, workspace: Path, *, frozen_split=None):
+        self.source_task_path = Path(task_path).absolute()
         self.task_path = Path(task_path).resolve()
         self.source_task_text = self.task_path.read_text(encoding="utf-8-sig")
         self.spec = load_task(self.task_path)
@@ -274,10 +355,13 @@ class ResearchWorkspace:
         self.work_data = self.workspace / "data"
         self.work_data.mkdir()
         self.description_text, preview, self.task_semantics = _description_view(
-            self.source_task_text, task_path=self.task_path, data_dir=self.source_dir)
+            self.source_task_text, task_path=self.task_path, data_dir=self.source_dir,
+            source_task_path=self.source_task_path)
         hypothesis = _additional_hypothesis(self.source_task_text)
         if hypothesis is not None:
-            hypothesis, _ = _sanitize_description(hypothesis, task_path=self.task_path, data_dir=self.source_dir)
+            hypothesis, _ = _sanitize_description(
+                hypothesis, task_path=self.task_path, data_dir=self.source_dir,
+                source_task_path=self.source_task_path)
         self.task_text = _task_text(self.spec, hypothesis, description_preview=preview, semantics=self.task_semantics)
         self.work_task.write_text(self.task_text, encoding="utf-8")
         (self.workspace / DESCRIPTION_NAME).write_text(self.description_text, encoding="utf-8")
