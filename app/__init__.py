@@ -1,1 +1,1 @@
-"""Local, read-only research workspace. Excluded from the competition archive."""
+"""Local research lab, excluded from the competition archive."""

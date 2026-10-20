@@ -92,7 +92,7 @@ def _read(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
 
 
-def _distribution(series: pd.Series, dtype: str) -> tuple[dict, dict, int]:
+def _distribution(series: pd.Series, dtype: str, *, target: bool = False) -> tuple[dict, dict, int]:
     missing = int(series.eq("").sum())
     present = series[series.ne("")]
     if dtype in {"numeric", "binary"}:
@@ -120,13 +120,109 @@ def _distribution(series: pd.Series, dtype: str) -> tuple[dict, dict, int]:
                 counts, edges = np.histogram(finite / scale, bins=min(20, len(unique)))
                 bins = [{"label": f"{edges[index] * scale:.4g} – {edges[index + 1] * scale:.4g}",
                          "count": int(count)} for index, count in enumerate(counts)]
+            for item in bins:
+                item["percent"] = 100 * item["count"] / len(finite)
         return {"kind": "histogram", "bins": bins, "missing_count": missing,
                 "invalid_count": int(invalid)}, stats, int(invalid)
     counts = present.value_counts(dropna=False)
-    bins = [{"label": _short(label), "count": int(count)} for label, count in counts.iloc[:15].items()]
-    if len(counts) > 15:
-        bins.append({"label": "Остальные категории", "count": int(counts.iloc[15:].sum())})
+    limit = (100 if len(counts) <= 100 else 99) if target else 15
+    bins = [{"label": _short(label), "count": int(count)} for label, count in counts.iloc[:limit].items()]
+    if len(counts) > limit:
+        bins.append({"label": "Остальные категории", "count": int(counts.iloc[limit:].sum())})
+    for item in bins:
+        item["percent"] = 100 * item["count"] / len(present)
     return {"kind": "categories", "bins": bins, "missing_count": missing}, {}, 0
+
+
+def _finite_values(series: pd.Series) -> np.ndarray:
+    numeric = pd.to_numeric(series[series.ne("")], errors="coerce").to_numpy(dtype=float)
+    return numeric[np.isfinite(numeric)]
+
+
+def _numeric_shift(name: str, train: pd.Series, test: pd.Series) -> dict | None:
+    training, testing = _finite_values(train), _finite_values(test)
+    if not len(training) or not len(testing):
+        return None
+    # Work on a scaled training distribution to keep finite inputs finite even
+    # when their raw IQR or variance would overflow a float.
+    scale = max(abs(float(training.min())), abs(float(training.max())), 1.0)
+    test_scale = max(abs(float(testing.min())), abs(float(testing.max())), 1.0)
+    normalized = training / scale
+    lower, median, upper = np.percentile(normalized, [25, 50, 75])
+    train_median = float(median * scale)
+    test_median = float(np.median(testing / test_scale) * test_scale)
+    spread = float(upper - lower)
+    if spread <= 0:
+        spread = float(np.std(normalized))
+    if spread > 0:
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            raw_score = np.abs(test_median / scale - median) / spread
+        score = float(raw_score) if np.isfinite(raw_score) else None
+    else:
+        # A changed constant cannot be normalized by zero dispersion. Keep the
+        # two medians visible and report an undefined score instead of infinity.
+        score = 0.0 if train_median == test_median else None
+    return {"name": name, "train_median": train_median, "test_median": test_median,
+            "score": score}
+
+
+def _quality(train: pd.DataFrame, test: pd.DataFrame, metadata: pd.DataFrame,
+             id_column: str, target: str, task_type: str) -> dict:
+    features = [name for name in train.columns if name not in {id_column, target}]
+    train_ids = set(train.loc[train[id_column].ne(""), id_column])
+    test_ids = set(test.loc[test[id_column].ne(""), id_column])
+    result = {
+        "train_duplicate_ids": int(train[id_column].duplicated().sum()),
+        "test_duplicate_ids": int(test[id_column].duplicated().sum()),
+        "id_overlap_count": len(train_ids & test_ids),
+        "train_duplicate_feature_rows": int(train.duplicated(subset=features).sum()) if features else 0,
+        "test_duplicate_feature_rows": int(test.duplicated(subset=features).sum()) if features else 0,
+        "constant_features": [], "new_categories": [], "missing_changes": [],
+        "numeric_shift": [], "class_balance": None,
+    }
+    for name in features:
+        if train[name].nunique(dropna=False) <= 1:
+            result["constant_features"].append(name)
+        train_percent = float(train[name].eq("").sum()) / len(train) * 100
+        test_percent = float(test[name].eq("").sum()) / len(test) * 100
+        if abs(train_percent - test_percent) >= 1:
+            result["missing_changes"].append({"name": name, "train_percent": train_percent,
+                                               "test_percent": test_percent})
+        dtype = metadata.loc[name, "dtype"]
+        if dtype == "category":
+            known = set(train.loc[train[name].ne(""), name])
+            unseen = set(test.loc[test[name].ne(""), name]) - known
+            if unseen:
+                result["new_categories"].append({
+                    "name": name, "count": len(unseen),
+                    "examples": [_short(value, 59) for value in sorted(unseen)[:3]],
+                })
+        if dtype in {"numeric", "binary"}:
+            shift = _numeric_shift(name, train[name], test[name])
+            if shift is not None:
+                result["numeric_shift"].append(shift)
+    result["new_categories"].sort(key=lambda item: (-item["count"], item["name"]))
+    result["new_categories"] = result["new_categories"][:20]
+    result["missing_changes"].sort(key=lambda item: (-abs(item["train_percent"] - item["test_percent"]), item["name"]))
+    result["missing_changes"] = result["missing_changes"][:10]
+    result["numeric_shift"].sort(key=lambda item: (item["score"] is not None,
+                                                   -(item["score"] or 0), item["name"]))
+    result["numeric_shift"] = result["numeric_shift"][:20]
+    if task_type == "classification":
+        counts = train.loc[train[target].ne(""), target].value_counts()
+        total = int(counts.sum())
+        if total:
+            largest, smallest = int(counts.max()), int(counts.min())
+            result["class_balance"] = {
+                "classes": [{"label": _short(label), "count": int(count), "percent": 100 * int(count) / total}
+                            for label, count in counts.iloc[:100].items()],
+                "largest_count": largest, "smallest_count": smallest,
+                "ratio": largest / smallest,
+            }
+        else:
+            result["class_balance"] = {"classes": [], "largest_count": 0,
+                                       "smallest_count": 0, "ratio": None}
+    return result
 
 
 def _metric(text: str) -> dict:
@@ -161,6 +257,7 @@ class DataCatalog:
     def __init__(self, data_root: Path):
         self.data_root = Path(data_root).expanduser().absolute()
         self._cache: OrderedDict[str, tuple[tuple, dict, dict]] = OrderedDict()
+        self._fingerprints: OrderedDict[str, tuple[tuple, str]] = OrderedDict()
         self._errors: dict[str, tuple[tuple, str]] = {}
         self._lock = threading.RLock()
 
@@ -268,6 +365,47 @@ class DataCatalog:
             return text[:MAX_TASK_TEXT] + "\n\n[Условие сокращено до 100 000 символов.]"
         return text
 
+    def fingerprint(self, task_id: str) -> str:
+        """Hash exact input bytes under stable names, independent of machine path.
+
+        Length framing makes file boundaries unambiguous. The same five input
+        files copied into another task folder produce the same SHA-256 value.
+        """
+        with self._lock:
+            folder = self.resolve(task_id)
+            _, paths = self._inputs(folder)
+            signature = self._signature(paths, folder)
+            cached = self._fingerprints.get(task_id)
+            if cached and cached[0] == signature:
+                self._fingerprints.move_to_end(task_id)
+                return cached[1]
+            digest = hashlib.sha256(b"alfa-automl-dataset-v1\0")
+            canonical = {"task.md": folder / "task.md", **paths}
+            for name in sorted(canonical):
+                path = _safe(canonical[name], self.data_root)
+                size = path.stat().st_size
+                encoded_name = name.encode("utf-8")
+                digest.update(len(encoded_name).to_bytes(4, "big"))
+                digest.update(encoded_name)
+                digest.update(size.to_bytes(8, "big"))
+                received = 0
+                with path.open("rb") as stream:
+                    while block := stream.read(1024 * 1024):
+                        received += len(block)
+                        if received > size:
+                            raise ValueError("Данные изменились во время вычисления отпечатка. Повторите действие.")
+                        digest.update(block)
+                if received != size:
+                    raise ValueError("Данные изменились во время вычисления отпечатка. Повторите действие.")
+            if signature != self._signature(paths, folder):
+                raise ValueError("Данные изменились во время вычисления отпечатка. Повторите действие.")
+            value = digest.hexdigest()
+            self._fingerprints[task_id] = (signature, value)
+            self._fingerprints.move_to_end(task_id)
+            while len(self._fingerprints) > 4:
+                self._fingerprints.popitem(last=False)
+            return value
+
     def _load(self, task_id: str) -> tuple[dict, dict]:
         folder = self.resolve(task_id)
         _, paths = self._inputs(folder)
@@ -337,7 +475,7 @@ class DataCatalog:
             info = {"name": name, "role": role, "dtype": dtype, "description": description,
                     "missing_count": count, "missing_percent": round(percent, 4), "unique_count": unique_count}
             columns.append(info)
-            distribution, stats, invalid = _distribution(train[name], dtype)
+            distribution, stats, invalid = _distribution(train[name], dtype, target=name == target)
             details[name] = {**info, "stats": stats, "distribution": distribution}
             if invalid:
                 warnings.append(f"{name}: {invalid} непустых значений не являются конечными числами; они исключены из числовой статистики.")
@@ -360,6 +498,8 @@ class DataCatalog:
                         for row in train.head(PREVIEW_ROWS).itertuples(index=False, name=None)],
                         "total_rows": len(train), "limit": PREVIEW_ROWS},
             "target_distribution": details[target]["distribution"], "missing": missing,
+            "quality": _quality(train, test, metadata, id_column, target, task_type),
+            "dataset_fingerprint": self.fingerprint(task_id),
             "warnings": warnings,
         }
         return profile, details

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -227,6 +228,158 @@ class ProfilingTests(unittest.TestCase):
             self.assertFalse(catalog.discover()[0]["available"])
             with self.assertRaisesRegex(ValueError, "более 3"):
                 catalog.profile("classification")
+
+    def test_dataset_fingerprint_is_portable_and_matches_the_profile(self) -> None:
+        make_task(self.root)
+        other_root = Path(self.directory.name) / "another-location" / "data"
+        make_task(other_root)
+        first = DataCatalog(self.root)
+        second = DataCatalog(other_root)
+        fingerprint = first.fingerprint("classification")
+        self.assertRegex(fingerprint, r"^[a-f0-9]{64}$")
+        self.assertEqual(fingerprint, second.fingerprint("classification"))
+        self.assertEqual(first.profile("classification")["dataset_fingerprint"], fingerprint)
+
+    def test_dataset_fingerprint_changes_when_any_source_content_changes(self) -> None:
+        task = make_task(self.root)
+        inputs = task / "nested" / "participants"
+        catalog = DataCatalog(self.root)
+        previous = catalog.fingerprint("classification")
+        changes = [
+            (task / "task.md", "Predict the verdict.", "Predict the category."),
+            (inputs / "train.csv", "001,3,NA", "001,4,NA"),
+            (inputs / "test.csv", "010,7,NA", "010,8,NA"),
+            (inputs / "data_dictionary.csv", "Measurement", "Updated measurement"),
+            (inputs / "sample_submission.csv", "011,Normal", "011,NA"),
+        ]
+        for path, old, new in changes:
+            with self.subTest(source=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(old, text)
+                timestamp = path.stat().st_mtime_ns
+                path.write_text(text.replace(old, new, 1), encoding="utf-8")
+                os.utime(path, ns=(timestamp + 1_000_000, timestamp + 1_000_000))
+                current = catalog.fingerprint("classification")
+                self.assertNotEqual(previous, current)
+                self.assertEqual(catalog.fingerprint("classification"), current)
+                previous = current
+        self.assertEqual(catalog.profile("classification")["dataset_fingerprint"], previous)
+
+    def test_target_distribution_retains_65_classes_and_accounts_for_all_rows(self) -> None:
+        task = make_task(self.root)
+        write_csv(task / "nested" / "participants" / "train.csv", [
+            ["row_key", "measure", "protocol", "flag", "verdict"],
+            *[[f"id-{index}", index, "tcp", index % 2, f"class-{index:02d}"]
+              for index in range(65)],
+        ])
+        profile = DataCatalog(self.root).profile("classification")
+        distribution = profile["target_distribution"]
+        self.assertEqual(distribution["kind"], "categories")
+        self.assertEqual(len(distribution["bins"]), 65)
+        self.assertEqual({item["label"] for item in distribution["bins"]},
+                         {f"class-{index:02d}" for index in range(65)})
+        self.assertEqual(sum(item["count"] for item in distribution["bins"]), 65)
+        self.assertAlmostEqual(sum(item["percent"] for item in distribution["bins"]),
+                               100, delta=0.01)
+        for item in distribution["bins"]:
+            self.assertAlmostEqual(item["percent"], 100 / 65, delta=0.001)
+
+    def test_quality_diagnostics_report_exact_dataset_problems(self) -> None:
+        task = make_task(self.root)
+        inputs = task / "nested" / "participants"
+        write_csv(inputs / "data_dictionary.csv", [
+            ["feature", "role", "dtype", "description_ru"],
+            ["row_key", "id", "category", "Identifier"],
+            ["measure", "feature", "numeric", "Measurement"],
+            ["protocol", "feature", "category", "Protocol"],
+            ["flag", "feature", "binary", "Flag"],
+            ["constant", "feature", "numeric", "Constant feature"],
+            ["verdict", "target", "category", "Verdict"],
+        ])
+        write_csv(inputs / "train.csv", [
+            ["row_key", "measure", "protocol", "flag", "constant", "verdict"],
+            ["t0", 0, "NA", 0, 7, "A"],
+            ["t0", 0, "NA", 0, 7, "A"],
+            ["t2", 2, "tcp", 1, 7, "A"],
+            ["t3", 4, "tcp", 1, 7, "A"],
+            ["t4", 6, "", 0, 7, "B"],
+            ["t5", "", "udp", 1, 7, "B"],
+        ])
+        write_csv(inputs / "test.csv", [
+            ["row_key", "measure", "protocol", "flag", "constant"],
+            ["t0", 100, "unseen-one", 0, 7],
+            ["z1", 100, "unseen-one", 0, 7],
+            ["z1", 102, "unseen-two", 1, 7],
+            ["z3", 104, "", "", 7],
+        ])
+        write_csv(inputs / "sample_submission.csv", [
+            ["row_key", "verdict"], ["t0", "A"], ["z1", "A"], ["z1", "B"], ["z3", "B"],
+        ])
+        profile = DataCatalog(self.root).profile("classification")
+        quality = profile["quality"]
+        for field in ("train_duplicate_ids", "test_duplicate_ids", "id_overlap_count",
+                      "train_duplicate_feature_rows", "test_duplicate_feature_rows"):
+            self.assertEqual(quality[field], 1, field)
+        self.assertEqual(quality["constant_features"], ["constant"])
+        new_categories = {item["name"]: item for item in quality["new_categories"]}
+        self.assertEqual(new_categories["protocol"]["count"], 2)
+        self.assertEqual(set(new_categories["protocol"]["examples"]), {"unseen-one", "unseen-two"})
+        missing = {item["name"]: item for item in quality["missing_changes"]}
+        self.assertNotIn("constant", missing)
+        self.assertAlmostEqual(missing["measure"]["train_percent"], 100 / 6, delta=0.001)
+        self.assertEqual(missing["measure"]["test_percent"], 0)
+        self.assertEqual(missing["flag"]["train_percent"], 0)
+        self.assertEqual(missing["flag"]["test_percent"], 25)
+        shift = {item["name"]: item for item in quality["numeric_shift"]}
+        self.assertEqual(shift["measure"]["train_median"], 2)
+        self.assertEqual(shift["measure"]["test_median"], 101)
+        self.assertAlmostEqual(shift["measure"]["score"], 24.75)
+        self.assertTrue(all(math.isfinite(item["score"]) for item in quality["numeric_shift"]))
+        balance = quality["class_balance"]
+        self.assertEqual((balance["largest_count"], balance["smallest_count"], balance["ratio"]),
+                         (4, 2, 2))
+        self.assertEqual({item["label"]: item["count"] for item in balance["classes"]},
+                         {"A": 4, "B": 2})
+        self.assertAlmostEqual(sum(item["percent"] for item in balance["classes"]), 100, delta=0.01)
+
+    def test_numeric_distribution_percentages_use_only_valid_present_values(self) -> None:
+        task = make_task(self.root)
+        inputs = task / "nested" / "participants"
+        dictionary = (inputs / "data_dictionary.csv").read_text(encoding="utf-8")
+        (inputs / "data_dictionary.csv").write_text(
+            dictionary.replace("verdict,target,category", "verdict,target,numeric"), encoding="utf-8")
+        write_csv(inputs / "train.csv", [
+            ["row_key", "measure", "protocol", "flag", "verdict"],
+            ["a", 1, "tcp", 0, 1],
+            ["b", 2, "tcp", 1, 2],
+            ["c", 3, "tcp", 0, ""],
+            ["d", 4, "tcp", 1, "inf"],
+            ["e", 5, "tcp", 0, "invalid"],
+        ])
+        profile = DataCatalog(self.root).profile("classification")
+        distribution = profile["target_distribution"]
+        self.assertEqual(distribution["kind"], "histogram")
+        self.assertEqual(distribution["missing_count"], 1)
+        self.assertEqual(sum(item["count"] for item in distribution["bins"]), 2)
+        self.assertAlmostEqual(sum(item["percent"] for item in distribution["bins"]), 100)
+        self.assertEqual(profile["quality"]["class_balance"], None)
+
+    def test_unseen_category_examples_are_bounded_without_losing_unique_count(self) -> None:
+        task = make_task(self.root)
+        inputs = task / "nested" / "participants"
+        write_csv(inputs / "test.csv", [
+            ["row_key", "measure", "protocol", "flag"],
+            *[[f"test-{index}", index, f"new-{index}-" + "x" * 100, index % 2]
+              for index in range(4)],
+            ["test-repeat", 4, "new-0-" + "x" * 100, 0],
+            ["test-empty", 5, "", 1],
+        ])
+        quality = DataCatalog(self.root).profile("classification")["quality"]
+        protocol = next(item for item in quality["new_categories"] if item["name"] == "protocol")
+        self.assertEqual(protocol["count"], 4)
+        self.assertLessEqual(len(protocol["examples"]), 3)
+        self.assertTrue(protocol["examples"])
+        self.assertTrue(all(len(example) <= 60 for example in protocol["examples"]))
 
     @unittest.skipUnless(os.name == "nt", "Windows junction behavior")
     def test_windows_junctions_are_not_followed_even_inside_the_data_root(self) -> None:

@@ -44,17 +44,17 @@
         </nav>
         <div class="sidebar-note">
           <span class="note-symbol" data-icon="terminal"></span
-          ><strong>Исследование начинается<br />с хороших данных.</strong>
-          <p>Наблюдайте за процессом,<br />проверяйте гипотезы и результаты.</p>
+          ><strong>Обучите. Сравните.<br />Выберите результат.</strong>
+          <p>
+            Модели работают на вашем компьютере. Панель показывает их результат.
+          </p>
           <button id="sidebar-help" class="text-button">
-            Команды запуска <span>↗</span>
+            Настройка среды <span>↗</span>
           </button>
         </div>
         <div class="sidebar-footer">
           <span class="connection-dot"></span>
-          <div>
-            Локальное подключение<small>Данные на вашем компьютере</small>
-          </div>
+          <div>На этом компьютере<small>Данные на вашем компьютере</small></div>
         </div>
       </aside>
       <div class="workspace">
@@ -65,12 +65,12 @@
           </div>
           <div class="topbar-actions">
             <span class="read-only"
-              ><span data-icon="shield"></span>Режим просмотра</span
+              ><span data-icon="shield"></span>Локальная лаборатория</span
             ><button
               class="icon-button"
               id="help-button"
-              aria-label="Открыть команды и справку"
-              title="Команды и справка"
+              aria-label="Открыть настройку и справку"
+              title="Настройка и справка"
             >
               <span data-icon="help"></span>
             </button>
@@ -86,7 +86,7 @@
           <span
             >ALFA LAB <span class="footer-separator">/</span> AutoML
             Research</span
-          ><span>Локальные данные · Без обращения к API</span>
+          ><span>Обучение на вашем компьютере</span>
         </footer>
       </div>
     </div>
@@ -106,6 +106,45 @@
       </div>
       <div id="help-content"></div>
     </dialog>
+    <dialog id="launch-dialog" aria-labelledby="launch-title">
+      <div class="dialog-head">
+        <div>
+          <span class="eyebrow">НОВЫЙ ЗАПУСК</span>
+          <h2 id="launch-title">Запустить модель</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="launch-dialog"
+          aria-label="Закрыть"
+        >
+          ×
+        </button>
+      </div>
+      <form id="launch-form"></form>
+    </dialog>
+    <dialog id="publish-dialog" aria-labelledby="publish-title">
+      <div class="dialog-head">
+        <div>
+          <span class="eyebrow">ФАЙЛ ДЛЯ ПЛАТФОРМЫ</span>
+          <h2 id="publish-title">Использовать этот CSV?</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="publish-dialog"
+          aria-label="Закрыть"
+        >
+          ×
+        </button>
+      </div>
+      <div id="publish-content"></div>
+    </dialog>
+    <input
+      id="report-file"
+      class="sr-only"
+      type="file"
+      accept="application/json,application/zip,.json,.zip"
+      aria-label="Добавить JSON-отчёт или ZIP-пакет участника"
+    />
     <div class="toast" id="toast" role="status"></div>
   </body>
 </html>
