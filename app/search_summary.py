@@ -12,6 +12,8 @@ _ROW = {"id", "label", "model", "status", "metric", "selected", "elapsed_seconds
 _ROW_OPTIONAL = {"phase", "model_config", "selection_metric", "verification_metric", "rejection_reason", "resources", "durations", "feature_config", "component_feature_configs"}
 _PHASES = {"seed", "selection", "verification", "refit", "blend", "finished"}
 _REASONS = {"timeout", "memory_limit", "execution_failed", "invalid_evidence", "not_selected", "not_improved", "insufficient_budget", "refit_failed", "optional_dependency_unavailable"}
+# Bounded full plan: seed + 8 exploration + 6 metric-aware + 6 refinement + blend.
+MAX_SEARCH_CANDIDATES = 22
 
 
 def _text(value, field, limit, *, empty=False):
@@ -55,7 +57,7 @@ def validate_search_summary(raw, *, metric=None, model=None, allow_running=False
     statuses = {"completed", "time_limit"} | ({"running", "failed"} if allow_running else set())
     if not isinstance(raw["status"], str) or raw["status"] not in statuses:
         raise ValueError("Некорректный статус автоподбора.")
-    if type(raw["planned"]) is not int or not 1 <= raw["planned"] <= 21 or type(raw["completed"]) is not int or not 0 <= raw["completed"] <= raw["planned"]:
+    if type(raw["planned"]) is not int or not 1 <= raw["planned"] <= MAX_SEARCH_CANDIDATES or type(raw["completed"]) is not int or not 0 <= raw["completed"] <= raw["planned"]:
         raise ValueError("Некорректное число попыток автоподбора.")
     result = {key: raw[key] for key in _BASE - {"candidates"}}
     result["validation_reason"] = _text(raw["validation_reason"], "validation_reason", 2000, empty=True)

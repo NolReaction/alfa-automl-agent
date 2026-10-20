@@ -1583,8 +1583,9 @@ function autoSearchView(job) {
   const search = job.search;
   if (!search || !Array.isArray(search.candidates)) return runningJob(job)
     ? `<section class="search-summary"><div class="search-heading"><h3>Подготавливаем автоподбор</h3><span class="badge">Без API</span></div>${searchStages(job)}<p>Выбираем проверку и готовим стартовую модель.</p></section>` : "";
-  const candidates = search.candidates.slice(0, 21),
-    planned = Number.isInteger(search.planned) && search.planned > 0 ? Math.min(search.planned, 21) : candidates.length,
+  // Match the bounded plan accepted by app/search_summary.py, including metric recipes.
+  const candidates = search.candidates.slice(0, 22),
+    planned = Number.isInteger(search.planned) && search.planned > 0 ? Math.min(search.planned, 22) : candidates.length,
     done = candidates.filter((row) => row.status === "completed").length,
     verified = candidates.filter((row) => Number.isFinite(row.metric)).length,
     selectionCount = candidates.filter((row) => Number.isFinite(row.selection_metric)).length,

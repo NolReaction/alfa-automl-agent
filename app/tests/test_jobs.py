@@ -298,6 +298,24 @@ class JobTests(unittest.TestCase):
             self.assertEqual(restored.detail("example", result["id"])["job"]["model_config"],
                              result["model_config"])
 
+    def test_worker_command_preserves_opt_in_recipe_fields_without_changing_legacy_payload(self):
+        for index, options in enumerate(({}, {"objective": "mae"}, {"target_transform": "log1p"},
+                                         {"objective": "mae", "target_transform": "log1p"})):
+            with self.subTest(options=options):
+                recipe = jobs.make_model_config("baseline", "regression", **options)
+                job = {"id": f"{index:032x}", "action": "baseline", "dataset_fingerprint": "b" * 64,
+                       "model_config": recipe}
+                folder = self.manager.jobs_root / job["id"]
+                folder.mkdir()
+                self.manager._command(job, self.task / "task.md", 1)
+                config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+                if options:
+                    self.assertEqual(config["model_config"], recipe)
+                    self.assertNotIn("model_params", config)
+                else:
+                    self.assertEqual(config["model_params"], recipe["parameters"])
+                    self.assertNotIn("model_config", config)
+
     def test_invalid_model_parameters_create_no_jobs(self):
         original = (self.task / "submission.csv").read_bytes()
         invalid = [True, [], "anything", {"command": "anything"}, {"n_jobs": 1},

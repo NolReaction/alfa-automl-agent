@@ -322,7 +322,7 @@ const cases = {
       assert.deepEqual(payload.validation, { strategy: "time", time_column: "x" });
       assert.deepEqual(payload.model_params, { depth: 4 });
     }
-    const candidates = Array.from({ length: 21 }, (_, index) => ({
+    const candidates = Array.from({ length: 22 }, (_, index) => ({
       id: `candidate-${index}`, label: `candidate-${index}`, model: "Ridge", phase: "selection",
       status: "completed", metric: null, verification_metric: null, selection_metric: -2,
       selected: false, elapsed_seconds: 1, error: null,
@@ -341,11 +341,11 @@ const cases = {
     });
     const current = job({
       action: "automl", metric: { name: "R2", value: -3, higher_is_better: true },
-      search: { status: "completed", phase: "finished", planned: 21, completed: 20,
+      search: { status: "completed", phase: "finished", planned: 22, completed: 21,
         best_candidate: "candidate-0", candidates },
     });
     const html = get("autoSearchView")(current);
-    assert.match(html, /candidate-20/, "The complete 20-model plus ensemble report must remain visible");
+    assert.match(html, /candidate-21/, "All 22 scheduled recipes including metric-aware candidates must remain visible");
     assert.match(html, /R2/);
     assert.match(html, /class="metric-cell">-3</);
     assert.doesNotMatch(html, /Macro F1|RMSE/, "Metric direction must not imply the task type");

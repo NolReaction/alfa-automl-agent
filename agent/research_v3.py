@@ -18,7 +18,7 @@ import pandas as pd
 
 from agent.automl import _atomic_copy
 from agent.features import normalize_feature_config
-from agent.llm import ROOT, TOOL, get_model, safe_error_message
+from agent.llm import ROOT, TOOL, get_model, safe_error_details, safe_error_message
 from agent.model_config import ACTIONS, make_model_config
 from agent.research import RunState, checked_completion, record_usage
 from agent.research_budget import BudgetPolicy
@@ -28,7 +28,7 @@ from agent.research_candidate import (
 )
 from agent.research_validation import HYPOTHESIS_NAME, read_hypothesis
 from agent.research_workspace import ResearchWorkspace
-from agent.search import seed_candidate
+from agent.search import local_candidate_plan, seed_candidate
 from validation import validate_predictions
 
 
@@ -129,6 +129,7 @@ class V3State(RunState):
         self.selected_candidate = None
         self.best_inner = None
         self.dialogue_closed = False
+        self.tried_recipes = []
         self.budget = BudgetPolicy(time_budget, started=self.started)
         self.report.update(research_protocol_version=3, stage="preparation",
             stages=[{"id": item, "status": "pending"} for item in STAGES],
@@ -178,6 +179,9 @@ class V3State(RunState):
         self.budget.record_measurement(self.recipe_key(candidate),
             max(.001, time.monotonic() - started), fit_rows, predict_rows)
 
+    def estimate_research_cost(self, candidate, *, fit_rows, predict_rows):
+        return self.budget.estimate_trial_cost(self.recipe_key(candidate), fit_rows, predict_rows)
+
     def budget_context(self):
         plan = self.finalization_plan()
         summary = self.budget.report(plan)
@@ -189,22 +193,25 @@ class V3State(RunState):
                 "The host reserves time for outer checks and full-data refits. "
                 "These are conservative planning estimates, not guaranteed training durations."}
 
-    def measure_inner(self, candidate):
+    def measure_inner(self, candidate, *, rows=None, maximum=1800):
         gate = self.gate
         gate.check_inputs()
         if not gate.held_rows:
             raise ValueError("Inner validation unavailable; no adaptive trial is allowed")
-        timeout = self.research_timeout()
+        if self.dialogue_closed:
+            raise RuntimeError("Inner research is terminal after candidate freeze")
+        fitting, held = rows if rows is not None else (gate.fit_rows, gate.held_rows)
+        timeout = self.research_timeout(maximum)
         if timeout <= 0:
             raise TimeoutError("Research time is reserved for final validation and refit")
         started = time.monotonic()
         result = run_candidate(candidate, spec=gate.research_spec,
-            fit_frame=gate.research_train.iloc[gate.fit_rows],
-            predict_frame=gate.research_train.iloc[gate.held_rows].drop(columns=[gate.spec.target_column]),
-            actuals=gate.expected_inner_actuals, phase="inner_selection",
+            fit_frame=gate.research_train.iloc[fitting],
+            predict_frame=gate.research_train.iloc[held].drop(columns=[gate.spec.target_column]),
+            actuals=gate.research_train.iloc[held][gate.spec.target_column].tolist(), phase="inner_selection",
             output_dir=self.run_dir / "inner_evaluations",
             timeout=timeout, deadline=min(started + timeout, self.budget.deadline - self.budget.publication_buffer))
-        self.record_timing(candidate, started, len(gate.fit_rows), len(gate.held_rows))
+        self.record_timing(candidate, started, len(fitting), len(held))
         return result
 
     def request_allowed(self, messages):
@@ -255,7 +262,8 @@ def prepare_baseline(state):
         code = (f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
             "from pathlib import Path\nfrom agent.automl import run_automl\n"
             f"run_automl(Path({str(gate.work_task)!r}), time_budget={timeout - 2!r}, "
-            f"validation={gate.choice!r}, output_dir=Path({str(startup)!r}))\n")
+            f"validation={gate.choice!r}, output_dir=Path({str(startup)!r}), "
+            f"metric_recipes={state.report.get('quality_options', {}).get('metric_recipes', False)!r})\n")
         from agent.execution import run_python
         result = run_python(code, state.workspace, state.run_dir / "startup_execution", 0, timeout=timeout)
         gate.check_inputs()
@@ -312,9 +320,17 @@ def _consider(state):
     recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
     candidate = freeze_candidate(state.workspace / CANDIDATE_NAME, recipe,
                                  state.run_dir / "inner_best" / uuid4().hex)
+    return _assess_candidate(state, candidate, hypothesis, origin="llm")
+
+
+def _assess_candidate(state, candidate, hypothesis, *, origin):
+    """One host-scored inner trial, shared by LLM and bounded local search."""
+    gate, recipe = state.gate, candidate.recipe
+    state.tried_recipes.append({"recipe": recipe, "code_hash": candidate.code_hash})
     result = state.measure_inner(candidate)
     state.gate.check_inputs()
-    state.report["successful_experiments"] += 1
+    counter = "successful_experiments" if origin == "llm" else "local_successful_experiments"
+    state.report[counter] = state.report.get(counter, 0) + 1
     better = state.best_inner is None or _better(result.metric, state.best_inner)
     plan = state.finalization_plan(candidate)
     within_stage_limit = all(value <= 1800 for name, value in plan.stage_seconds.items()
@@ -327,7 +343,7 @@ def _consider(state):
         "metric": state.best_inner, "scope": "inner_selection", "split": state.gate.inner_split}
     feedback = {"accepted": better and feasible, "verified": True, "metric": result.metric,
             "reason": ("improved" if feasible else "refit_budget") if better else "not_better", "hypothesis": hypothesis,
-            "scope": "inner_selection", "code_hash": candidate.code_hash,
+            "scope": "inner_selection", "origin": origin, "code_hash": candidate.code_hash,
             "recipe_hash": candidate.recipe_hash,
             "recipe_summary": {"family": str(recipe.get("family", recipe.get("action", "custom")))[:120]},
             "timing": {"estimated_finalization_seconds": plan.estimated_seconds,
@@ -341,6 +357,43 @@ def _consider(state):
         feedback["diagnostics"] = {"scope": "inner_selection", "available": False,
                                    "reason": safe_error_message(error)}
     return feedback
+
+
+def continue_locally(state):
+    """Use spare CPU after an API error without reopening the frozen baseline."""
+    from agent.offline_research import run_local_continuation, startup_seen
+    if state.dialogue_closed or state.report.get("stage") != "inner_research":
+        raise RuntimeError("Local research is terminal after candidate freeze")
+    gate = state.gate
+    search = state.report.get("baseline_search", {}).get("search") or {}
+    ranked = []
+    completed = [row for row in search.get("candidates", []) if row.get("selection_metric") is not None]
+    completed.sort(key=lambda row: row["selection_metric"], reverse=gate.spec.metric.higher_is_better)
+    for row in completed:
+        try:
+            item = _recipe_from_report(row, gate.spec.metric.task_type)
+            if "components" not in item:
+                ranked.append(item)
+        except (KeyError, ValueError, TypeError):
+            continue
+    recipes = local_candidate_plan(gate.spec.classification, gate.spec.metric.name,
+                                  gate.research_train.iloc[gate.fit_rows][gate.spec.target_column], ranked,
+                                  metric_recipes=state.report.get("quality_options", {}).get("metric_recipes", False))
+    source = state.run_dir / "local_source.py"
+    source.write_text(BASELINE_SOURCE, encoding="utf-8")
+    import hashlib
+    code_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    seen = [*startup_seen(search, code_hash=code_hash), *state.tried_recipes,
+            {"recipe": state.baseline.recipe, "code_hash": state.baseline.code_hash}]
+
+    def evaluate(recipe):
+        frozen = freeze_candidate(source, recipe, state.run_dir / "local_candidates" / uuid4().hex)
+        feedback = _assess_candidate(state, frozen,
+            {"hypothesis": "Bounded offline alternative after API failure: " + recipe["label"]}, origin="local")
+        state.event("local_experiment", result=feedback)
+        return feedback
+
+    return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
 
 def _outer_evidence(state, result, actuals):
@@ -495,11 +548,15 @@ def finalize(state, reason):
     return state.finish(status, reason)
 
 
-def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
+def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
+                 stability_splits=1, metric_recipes=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
+    if type(stability_splits) is not int or stability_splits not in {1, 2, 3} or type(metric_recipes) is not bool:
+        raise ValueError("Invalid quality experiment options")
     state = V3State(Path(task_path).resolve(), max_steps, time_budget)
+    state.report["quality_options"] = {"stability_splits": stability_splits, "metric_recipes": metric_recipes}
     try:
         prepare_research(state)
         prepare_baseline(state)
@@ -549,7 +606,7 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
                 record_usage(state, response)
                 completion = checked_completion(response)
             except Exception as error:
-                state.event("api_error", error=safe_error_message(error))
+                state.event("api_error", error=safe_error_message(error), details=safe_error_details(error))
                 reason = "api_error"
                 break
             if completion["finish_reason"] == "length":
@@ -611,6 +668,11 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500):
             if state.ledger.failure_streak >= 3:
                 reason = "repeated_failures"
                 break
+        if reason == "api_error":
+            continue_locally(state)
+        if stability_splits > 1:
+            from agent.research_stability import verify_research_finalists
+            verify_research_finalists(state, splits=stability_splits)
         return finalize(state, reason)
     except Exception as error:
         state.report.update(status="failed", error=safe_error_message(error))

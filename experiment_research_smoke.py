@@ -21,7 +21,8 @@ import subprocess
 import sys
 from uuid import uuid4
 
-from agent.llm import API_FIELDS, REQUIRED_API_FIELDS, ROOT, load_local_env, make_client, safe_error_message
+from agent.llm import (API_FIELDS, REQUIRED_API_FIELDS, ROOT, load_local_env, make_client,
+                       safe_error_details, safe_error_message, sanitize_error_details)
 from agent.research import run_agent
 from agent.task_spec import load_task
 from build_submission import source_files
@@ -200,6 +201,23 @@ def _coverage(task, report, run_dir):
             "generated_candidate_published": bool(published)}
 
 
+def _api_errors(report):
+    """Keep at most eight structured diagnostics; never copy provider text."""
+    events = report.get("events", [])
+    if not isinstance(events, list):
+        return []
+    result = []
+    for event in reversed(events):
+        if not isinstance(event, dict) or event.get("kind") != "api_error":
+            continue
+        details = sanitize_error_details(event.get("details"))
+        if details:
+            result.append(details)
+        if len(result) == 8:
+            break
+    return list(reversed(result))
+
+
 def summarize_run(task: Path, report: dict, *, run_dir: Path | None = None):
     """Copy evidence fields only; arbitrary generated text/logs are not summary data."""
     api = report.get("api", {})
@@ -228,7 +246,7 @@ def summarize_run(task: Path, report: dict, *, run_dir: Path | None = None):
                 "usage_complete": responses > 0 and reported == responses,
                 "reported_tokens": {key: api.get(key) for key in
                                     ("prompt_tokens", "completion_tokens", "total_tokens")},
-                "currency_cost": None},
+                "currency_cost": None, "errors": _api_errors(report)},
         "frozen_candidate": report.get("frozen_candidate"),
         "publication": report.get("publication"),
         "coverage": _coverage(task, report, run_dir),
@@ -356,6 +374,7 @@ def main(argv=None):
                         result_dir = paths[0].parent
                         report = json.loads(paths[0].read_text(encoding="utf-8"))
                     summary["error"] = safe_error_message(error)
+                    summary["error_details"] = safe_error_details(error)
                 (task.parent / "execution.log").write_text(_redact(output.getvalue() + errors.getvalue()), encoding="utf-8")
                 if report is None:
                     summary["tasks"].append({"task": name, "status": "failed", "measured_trials": 0})
@@ -369,6 +388,7 @@ def main(argv=None):
                     break
     except Exception as error:
         summary["error"] = safe_error_message(error)
+        summary["error_details"] = safe_error_details(error)
     summaries = summary["tasks"]
     coverage = coverage_summary(summaries)
     success = coverage["integration_passed"]

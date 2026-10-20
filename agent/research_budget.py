@@ -159,6 +159,13 @@ class BudgetPolicy:
             "fits_original_budget_estimate": estimated <= self.time_budget_seconds,
         }, self.deadline, self._generation)
 
+    def estimate_trial_cost(self, recipe_key, fit_rows, predict_rows):
+        """Host-timing estimate for admitting a complete paired inner round."""
+        recipe_key = _key(recipe_key)
+        fit_rows, predict_rows = _rows(fit_rows, "fit_rows"), _rows(predict_rows, "predict_rows")
+        self._now()
+        return self._estimate(recipe_key, fit_rows, predict_rows, default=2.0)[0]
+
     def _check_plan(self, estimate):
         if (not isinstance(estimate, FinalizationEstimate) or estimate.deadline != self.deadline
                 or estimate.measurement_generation != self._generation):

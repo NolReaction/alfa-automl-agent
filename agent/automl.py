@@ -29,7 +29,7 @@ from agent.execution import run_python
 from agent.file_io import replace_file
 from agent.features import normalize_feature_config
 from agent.search import (align_predictions, exploration_plan, fixed_blend, inner_split_rows,
-                          metric_predictions, refinement_plan, seed_candidate, select_shortlist)
+                          metric_candidates, metric_predictions, refinement_plan, seed_candidate, select_shortlist)
 from agent.task_spec import load_task, load_task_data, score_holdout
 from agent.splits import normalize_validation, split_rows
 from offline_baseline import read_csv
@@ -242,12 +242,17 @@ def _raw_evidence(directory, spec, expected_ids, expected_actuals):
 
 
 def run_automl(task_path: Path, *, time_budget=600, validation=None,
-               dataset_fingerprint=None, progress=None, output_dir=None) -> dict:
+               dataset_fingerprint=None, progress=None, output_dir=None,
+               stability_splits=1, metric_recipes=False) -> dict:
     started = time.monotonic()
     if (type(time_budget) not in {int, float} or not math.isfinite(time_budget)
             or not 0 < time_budget <= 10500):
         raise ValueError("Время автоподбора должно быть в диапазоне (0, 10500] секунд.")
     deadline = started + time_budget
+    if type(stability_splits) is not int or stability_splits not in {1, 2, 3}:
+        raise ValueError("stability_splits must be 1, 2 or 3")
+    if type(metric_recipes) is not bool:
+        raise ValueError("metric_recipes must be boolean")
     task_path = _plain(Path(task_path))
     if not task_path.is_file() or task_path.suffix.lower() != ".md":
         raise ValueError("Передайте существующий task.md.")
@@ -294,6 +299,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
     for name in ("automl_report.json", "holdout_predictions.csv"):
         _plain(output_dir / name)
     exploration = candidate_plan(classification) if inner is not None else []
+    if metric_recipes and inner is not None and not classification:
+        exploration += metric_candidates(spec.metric.name, y.iloc[inner[0]], existing=exploration)
     plan = [seed_candidate(classification), *exploration]
     search = {"status": "running", "phase": "seed", "planned": len(plan), "completed": 0,
               "selection_completed": 0, "verified": 0, "best_candidate": None,
@@ -309,6 +316,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                                 "outer_execution_order": "measured_inner_elapsed_ascending",
                                 "blend_weight": 0.5, "refit_reserve_fraction": 0.25},
               "report_path": str(output_dir / "automl_report.json")}
+    report["search_policy"].update(stability_splits=stability_splits, metric_recipes=metric_recipes)
+    report["stability"] = {"requested_splits": stability_splits, "scope": "inner_selection",
+                           "applied": False, "rounds": [], "reason": "disabled" if stability_splits == 1 else "not_run"}
     rows, recipes, evidence = {}, {}, {}
     best = None
     phase_counter = 0
@@ -389,13 +399,13 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                     diagnostics, metric=report["metric"], validation_rows=len(held_rows))
         save("training")
 
-    def run_phase(recipe, phase, phase_deadline, shares=1):
+    def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None):
         nonlocal phase_counter
         row = rows[recipe["id"]]
         row.update(phase=phase, status="running", error=None, rejection_reason=None)
         search["phase"] = phase
         phase_started = time.monotonic()
-        directory = run_dir / recipe["id"] / phase
+        directory = run_dir / recipe["id"] / (directory_name or phase)
         try:
             if min(phase_deadline, deadline - 2) - time.monotonic() <= 1:
                 row.update(status="skipped", rejection_reason="insufficient_budget")
@@ -404,7 +414,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             _stage_inputs(snapshot_dir, directory / "inputs")
             (directory / "task.md").write_text(task_text, encoding="utf-8")
             local_spec = replace(spec, data_dir=directory / "inputs", task_path=directory / "task.md")
-            fitting, held = inner if phase == "selection" else (fit_rows, held_rows)
+            fitting, held = split_override if split_override is not None else (
+                inner if phase == "selection" else (fit_rows, held_rows))
             config_path = directory / "config.json"
             _atomic_json(config_path, {**recipe, "candidate_dir": str(directory), "phase": phase,
                                       "task_spec": local_spec.to_dict(), "fit_rows": fitting.tolist(),
@@ -466,7 +477,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                 raw = _raw_evidence(directory, spec, ids, actual)
                 record.update(value=value, raw=raw)
                 if phase == "selection":
-                    row["selection_metric"] = value
+                    if split_override is None:
+                        row["selection_metric"] = value
                 else:
                     row.update(metric=value, verification_metric=value)
             if phase in {"seed", "refit"}:
@@ -493,8 +505,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             # Plan six refinement slots up front in the budget, but choose their
             # families only after all initial INNER results have been observed.
             adaptive = len(exploration) >= 5
+            selection_deadline = started + time_budget * (.50 if stability_splits > 1 else .60)
             for index, recipe in enumerate(exploration):
-                run_phase(recipes[recipe["id"]], "selection", started + time_budget * 0.60,
+                run_phase(recipes[recipe["id"]], "selection", selection_deadline,
                           len(exploration) - index + (6 if adaptive else 0))
             successful = [recipes[item["id"]] for item in exploration if rows[item["id"]]["selection_metric"] is not None]
             ranked_inner = rank(successful, "selection_metric")
@@ -502,9 +515,47 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             for recipe in refinements:
                 add_recipe(recipe)
             for index, recipe in enumerate(refinements):
-                run_phase(recipes[recipe["id"]], "selection", started + time_budget * 0.60, len(refinements) - index)
+                run_phase(recipes[recipe["id"]], "selection", selection_deadline, len(refinements) - index)
             successful = [recipe for recipe in recipes.values() if rows[recipe["id"]]["selection_metric"] is not None]
             shortlist = select_shortlist(rank(successful, "selection_metric"))
+            if stability_splits > 1 and len(shortlist) > 1:
+                from agent.stability import additional_inner_splits, paired_stability_summary
+                local_positions = {int(row): index for index, row in enumerate(fit_rows)}
+                canonical = tuple(np.asarray([local_positions[int(row)] for row in part]) for part in inner)
+                extra_splits = additional_inner_splits(
+                    train.iloc[fit_rows].reset_index(drop=True), y.iloc[fit_rows].reset_index(drop=True),
+                    features, classification, choice, canonical=canonical, limit=stability_splits - 1)
+                ids = [item["id"] for item in shortlist]
+                rounds = [{identifier: rows[identifier]["selection_metric"] for identifier in ids}]
+                stability_deadline = started + time_budget * .65
+                # Admit whole paired rounds, using host timings rather than a
+                # row-independent fixed timeout. No outer score participates.
+                costs = {identifier: max(.1, rows[identifier]["elapsed_seconds"]) for identifier in ids}
+                report["stability"]["reason"] = "no_additional_split" if not extra_splits else "insufficient_budget"
+                for number, (local_fit, local_held, metadata) in enumerate(extra_splits, 1):
+                    scale = max(1, len(local_fit) / len(inner[0]), len(local_held) / len(inner[1])) ** 1.25
+                    estimated = sum(costs.values()) * 1.5 * scale + len(ids)
+                    if stability_deadline - time.monotonic() < estimated:
+                        break
+                    scores = {}
+                    for index, recipe in enumerate(shortlist):
+                        record = run_phase(recipe, "selection", stability_deadline, len(shortlist) - index,
+                                           split_override=(fit_rows[local_fit], fit_rows[local_held]),
+                                           directory_name=f"stability_{number}")
+                        if record is not None:
+                            scores[recipe["id"]] = record["value"]
+                    rounds.append(scores)
+                    report["stability"]["rounds"].append({"split": metadata, "scores": scores,
+                                                         "complete": len(scores) == len(ids)})
+                    if len(scores) != len(ids):
+                        report["stability"]["reason"] = "incomplete_paired_round"
+                        break
+                summary = paired_stability_summary(ids, rounds, higher_is_better=spec.metric.higher_is_better)
+                report["stability"]["summary"] = summary
+                if len(rounds) > 1 and len(rounds[1]) == len(ids):
+                    report["stability"].update(applied=True, reason="paired_inner_mean",
+                                               outer_finalist_limit=2)
+                    shortlist = [recipes[identifier] for identifier in summary["ranking"][:2]]
             for recipe in successful:
                 if recipe not in shortlist:
                     rows[recipe["id"]]["rejection_reason"] = "not_selected"

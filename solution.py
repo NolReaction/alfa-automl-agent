@@ -79,6 +79,10 @@ def main() -> int:
     parser.add_argument("--validation", choices=("auto", "random", "grouped", "time"), default=None,
                         help="Offline holdout strategy; defaults to auto")
     parser.add_argument("--time-column", help="Numeric period feature for --validation time")
+    parser.add_argument("--stability-splits", type=int, choices=(1, 2, 3), default=1,
+                        help="Experimental paired inner checks of finalists; default 1 (disabled)")
+    parser.add_argument("--metric-recipes", action="store_true",
+                        help="Experimentally add metric-aware regression recipes to startup AutoML")
     args = parser.parse_args()
     try:
         if args.check:
@@ -89,6 +93,11 @@ def main() -> int:
             check_api()
             return 0
         selected_mode = select_mode(args.mode)
+        quality_options = {}
+        if args.stability_splits != 1:
+            quality_options["stability_splits"] = args.stability_splits
+        if args.metric_recipes:
+            quality_options["metric_recipes"] = True
         time_budget = args.time_budget if args.time_budget is not None else (600 if selected_mode == "offline" else 10500)
         if args.max_steps < 1 or not 0 < time_budget <= 10500:
             raise ValueError("max-steps must be positive; time-budget must be in (0, 10500].")
@@ -105,7 +114,7 @@ def main() -> int:
             validation = {"strategy": args.validation or "auto"}
             if args.time_column is not None:
                 validation["time_column"] = args.time_column
-            result = run_automl(task_path, time_budget=time_budget, validation=validation)
+            result = run_automl(task_path, time_budget=time_budget, validation=validation, **quality_options)
             metric = result["metric"]
             print(f"Best model: {result['model']}; {metric['name']}: {metric['value']:.6f}")
             print(f"Saved: {task_path.resolve().parent / 'submission.csv'}. API calls: 0.")
@@ -114,7 +123,7 @@ def main() -> int:
             if args.mode == "llm":
                 load_local_env()
             with make_client() as client:
-                run_agent(task_path, client, max_steps=args.max_steps, time_budget=time_budget)
+                run_agent(task_path, client, max_steps=args.max_steps, time_budget=time_budget, **quality_options)
         return 0
     except Exception as error:
         print(f"Error: {safe_error_message(error)}", file=sys.stderr)

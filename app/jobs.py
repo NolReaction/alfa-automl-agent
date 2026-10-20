@@ -727,7 +727,11 @@ class JobManager:
         if job["action"] == "automl":
             config["time_budget"] = minutes * 60
         if "model_config" in job and job["action"] != "automl":
-            config["model_params"] = validate_model_config(job["model_config"], action=_config_action(job["action"]))["parameters"]
+            model_config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
+            if {"objective", "target_transform"} & set(model_config):
+                config["model_config"] = model_config
+            else:
+                config["model_params"] = model_config["parameters"]
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 

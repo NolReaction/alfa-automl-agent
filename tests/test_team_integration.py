@@ -187,15 +187,26 @@ class TeamIntegrationTests(unittest.TestCase):
             self.assertEqual(report["improvements"], 0)
 
     def test_api_failure_stops_requests_and_keeps_real_host_fallback(self):
+        from agent.search import seed_candidate
         with tempfile.TemporaryDirectory() as directory:
             task = make_regression(Path(directory))
-            _, report, client, _, _ = self.run_v3(
-                task, [ConnectionError("fixture failure"), response(code=candidate_tool())])
+            with patch("agent.research_v3.local_candidate_plan", return_value=[seed_candidate(False)]):
+                _, report, client, executions, _ = self.run_v3(
+                    task, [ConnectionError("fixture failure"), response(code=candidate_tool())])
             self.assertEqual(len(client.received_messages), 1)
             self.assertEqual(report["api"]["attempts"], 1)
             self.assertEqual(report["api"]["responses"], 0)
             self.assertTrue(validate_predictions(task.parent)["valid"])
             self.assertEqual(report["status"], "fallback")
+            self.assertEqual(report["successful_experiments"], 0)
+            self.assertEqual(report["local_experiments"], 1)
+            self.assertEqual(report["local_successful_experiments"], 1)
+            self.assertEqual(report["local_research"]["verified"], 1)
+            self.assertEqual(report["published_recipe"], "candidate")
+            self.assertEqual(report["reason"], "api_error")
+            self.assertNotEqual(report["frozen_baseline"]["code_hash"], report["frozen_candidate"]["code_hash"])
+            first_outer = next(index for index, item in enumerate(executions) if item["phase"] == "outer_validation")
+            self.assertTrue(all(item["phase"] != "inner_selection" for item in executions[first_outer:]))
 
     def test_malformed_reply_without_verified_final_output_cannot_claim_success(self):
         with tempfile.TemporaryDirectory() as directory:
