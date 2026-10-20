@@ -305,6 +305,7 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
               "search": search, "candidate_configs": {}, "candidate_feature_configs": {},
               "search_policy": {"inner_selection": True, "outer_shortlist_limit": 3,
                                 "outer_shortlist_policy": "distinct_families_first",
+                                "outer_execution_order": "measured_inner_elapsed_ascending",
                                 "blend_weight": 0.5, "refit_reserve_fraction": 0.25},
               "report_path": str(output_dir / "automl_report.json")}
     rows, recipes, evidence = {}, {}, {}
@@ -506,8 +507,12 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             for recipe in successful:
                 if recipe not in shortlist:
                     rows[recipe["id"]]["rejection_reason"] = "not_selected"
-            for index, recipe in enumerate(shortlist):
-                record = run_phase(recipe, "verification", started + time_budget * 0.75, len(shortlist) - index)
+            # Freeze a stable order from INNER runtimes before verification adds
+            # to row timings. Fast trials release their unused shares to slower
+            # finalists; the selected families and outer deadline do not change.
+            verification_order = sorted(shortlist, key=lambda recipe: rows[recipe["id"]]["elapsed_seconds"])
+            for index, recipe in enumerate(verification_order):
+                record = run_phase(recipe, "verification", started + time_budget * 0.75, len(verification_order) - index)
                 if record is not None:
                     evidence[recipe["id"]] = record
 

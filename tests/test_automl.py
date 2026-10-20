@@ -152,9 +152,77 @@ class AutoMLTests(unittest.TestCase):
                                   ("candidate_2", "selection"): {"error": 1},
                                   ("candidate_4", "selection"): {"error": 2}}, full_plan=True)
         verified = [call for call in self.calls if call["phase"] == "verification"]
-        self.assertEqual([call["action"] for call in verified], ["lightgbm", "extra_trees", "catboost"])
-        self.assertEqual([call["id"] for call in verified], ["refine_1", "candidate_2", "candidate_4"])
+        self.assertCountEqual([call["action"] for call in verified], ["lightgbm", "extra_trees", "catboost"])
+        self.assertCountEqual([call["id"] for call in verified], ["refine_1", "candidate_2", "candidate_4"])
         self.assertEqual(result["search_policy"]["outer_shortlist_limit"], 3)
+
+    def test_verification_equal_inner_durations_preserve_score_rank(self):
+        with patch.object(automl.time, "monotonic", return_value=0):
+            self.run_search({("candidate_1", "selection"): {"error": 2},
+                             ("candidate_2", "selection"): {"error": 1}})
+        self.assertEqual([call["id"] for call in self.calls if call["phase"] == "verification"],
+                         ["candidate_2", "candidate_1"])
+
+    def test_fast_verification_releases_budget_to_stronger_slow_finalist(self):
+        self.make_data(classification=True)
+        plan = automl.candidate_plan(True)
+        # Inner rank prefers LGBM then CatBoost then RF; measured costs differ.
+        plan = [plan[5], plan[3], plan[0]]
+        clock, verification_started, schedule = [0.0], [False], []
+        costs = {"selection": {"lightgbm": 30, "catboost": 55, "baseline": 5},
+                 "verification": {"lightgbm": 38, "catboost": 68, "baseline": 7}}
+        execute = self.fake_execution({
+            "seed": {"wrong": 1},
+            ("candidate_6", "selection"): {"wrong": 0},
+            ("candidate_4", "selection"): {"wrong": 0.25},
+            ("candidate_1", "selection"): {"wrong": 0.5},
+            ("candidate_6", "verification"): {"wrong": 0},
+            ("candidate_4", "verification"): {"wrong": 0},
+            ("candidate_1", "verification"): {"wrong": 0.5},
+        })
+
+        def progress(event):
+            # Charge earlier preparation to the shared budget while preserving
+            # measured 5/30/55-second INNER worker costs. Exactly 95s remain in
+            # the verification phase; the final 150s are still reserved.
+            if event["search"]["phase"] == "verification" and not verification_started[0]:
+                clock[0] = 355
+                verification_started[0] = True
+
+        def measured_execution(code, task_dir, run_dir, step, timeout):
+            config = json.loads((task_dir / "config.json").read_text(encoding="utf-8"))
+            phase, action = config["phase"], config["action"]
+            cost = costs.get(phase, {}).get(action, 1 if phase == "seed" else 20)
+            result = execute(code, task_dir, run_dir, step, timeout)
+            schedule.append((phase, action, clock[0], timeout))
+            clock[0] += min(cost, timeout)
+            if cost > timeout:
+                result.update(exit_code=-9, timed_out=True)
+            return result
+
+        with patch.object(automl.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(automl, "candidate_plan", return_value=plan), \
+                patch.object(automl, "run_python", side_effect=measured_execution), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = automl.run_automl(self.task, time_budget=600, progress=progress)
+        verification = [value for value in schedule if value[0] == "verification"]
+        self.assertEqual([value[1] for value in verification], ["baseline", "lightgbm", "catboost"])
+        self.assertEqual([value[2] for value in verification], [355, 362, 400])
+        self.assertAlmostEqual(verification[0][3], 95 / 3)
+        self.assertEqual(verification[1][3], 44)
+        self.assertEqual(verification[2][3], 50)
+        rows = {row["id"]: row for row in result["search"]["candidates"]}
+        self.assertEqual(rows["candidate_1"]["status"], "completed")
+        self.assertEqual(rows["candidate_6"]["status"], "completed")
+        self.assertEqual(rows["candidate_4"]["status"], "timed_out")
+        self.assertIsNone(rows["candidate_4"]["metric"], "timed-out evidence cannot compete")
+        self.assertEqual(result["search"]["best_candidate"], "candidate_6")
+        self.assertEqual(result["metric"]["value"], 1)
+        refit = next(value for value in schedule if value[0] == "refit")
+        self.assertEqual(refit[1:3], ("lightgbm", 450))
+        self.assertEqual(refit[3], 148)  # 25% reserve minus the two-second I/O margin.
+        self.assertLessEqual(clock[0], 600)
+        validate_search_summary(result["search"], metric=result["metric"], model=result["model"])
 
     def test_single_fixed_blend_requires_strict_outer_improvement(self):
         result = self.run_search({("candidate_1", "verification"): {"error": 2},
