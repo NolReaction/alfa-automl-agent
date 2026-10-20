@@ -30,5 +30,9 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Проверить окружение и тесты
         run: python dev_check.py
+      - name: Проверить приложение Alfa Lab
+        run: python -m unittest discover -s app/tests -v
+      - name: Проверить Windows-запускатель
+        run: python app/windows/build_launcher.py --verify app/AlfaLab.exe
       - name: Собрать конкурсный архив
         run: python build_submission.py
