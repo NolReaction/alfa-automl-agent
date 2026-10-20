@@ -96,7 +96,9 @@ class AgentTests(unittest.TestCase):
         messages = [
             SimpleNamespace(content=None, tool_calls=[FakeCall("raise ValueError('try again')")]),
             SimpleNamespace(content=None, tool_calls=[FakeCall(
-                "from pathlib import Path; Path('submission.csv').write_text('id,y\\n1,2\\n')"
+                "from pathlib import Path; import json; "
+                "Path('submission.csv').write_text('id,y\\n1,2\\n'); "
+                "Path('research_hypothesis.json').write_text(json.dumps({'hypothesis': 'Use the observed training value as a constant prediction.'}))"
             )]),
             SimpleNamespace(content="Done", tool_calls=None),
         ]
@@ -110,10 +112,17 @@ class AgentTests(unittest.TestCase):
             self.assertNotEqual(failure["exit_code"], 0)
             self.assertIn("try again", failure["stderr"])
             self.assertTrue(logs.is_dir())
+            report = json.loads((logs / "run.json").read_text())
+            self.assertEqual((report["status"], report["reason"]),
+                             ("fallback", "host_metric_unsupported"))
+            self.assertEqual(report["successful_experiments"], 0)
+            self.assertEqual(report["unverified_experiments"], 1)
 
     def test_step_limit_does_not_delete_existing_predictions(self):
         client = FakeClient([SimpleNamespace(content=None, tool_calls=[FakeCall(
-            "from pathlib import Path; Path('submission.csv').write_text('id,y\\n1,2\\n')"
+            "from pathlib import Path; import json; "
+            "Path('submission.csv').write_text('id,y\\n1,2\\n'); "
+            "Path('research_hypothesis.json').write_text(json.dumps({'hypothesis': 'Use the observed training value as a constant prediction.'}))"
         )])])
         with tempfile.TemporaryDirectory() as directory:
             task = self.make_task(Path(directory))

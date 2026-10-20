@@ -450,6 +450,17 @@ class SharingTests(unittest.TestCase):
                     self.store.import_reports("regression", FINGERPRINT, envelope)
         self.assertFalse((self.root / ".workspace").exists())
 
+    def test_unknown_metric_fallback_preserves_quality_warning_in_exchange(self):
+        envelope = self.envelope(job(action="agent", metric=None, agent_status="fallback",
+                                     agent_reason="host_metric_unsupported"))
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["agent_status"], "fallback")
+        self.assertEqual(imported["agent_reason"], "host_metric_unsupported")
+        self.assertIsNone(imported["metric"])
+        self.assertEqual(self.store.export("regression", FINGERPRINT, [imported])["reports"],
+                         envelope["reports"])
+
     def test_qwen_fallback_survives_export_import_without_raw_reason_diagnostics(self):
         envelope = self.envelope(job(action="agent", metric=None, agent_status="fallback",
                                      agent_reason="api_error"))

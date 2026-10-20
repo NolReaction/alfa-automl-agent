@@ -1,4 +1,4 @@
-# Initial subset of the packages listed by the organizers.
+# Runtime subset of the official Python 3.12 environment (verified 2026-10-20).
 numpy==1.26.4
 scipy==1.12.0
 pandas==2.2.3

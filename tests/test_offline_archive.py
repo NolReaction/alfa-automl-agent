@@ -45,7 +45,8 @@ class OfflineArchiveTests(unittest.TestCase):
             env.update(OPENAI_API_KEY="this-key-must-not-be-used", OPENAI_BASE_URL="http://127.0.0.1:1/v1",
                        OPENAI_MODEL="must-not-call", PYTHONIOENCODING="utf-8")
             result = subprocess.run(
-                [sys.executable, str(package / "solution.py"), str(task / "task.md"), "--time-budget", "60"],
+                [sys.executable, str(package / "solution.py"), str(task / "task.md"),
+                 "--mode", "offline", "--time-budget", "60"],
                 cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", timeout=85,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
