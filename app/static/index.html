@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f7f8fa" />
+    <title>Alfa Lab · AutoML</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">К содержимому</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Навигация">
+        <a class="brand" href="#data" aria-label="Alfa Lab — данные"
+          ><span class="brand-mark">A<span></span></span
+          ><span class="brand-title"
+            >Alfa <b>Lab</b><small>AUTOML WORKSPACE</small></span
+          ></a
+        >
+        <div class="project-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+        <div class="workspace-card">
+          <span class="workspace-icon">α</span>
+          <div>AI-агент<small>Альфа Хакатон · 2026</small></div>
+          <span class="local-tag">LOCAL</span>
+        </div>
+        <div class="task-field">
+          <label for="task-select">Текущая задача</label
+          ><select id="task-select" disabled>
+            <option>Загрузка задач…</option>
+          </select>
+        </div>
+        <nav class="primary-nav" aria-label="Разделы">
+          <button class="nav-item active" data-view="data" aria-current="page">
+            <span data-icon="data"></span><span>Данные</span
+            ><span class="nav-index">01</span></button
+          ><button class="nav-item" data-view="runs">
+            <span data-icon="activity"></span><span>Запуски</span
+            ><span class="nav-index">02</span></button
+          ><button class="nav-item" data-view="result">
+            <span data-icon="check"></span><span>Результат</span
+            ><span class="nav-index">03</span>
+          </button>
+        </nav>
+        <div class="sidebar-note">
+          <span class="note-symbol" data-icon="terminal"></span
+          ><strong>Обучите. Сравните.<br />Выберите результат.</strong>
+          <p>
+            Модели работают на вашем компьютере. Панель показывает их результат.
+          </p>
+          <button id="sidebar-help" class="text-button">
+            Настройка среды <span>↗</span>
+          </button>
+        </div>
+        <div class="sidebar-footer">
+          <span class="connection-dot"></span>
+          <div>На этом компьютере<small>Данные на вашем компьютере</small></div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>Рабочее пространство</span><span class="crumb-divider">/</span
+            ><strong id="crumb-name">Данные</strong>
+          </div>
+          <div class="topbar-actions">
+            <span class="read-only"
+              ><span data-icon="shield"></span>Локальная лаборатория</span
+            ><button
+              class="icon-button"
+              id="help-button"
+              aria-label="Открыть настройку и справку"
+              title="Настройка и справка"
+            >
+              <span data-icon="help"></span>
+            </button>
+          </div>
+        </header>
+        <main id="main" tabindex="-1" aria-live="polite">
+          <div class="initial-loading">
+            <span class="spinner"></span>
+            <p>Открываем рабочее пространство…</p>
+          </div>
+        </main>
+        <footer class="workspace-footer">
+          <span
+            >ALFA LAB <span class="footer-separator">/</span> AutoML
+            Research</span
+          ><span>Обучение на вашем компьютере</span>
+        </footer>
+      </div>
+    </div>
+    <dialog id="help-dialog" aria-labelledby="help-title">
+      <div class="dialog-head">
+        <div>
+          <span class="eyebrow">РАБОЧИЙ ПРОЦЕСС</span>
+          <h2 id="help-title">От данных к результату</h2>
+        </div>
+        <button
+          class="icon-button"
+          id="close-help"
+          aria-label="Закрыть справку"
+        >
+          ×
+        </button>
+      </div>
+      <div id="help-content"></div>
+    </dialog>
+    <dialog id="launch-dialog" aria-labelledby="launch-title">
+      <div class="dialog-head">
+        <div>
+          <span class="eyebrow">НОВЫЙ ЗАПУСК</span>
+          <h2 id="launch-title">Запустить модель</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="launch-dialog"
+          aria-label="Закрыть"
+        >
+          ×
+        </button>
+      </div>
+      <form id="launch-form"></form>
+    </dialog>
+    <dialog id="publish-dialog" aria-labelledby="publish-title">
+      <div class="dialog-head">
+        <div>
+          <span class="eyebrow">ФАЙЛ ДЛЯ ПЛАТФОРМЫ</span>
+          <h2 id="publish-title">Использовать этот CSV?</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close-dialog="publish-dialog"
+          aria-label="Закрыть"
+        >
+          ×
+        </button>
+      </div>
+      <div id="publish-content"></div>
+    </dialog>
+    <input
+      id="report-file"
+      class="sr-only"
+      type="file"
+      accept="application/json,application/zip,.json,.zip"
+      aria-label="Добавить JSON-отчёт или ZIP-пакет участника"
+    />
+    <div class="toast" id="toast" role="status"></div>
+  </body>
+</html>

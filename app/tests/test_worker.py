@@ -1,0 +1,192 @@
+"""Real offline worker checks on small isolated regression/classification jobs."""
+
+from __future__ import annotations
+
+import contextlib
+import csv
+import io
+import json
+from pathlib import Path
+import shutil
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import f1_score, mean_squared_error
+from sklearn.model_selection import train_test_split
+
+from app import worker
+
+
+def write_csv(path: Path, rows) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream).writerows(rows)
+
+
+class WorkerTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def make_source(self, classification=False):
+        source = self.root / ("classification" if classification else "regression")
+        source.mkdir()
+        (source / "task.md").write_text("Synthetic test task", encoding="utf-8")
+        inputs = source / "nested" / "participants"
+        write_csv(inputs / "data_dictionary.csv", [
+            ["feature", "role", "dtype"],
+            ["row_key", "id", "category"],
+            ["x", "feature", "numeric"],
+            ["flag", "feature", "binary"],
+            ["protocol", "feature", "category"],
+            ["answer", "target", "category" if classification else "numeric"],
+        ])
+        rows = [["row_key", "x", "flag", "protocol", "answer"]]
+        for index in range(80):
+            row_id = "NA" if index == 0 else f"{index:04d}"
+            target = ("NA" if index % 2 == 0 else "Positive") if classification else index * 1.5
+            rows.append([row_id, index, index % 2, "tcp", target])
+        write_csv(inputs / "train.csv", rows)
+        write_csv(inputs / "test.csv", [
+            ["row_key", "x", "flag", "protocol"],
+            ["NA", 2, 0, "unseen"], ["0001", 3, 1, ""],
+        ])
+        write_csv(inputs / "sample_submission.csv", [
+            ["row_key", "answer"], ["NA", "0"], ["0001", "0"],
+        ])
+        return source
+
+    def make_config(self, source, action, name=None):
+        job_dir = self.root / (name or (source.name + "-" + action))
+        job_dir.mkdir()
+        staged = job_dir / "staged"
+        shutil.copytree(source, staged)
+        config = {
+            "job_dir": str(job_dir), "task_path": str(staged / "task.md"),
+            "action": action, "dataset_fingerprint": "a" * 64,
+        }
+        path = job_dir / "config.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        return path, job_dir, staged
+
+    def test_recipes_use_same_holdout_and_publish_real_metrics_without_touching_source(self):
+        for classification in (False, True):
+            with self.subTest(classification=classification):
+                source = self.make_source(classification)
+                original = {str(path.relative_to(source)): path.read_bytes()
+                            for path in source.rglob("*") if path.is_file()}
+                results, full_metrics = [], []
+                for action in ("baseline", "extra_trees"):
+                    config_path, job_dir, staged = self.make_config(source, action)
+                    transitions = []
+                    save_json = worker._atomic_json
+
+                    def record_json(path, value):
+                        if path.name == "stage.json":
+                            transitions.append(value["stage"])
+                        return save_json(path, value)
+
+                    with patch.object(worker, "_atomic_json", side_effect=record_json):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            exit_code = worker.main(["--config", str(config_path)])
+                    self.assertEqual(exit_code, 0)
+                    self.assertEqual(transitions, ["training", "validating", "refitting", "finished"])
+                    result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+                    metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
+                    results.append(result)
+                    full_metrics.append(metrics)
+                    holdout = pd.read_csv(job_dir / "holdout_predictions.csv", dtype=str,
+                                          keep_default_na=False)
+                    self.assertEqual(list(holdout.columns), ["id", "actual", "prediction"])
+                    self.assertEqual(len(holdout), 16)
+                    source_train = pd.read_csv(source / "nested/participants/train.csv",
+                                               dtype=str, keep_default_na=False)
+                    _, expected_rows = train_test_split(
+                        np.arange(len(source_train)), test_size=0.2, random_state=42,
+                        shuffle=True, stratify=source_train["answer"] if classification else None,
+                    )
+                    self.assertEqual(holdout["id"].tolist(),
+                                     source_train["row_key"].iloc[expected_rows].tolist())
+                    self.assertEqual(holdout["actual"].tolist(),
+                                     source_train["answer"].iloc[expected_rows].tolist())
+                    if classification:
+                        measured = f1_score(holdout["actual"], holdout["prediction"], average="macro",
+                                            zero_division=0)
+                        self.assertIn("NA", set(holdout["actual"]))
+                        self.assertEqual(result["metric"]["name"], "Macro F1")
+                    else:
+                        measured = np.sqrt(mean_squared_error(holdout["actual"].astype(float),
+                                                              holdout["prediction"].astype(float)))
+                        self.assertEqual(result["metric"]["name"], "RMSE")
+                    self.assertAlmostEqual(result["metric"]["value"], measured)
+                    self.assertTrue(result["output_valid"])
+                    self.assertEqual(result["split"]["seed"], 42)
+                    self.assertEqual(metrics["evaluation_source"], "app_local_holdout")
+                    self.assertEqual(metrics["api"], {"used": False, "calls": 0})
+                    self.assertIn("flag", metrics["features"]["numeric"])
+                    self.assertGreater(metrics["elapsed_seconds"], 0)
+                    submission = pd.read_csv(staged / "submission.csv", dtype=str,
+                                             keep_default_na=False)
+                    self.assertEqual(submission["row_key"].tolist(), ["NA", "0001"])
+                    if classification:
+                        self.assertEqual(submission["answer"].tolist(), ["NA", "Positive"])
+                    if action == "extra_trees":
+                        self.assertEqual(metrics["model"]["parameters"]["n_estimators"], 160)
+                        self.assertEqual(metrics["model"]["parameters"]["n_jobs"], 8)
+                self.assertEqual(results[0]["split"]["validation_hash"],
+                                 results[1]["split"]["validation_hash"])
+                self.assertEqual(results[0]["comparison_key"], results[1]["comparison_key"])
+                self.assertEqual(full_metrics[0]["validation_signature"],
+                                 full_metrics[1]["validation_signature"])
+                current = {str(path.relative_to(source)): path.read_bytes()
+                           for path in source.rglob("*") if path.is_file()}
+                self.assertEqual(current, original)
+
+    def test_config_refuses_unrecognized_recipe_and_paths_outside_job(self):
+        source = self.make_source()
+        path, _, _ = self.make_config(source, "baseline")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["action"] = "execute_anything"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            worker.load_config(path)
+        config["action"] = "baseline"
+        config["task_path"] = str(source / "task.md")
+        path.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            worker.load_config(path)
+
+    def test_existing_symlink_output_is_refused_before_training(self):
+        source = self.make_source()
+        path, job_dir, _ = self.make_config(source, "baseline")
+        outside = self.root / "private.json"
+        outside.write_text("unchanged", encoding="utf-8")
+        try:
+            (job_dir / "metrics.json").symlink_to(outside)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"Symlinks unavailable: {error}")
+        with self.assertRaises(ValueError):
+            worker.load_config(path)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "unchanged")
+
+    def test_training_failure_returns_nonzero_and_a_readable_error(self):
+        source = self.make_source(classification=True)
+        path, job_dir, staged = self.make_config(source, "baseline")
+        train_path = staged / "nested/participants/train.csv"
+        train = pd.read_csv(train_path, dtype=str, keep_default_na=False)
+        train["answer"] = "only-one-class"
+        train.to_csv(train_path, index=False)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(worker.main(["--config", str(path)]), 1)
+        result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertFalse(result["output_valid"])
+        self.assertTrue(result["error"])
+        self.assertFalse((staged / "submission.csv").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,169 @@
+"""Build fixed, bounded download packages without writing project outputs."""
+
+from __future__ import annotations
+
+import hashlib
+from html import escape
+from io import BytesIO
+import json
+import os
+from pathlib import Path
+import stat
+from zipfile import BadZipFile, LargeZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
+import zlib
+
+import build_submission
+
+
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
+MAX_RESULT_BYTES = 128 * 1024 * 1024
+MAX_SOURCE_FILES = 512
+MAX_IMPORT_BYTES = 20 * 1024 * 1024
+MAX_IMPORT_REPORT_BYTES = 1024 * 1024
+MAX_IMPORT_ENTRIES = 32
+
+
+def report_bytes_from_archive(content: bytes) -> bytes:
+    """Read one bounded reports.json; never extract or interpret other entries."""
+    if len(content) > MAX_IMPORT_BYTES:
+        raise ValueError("ZIP отчёта превышает 20 МБ.")
+    try:
+        with ZipFile(BytesIO(content)) as archive:
+            entries = archive.infolist()
+            if len(entries) > MAX_IMPORT_ENTRIES:
+                raise ValueError("В ZIP слишком много файлов. Выберите пакет результата Alfa Lab.")
+            reports = [entry for entry in entries if entry.filename == "reports.json"]
+            if len(reports) != 1:
+                raise ValueError("В ZIP нужен ровно один файл reports.json в корне архива.")
+            report, = reports
+            if report.orig_filename != "reports.json":
+                raise ValueError("В ZIP недопустимое имя файла отчёта.")
+            if report.flag_bits & 1 or report.compress_type not in {ZIP_STORED, ZIP_DEFLATED}:
+                raise ValueError("ZIP отчёта зашифрован или использует неподдерживаемое сжатие.")
+            if report.file_size > MAX_IMPORT_REPORT_BYTES:
+                raise ValueError("Файл reports.json в ZIP превышает 1 МБ.")
+            with archive.open(report) as stream:
+                raw = stream.read(MAX_IMPORT_REPORT_BYTES + 1)
+            if len(raw) > MAX_IMPORT_REPORT_BYTES:
+                raise ValueError("Файл reports.json в ZIP превышает 1 МБ.")
+            return raw
+    except (BadZipFile, LargeZipFile, RuntimeError, NotImplementedError, EOFError, zlib.error) as error:
+        raise ValueError("Не удалось прочитать ZIP. Выберите пакет результата Alfa Lab.") from error
+
+
+def _regular_bytes(path: Path, limit: int) -> bytes:
+    """Reject links, non-files and changing/oversized input before archiving."""
+    path = path.absolute()
+    for component in (path, *path.parents):
+        if component.is_symlink() or (hasattr(component, "is_junction") and component.is_junction()):
+            raise ValueError("Ссылки и junction-папки в выгружаемых файлах запрещены.")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("Для выгрузки нужен обычный файл.")
+        if before.st_size > limit:
+            raise ValueError("Размер файлов превышает лимит выгрузки.")
+        content = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+        if len(content) > limit:
+            raise ValueError("Размер файлов превышает лимит выгрузки.")
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError("Файл изменился во время выгрузки. Повторите скачивание.")
+        return content
+
+
+def _archive(files: dict[str, bytes]) -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED, compresslevel=6) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return output.getvalue()
+
+
+def delivery_archive() -> bytes:
+    """Use exactly the competition builder's allowlist; never call its writer."""
+    paths = build_submission.source_files()
+    if len(paths) > MAX_SOURCE_FILES:
+        raise ValueError("Слишком много исходных файлов для сборки через панель.")
+    files, remaining = {}, MAX_SOURCE_BYTES
+    for path in paths:
+        content = _regular_bytes(path, remaining)
+        remaining -= len(content)
+        files[path.relative_to(build_submission.ROOT).as_posix()] = content
+    return _archive(files)
+
+
+def _readable_report(report: dict) -> bytes:
+    def text(value):
+        return escape(str(value if value is not None else "—"), quote=True)
+
+    action = {"baseline": "Стартовая модель", "extra_trees": "ExtraTrees",
+              "agent": "Исследование с Qwen"}.get(report["action"], "Эксперимент")
+    fallback = report.get("agent_status") == "fallback"
+    status = "Резервный CSV: исследование не завершилось штатно" if fallback else "Запуск завершён"
+    metric = report.get("metric")
+    if metric:
+        metric_html = (f'<strong>{text(format(metric["value"], ".6g"))}</strong>'
+                       f'<span>{text(metric["name"])}</span>'
+                       f'<p>{"Больше — лучше" if metric["higher_is_better"] else "Меньше — лучше"}. '
+                       'Локальная проверка; это не балл платформы.</p>')
+    else:
+        metric_html = ('<strong>Качество не измерено</strong><p>Структурированная метрика отсутствует. '
+                       'Корректный формат CSV сам по себе не подтверждает качество предсказаний.</p>')
+    split = report.get("split") or {}
+    fraction = split.get("validation_fraction")
+    validation = (f'{fraction * 100:g}% данных' if fraction is not None else "Не указана")
+    rows = [
+        ("Модель", report.get("model") or action), ("Автор", report.get("author") or "Не указан"),
+        ("Заметка / гипотеза", report.get("hypothesis") or "Не указана"),
+        ("Начало", report.get("started_at")), ("Окончание", report.get("finished_at")),
+        ("Время", f'{report["elapsed_seconds"]:g} с' if report.get("elapsed_seconds") is not None else None),
+        ("Проверочная выборка", validation), ("Проверочных строк", split.get("validation_rows")),
+        ("Seed разбиения", split.get("seed")), ("API использовался", "Да" if report.get("api_used") else "Нет"),
+        ("Идентификатор запуска", report["id"]), ("SHA-256 данных", report["dataset_fingerprint"]),
+    ]
+    details = "".join(f"<dt>{text(label)}</dt><dd>{text(value)}</dd>" for label, value in rows)
+    return f'''<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>Alfa Lab — результат эксперимента</title>
+<style>body{{font:15px/1.6 system-ui,sans-serif;color:#20232b;background:#f7f8fa;margin:0;padding:32px}}
+main{{max-width:850px;margin:auto;background:white;padding:32px;border-radius:12px}}h1{{font-size:26px;margin:0}}
+.status{{color:{"#986d11" if fallback else "#287b60"}}}.metric{{border-block:1px solid #e7e9ee;padding:24px 0;margin:24px 0}}
+.metric strong{{display:block;font-size:32px}}.metric span{{color:#667085}}p{{margin:8px 0}}
+dl{{display:grid;grid-template-columns:190px minmax(0,1fr);gap:12px 20px}}dt{{color:#667085}}dd{{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}}
+footer{{border-top:1px solid #e7e9ee;padding-top:20px;margin-top:24px;color:#667085}}
+@media(max-width:600px){{body{{padding:12px}}main{{padding:20px}}dl{{grid-template-columns:1fr;gap:4px}}dd{{margin-bottom:12px}}}}</style>
+</head><body><main><h1>{text(action)}</h1><p class="status">{text(status)}</p>
+<section class="metric">{metric_html}</section><dl>{details}</dl>
+<footer><p><b>В этом пакете:</b> submission.csv — предсказания этого запуска;
+reports.json — отчёт для кнопки «Добавить отчёт» в Alfa Lab;
+report.html — эта сводка. В Alfa Lab можно добавить весь ZIP целиком.</p><p>CSV прошёл проверку формата. Данные обучения, модель, ключи,
+код эксперимента и журналы в пакет не входят. Для конкурса архив агента solution.zip собирается отдельно.</p></footer>
+</main></body></html>'''.encode("utf-8")
+
+
+def result_archive(task_id: str, job_id: str, *, jobs, catalog, reports) -> bytes:
+    """Package one owned local result, tying its CSV to its exact report."""
+    artifact = jobs.artifact(task_id, job_id)
+    job = next((item for item in jobs.list(task_id) if item["id"] == job_id), None)
+    if job is None:
+        raise ValueError("Запуск не найден для этой задачи.")
+    fingerprint = catalog.fingerprint(task_id)
+    if job["dataset_fingerprint"] != fingerprint:
+        raise ValueError("Данные задачи изменились. Скачайте результат для текущей версии данных.")
+    csv_bytes = _regular_bytes(artifact, MAX_RESULT_BYTES)
+    # Detect edits between the existing artifact validation and the bounded read.
+    checked = jobs.artifact(task_id, job_id)
+    if hashlib.sha256(csv_bytes).hexdigest() != jobs._file_hash(checked):
+        raise ValueError("CSV изменился во время выгрузки. Повторите скачивание.")
+    if catalog.fingerprint(task_id) != fingerprint:
+        raise ValueError("Данные задачи изменились во время выгрузки. Повторите скачивание.")
+    envelope = reports.export(task_id, fingerprint, [job])
+    report, = envelope["reports"]
+    return _archive({
+        "submission.csv": csv_bytes,
+        "reports.json": json.dumps(envelope, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8"),
+        "report.html": _readable_report(report),
+    })
