@@ -29,6 +29,7 @@ from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.metrics import f1_score, mean_squared_error
 from threadpoolctl import threadpool_limits
 
+from app.file_io import replace_file
 from app.model_config import make_model_config
 from app.splits import normalize_validation, split_rows
 from offline_baseline import (
@@ -70,8 +71,7 @@ def _atomic_json(path: Path, value: dict) -> None:
         temporary = Path(stream.name)
         stream.write(payload)
     try:
-        _plain_path(path)
-        os.replace(temporary, path)
+        replace_file(temporary, path, check=lambda: (_plain_path(temporary), _plain_path(path)))
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -83,8 +83,7 @@ def _atomic_csv(path: Path, frame: pd.DataFrame) -> None:
         temporary = Path(stream.name)
     try:
         frame.to_csv(temporary, index=False, encoding="utf-8")
-        _plain_path(path)
-        os.replace(temporary, path)
+        replace_file(temporary, path, check=lambda: (_plain_path(temporary), _plain_path(path)))
     finally:
         temporary.unlink(missing_ok=True)
 

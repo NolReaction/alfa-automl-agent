@@ -13,6 +13,8 @@ import re
 import tempfile
 import threading
 
+from app.file_io import replace_file
+
 
 FORMAT = "alfa-lab-reports"
 VERSION = 1
@@ -336,9 +338,12 @@ class ReportStore:
                                                      delete=False) as stream:
                         temporary = Path(stream.name)
                         stream.write(raw)
-                    self._safe(folder)
-                    self._safe(path)
-                    os.replace(temporary, path)
+                    def check_paths():
+                        self._safe(folder)
+                        self._safe(temporary)
+                        self._safe(path)
+
+                    replace_file(temporary, path, check=check_paths)
                 except OSError as error:
                     raise ValueError("Не удалось сохранить импортированный отчёт.") from error
                 finally:

@@ -22,6 +22,7 @@ from app.profiling import DataCatalog, _metric
 from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
 from app.model_config import make_model_config, validate_model_config
+from app.file_io import replace_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,7 +131,8 @@ def _write_json(path: Path, value, root: Path):
     payload = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     with temporary.open("w", encoding="utf-8") as stream:
         stream.write(payload)
-    os.replace(temporary, path)
+    replace_file(temporary, path,
+                 check=lambda: (_safe(temporary, root, required=True), _safe(path, root)))
 
 
 def _settings_values():
@@ -753,7 +755,9 @@ class JobManager:
                 if cleaned != raw or size > MAX_LOG_BYTES:
                     temporary = _safe(path.with_suffix(".redacted.tmp"), self.state_root)
                     temporary.write_bytes(cleaned)
-                    os.replace(temporary, path)
+                    replace_file(temporary, path, check=lambda: (
+                        _safe(temporary, self.state_root, required=True),
+                        _safe(path, self.state_root, required=True)))
             except (OSError, ValueError):
                 continue
 
@@ -907,7 +911,9 @@ class JobManager:
                     raise ValueError("CSV запуска изменился при копировании.")
                 if self.catalog.fingerprint(task_id) != job["dataset_fingerprint"]:
                     raise ValueError("Данные изменились во время применения результата.")
-                os.replace(temporary, destination)
+                replace_file(temporary, destination, check=lambda: (
+                    _safe(temporary, self.data_root, required=True),
+                    _safe(destination, self.data_root)))
             finally:
                 temporary.unlink(missing_ok=True)
             for other in self._jobs.values():

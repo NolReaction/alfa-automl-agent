@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from app import file_io
 from app.sharing import ReportStore
 from app.model_config import make_model_config
 
@@ -384,6 +386,48 @@ class SharingTests(unittest.TestCase):
         record["metric"]["value"] = 0.01
         record_file.write_text(json.dumps(record), encoding="utf-8")
         self.assertEqual(self.store.list("regression"), [])
+
+    def test_failed_atomic_import_cleans_temp_and_preserves_existing_reports(self):
+        self.store.import_reports("regression", FINGERPRINT, self.envelope())
+        existing = {path: path.read_bytes() for path in self.root.rglob("*.json")}
+        error = PermissionError(13, "Target is locked")
+        error.winerror = 5
+        with patch.object(file_io, "WINDOWS", True), patch.object(file_io, "REPLACE_ATTEMPTS", 2), \
+                patch.object(file_io.os, "replace", side_effect=error) as replace, \
+                patch.object(file_io.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "сохранить") as caught:
+                self.store.import_reports("regression", FINGERPRINT,
+                                          self.envelope(job(hypothesis="A different experiment")))
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertEqual(replace.call_count, 2)
+        self.assertEqual({path: path.read_bytes() for path in self.root.rglob("*.json")}, existing)
+        self.assertEqual(len(self.store.list("regression")), 1)
+        self.assertEqual(list(self.root.rglob("*.tmp")), [])
+
+    def test_import_rechecks_paths_after_a_windows_lock(self):
+        original_safe = self.store._safe
+        changed = {"path": None}
+        error = PermissionError(13, "Target is locked")
+        error.winerror = 32
+
+        def check_path(path):
+            if path == changed["path"]:
+                raise ValueError("Destination became a link")
+            return original_safe(path)
+
+        def locked_replace(source, destination):
+            changed["path"] = destination
+            raise error
+
+        with patch.object(self.store, "_safe", side_effect=check_path), \
+                patch.object(file_io, "WINDOWS", True), \
+                patch.object(file_io.os, "replace", side_effect=locked_replace) as replace, \
+                patch.object(file_io.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "became a link"):
+                self.store.import_reports("regression", FINGERPRINT, self.envelope())
+        self.assertEqual(replace.call_count, 1)
+        self.assertEqual(self.store.list("regression"), [])
+        self.assertEqual(list(self.root.rglob("*.tmp")), [])
 
     def test_symlinked_state_or_record_rejected(self):
         outside = self.root / "outside"
