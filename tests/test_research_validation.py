@@ -80,6 +80,49 @@ class ResearchValidationTests(unittest.TestCase):
         self.assertEqual(len(gate.fit_rows) + len(gate.held_rows), 80)
         self.assertFalse(set(gate.fit_rows) & set(gate.held_rows))
 
+    def test_float_serialized_regression_actuals_preserve_the_frozen_holdout_score(self):
+        gate = ResearchValidation(self.task)
+        path, rows = self.evidence(gate, [float(value) + 3.25 for value in gate.expected_actuals])
+        for row in rows[1:]:
+            row[1] = float(row[1])
+        write_csv(path, rows)
+        self.assertEqual(gate.evaluate(path, self.root)["value"], 3.25)
+
+    def test_equivalent_parent_path_alias_uses_one_canonical_root_for_manifest_and_scoring(self):
+        # This lexical alias reproduces resolved-data/unresolved-parent failures
+        # on every platform without requiring Windows symlink privileges.
+        alias_component = self.root / "parent-alias"
+        alias_component.mkdir()
+        alias_task = alias_component / ".." / self.task.name
+        self.assertNotEqual(alias_task.parent, self.task.parent.resolve())
+        gate = ResearchValidation(alias_task)
+        self.assertEqual(gate.task_path, self.task.resolve())
+        self.assertEqual(gate.task_path, gate.spec.task_path)
+        self.assertEqual(gate.task_dir, gate.data_dir.parent)
+        self.assertEqual(gate.manifest["data_directory"], "data")
+        manifest = json.loads((self.root / "research_validation.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["data_directory"], "data")
+        evidence, _ = self.evidence(gate, [float(value) + 2 for value in gate.expected_actuals])
+        self.assertEqual(gate.evaluate(evidence, alias_task.parent)["value"], 2)
+        # Canonicalization must preserve the frozen source guard, not bypass it.
+        alias_task.write_text("Primary metric: MAE\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "input data changed"):
+            gate.check_inputs()
+
+    def test_directory_symlink_alias_uses_resolved_task_and_data_paths(self):
+        with tempfile.TemporaryDirectory() as alias_parent:
+            alias = Path(alias_parent) / "task-alias"
+            try:
+                alias.symlink_to(self.root, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"Directory symlinks unavailable: {error}")
+            gate = ResearchValidation(alias / self.task.name)
+            self.assertEqual(gate.task_path, self.task.resolve())
+            self.assertEqual(gate.task_dir, self.root.resolve())
+            self.assertEqual(gate.manifest["data_directory"], "data")
+            evidence, _ = self.evidence(gate)
+            self.assertEqual(gate.evaluate(evidence, alias)["value"], 0)
+
     def test_classification_score_preserves_literal_na_class(self):
         self.make_case(classification=True)
         gate = ResearchValidation(self.task)
@@ -172,9 +215,20 @@ class ResearchValidationTests(unittest.TestCase):
         self.assertEqual(read_hypothesis(self.root), "A new preprocessing choice may reduce RMSE.")
 
     def test_unsupported_metric_is_not_silently_scored_as_rmse(self):
-        self.task.write_text("Primary metric: MAE\n", encoding="utf-8")
+        self.task.write_text("Primary metric: SMAPE\n", encoding="utf-8")
         with self.assertRaises(ValueError):
             ResearchValidation(self.task)
+
+    def test_mae_and_r2_use_their_own_metric_direction(self):
+        for metric, direction in (("MAE", False), ("R2", True)):
+            with self.subTest(metric=metric):
+                self.task.write_text(f"Primary metric: {metric}\n", encoding="utf-8")
+                gate = ResearchValidation(self.task)
+                path, _ = self.evidence(gate)
+                result = gate.evaluate(path, self.root)
+                self.assertEqual(result["name"], metric)
+                self.assertEqual(result["higher_is_better"], direction)
+                self.assertAlmostEqual(result["value"], 1 if metric == "R2" else 0)
 
 
 if __name__ == "__main__":

@@ -322,9 +322,9 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             elif is_job:
                 if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params"}:
                     raise ValueError("Неизвестные параметры запуска.")
-                if "validation" in body and body.get("action") not in ("baseline", "extra_trees", "automl"):
+                if "validation" in body and body.get("action") not in ("baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"):
                     raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
-                if "model_params" in body and body.get("action") not in ("baseline", "extra_trees"):
+                if "model_params" in body and body.get("action") not in ("baseline", "extra_trees", "catboost", "lightgbm", "linear"):
                     raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
                 job = self.server.jobs.start(task_id, body.get("action"),

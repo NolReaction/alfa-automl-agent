@@ -29,7 +29,7 @@ def _rows(header: list[str], reader, filename: str):
         yield dict(zip(header, row))
 
 
-def validate_predictions(task_dir: Path) -> dict:
+def validate_predictions(task_dir: Path, *, spec=None) -> dict:
     """Check submission.csv against the task's template, IDs and target metadata.
 
     This checks file structure and prediction values, not model quality.
@@ -43,6 +43,15 @@ def validate_predictions(task_dir: Path) -> dict:
 
     try:
         task_dir = Path(task_dir)
+        if spec is not None:
+            # Expanded contracts distinguish labels from probabilities even when
+            # the dictionary stores class labels as numeric values.
+            from offline_baseline import read_csv
+
+            frame = read_csv(task_dir / "submission.csv")
+            expected_ids = read_csv(Path(spec.data_dir) / "test.csv")[spec.id_column].tolist()
+            spec.validate_frame(frame, expected_ids)
+            return {"valid": True, "errors": []}
         samples = [
             path for path in task_dir.rglob("sample_submission.csv")
             if ".agent_runs" not in path.relative_to(task_dir).parts and path.is_file()
@@ -70,6 +79,27 @@ def validate_predictions(task_dir: Path) -> dict:
             raise ValueError("sample_submission.csv has no prediction columns")
         dtypes = {row.get("feature"): row.get("dtype", "").strip().lower()
                   for row in metadata}
+        task_file = task_dir / "task.md"
+        if not task_file.is_file():
+            descriptions = list(task_dir.glob("*.md"))
+            task_file = descriptions[0] if len(descriptions) == 1 else None
+        if task_file is not None and task_file.is_file():
+            from agent.task_contract import parse_task_metric
+
+            try:
+                metric = parse_task_metric(task_file.read_text(encoding="utf-8-sig"))
+            except ValueError:
+                # Legacy structural validation remains useful for unsupported
+                # metrics; no quality verification is claimed on this path.
+                metric = None
+            expanded = metric is not None and (
+                metric.name not in {"RMSE", "Macro F1"}
+                or any((dtypes.get(name) == "category") != metric.classification for name in targets)
+            )
+            if expanded:
+                from agent.task_spec import load_task
+
+                return validate_predictions(task_dir, spec=load_task(task_file))
         categorical = [name for name in targets if dtypes.get(name) == "category"]
         allowed_classes = {name: set() for name in categorical}
         if categorical:

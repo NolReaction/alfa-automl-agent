@@ -164,7 +164,7 @@ class ProfilingTests(unittest.TestCase):
         for text, name, higher_is_better in [
             ("# Generic classification\nPredict the verdict.\n", "Не определена", None),
             ("# Classification\nОсновная метрика: Macro F1\n", "Macro F1", True),
-            ("# Metric declaration\nМетрика: RMSE\n", "RMSE", False),
+            ("# Task description\nОсновная метрика: RMSE\n", "RMSE", False),
             ("Reference metric: Accuracy\nОсновная метрика: Macro F1\n", "Macro F1", True),
             ("Reference metric: Accuracy\nОсновная метрика: MAP@K\n", "Не определена", None),
         ]:
@@ -173,6 +173,21 @@ class ProfilingTests(unittest.TestCase):
                 metric = catalog.profile("classification")["metric"]
                 self.assertEqual(metric["name"], name)
                 self.assertIs(metric["higher_is_better"], higher_is_better)
+
+    def test_probability_metric_overrides_numeric_target_and_supports_class_columns(self):
+        task = make_task(self.root)
+        (task / "task.md").write_text("Primary metric: LogLoss", encoding="utf-8")
+        inputs = task / "nested" / "participants"
+        dictionary = inputs / "data_dictionary.csv"
+        dictionary.write_text(dictionary.read_text().replace("verdict,target,category", "verdict,target,numeric"), encoding="utf-8")
+        write_csv(inputs / "sample_submission.csv", [["row_key", "NA", "Normal"], ["010", 0.5, 0.5], ["011", 0.5, 0.5]])
+        catalog = DataCatalog(self.root)
+        self.assertTrue(catalog.discover()[0]["available"])
+        profile = catalog.profile("classification")
+        self.assertEqual(profile["task_type"], "classification")
+        self.assertEqual(profile["metric"], {"name": "LogLoss", "higher_is_better": False})
+        self.assertEqual(profile["target_distribution"]["kind"], "categories")
+        self.assertIsNotNone(profile["quality"]["class_balance"])
 
     def test_empty_root_unknown_task_and_task_text(self) -> None:
         catalog = DataCatalog(self.root)

@@ -265,7 +265,7 @@ class ResearchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task_dir = Path(directory)
             task = make_regression(task_dir)
-            task.write_text(task.read_text(encoding="utf-8").replace("Metric: RMSE", "Metric: MAE"))
+            task.write_text(task.read_text(encoding="utf-8").replace("Metric: RMSE", "Metric: SMAPE"))
             code = (
                 "from pathlib import Path\n"
                 "Path('submission.csv').write_text('row_key,outcome\\n0005,17\\nNA,20\\n')\n"

@@ -71,13 +71,75 @@ _MODELS = {
     },
 }
 
+# Only model-quality controls enter a saved configuration. Runtime controls,
+# file paths, callbacks and executable objectives are never accepted from JSON.
+ACTIONS = ("baseline", "extra_trees", "catboost", "lightgbm", "linear")
+for _task_type in ("classification", "regression"):
+    _classification = _task_type == "classification"
+    _cat_defaults = {"iterations": 300, "depth": 6, "learning_rate": 0.05,
+                     "l2_leaf_reg": 3.0}
+    _cat_fields = [
+        _integer("iterations", "Количество итераций", 50, 2000),
+        _integer("depth", "Глубина дерева", 3, 10),
+        _number("learning_rate", "Скорость обучения", 0.01, 0.3, 0.01),
+        _number("l2_leaf_reg", "L2-регуляризация", 0, 100, 0.1),
+    ]
+    if _classification:
+        _cat_defaults["auto_class_weights"] = None
+        _cat_fields.append(_select("auto_class_weights", "Веса классов", [
+            (None, "Без весов"), ("Balanced", "Балансировать"),
+            ("SqrtBalanced", "Мягкая балансировка"),
+        ], nullable=True))
+    _MODELS[("catboost", _task_type)] = {
+        "model": "CatBoostClassifier" if _classification else "CatBoostRegressor",
+        "defaults": _cat_defaults, "fields": _cat_fields,
+    }
+    _light_defaults = {"n_estimators": 300, "num_leaves": 31, "max_depth": -1,
+                       "min_child_samples": 20, "learning_rate": 0.05,
+                       "reg_lambda": 1.0, "colsample_bytree": 1.0}
+    _light_fields = [
+        _integer("n_estimators", "Количество деревьев", 50, 2000),
+        _integer("num_leaves", "Максимум листьев", 4, 128),
+        _select("max_depth", "Глубина дерева", [
+            (-1, "Без ограничения"), *[(depth, str(depth)) for depth in (3, 4, 5, 6, 7, 8, 10, 12, 16, 24, 32)],
+        ]),
+        _integer("min_child_samples", "Минимум строк в листе", 5, 200),
+        _number("learning_rate", "Скорость обучения", 0.01, 0.3, 0.01),
+        _number("reg_lambda", "L2-регуляризация", 0, 100, 0.1),
+        _number("colsample_bytree", "Доля признаков", 0.5, 1, 0.1),
+    ]
+    if _classification:
+        _light_defaults["class_weight"] = None
+        _light_fields.append(_select("class_weight", "Веса классов", [
+            (None, "Без весов"), ("balanced", "Балансировать"),
+        ], nullable=True))
+    _MODELS[("lightgbm", _task_type)] = {
+        "model": "LGBMClassifier" if _classification else "LGBMRegressor",
+        "defaults": _light_defaults, "fields": _light_fields,
+    }
+_MODELS[("linear", "classification")] = {
+    "model": "LogisticRegression",
+    "defaults": {"C": 1.0, "max_iter": 500, "class_weight": None},
+    "fields": [
+        _number("C", "Обратная сила регуляризации", 0.001, 1000, 0.1),
+        _integer("max_iter", "Максимум итераций", 100, 2000),
+        _select("class_weight", "Веса классов", [
+            (None, "Без весов"), ("balanced", "Балансировать"),
+        ], nullable=True),
+    ],
+}
+_MODELS[("linear", "regression")] = {
+    "model": "Ridge", "defaults": {"alpha": 1.0},
+    "fields": [_number("alpha", "Сила регуляризации", 0.000001, 1000000, 0.1)],
+}
+
 
 def _definition(action, task_type):
     if not isinstance(action, str) or not isinstance(task_type, str):
         raise ValueError("Укажите известный рецепт и тип задачи для настроек модели.")
     definition = _MODELS.get((action, task_type))
     if definition is None:
-        raise ValueError("Настройки моделей доступны для baseline и ExtraTrees в классификации или регрессии.")
+        raise ValueError("Неизвестный рецепт или тип задачи для настроек модели.")
     return definition
 
 
@@ -86,7 +148,7 @@ def model_options(task_type: str) -> dict:
     if not isinstance(task_type, str) or task_type not in {"classification", "regression"}:
         return {}
     return {action: deepcopy(_definition(action, task_type))
-            for action in ("baseline", "extra_trees")}
+            for action in ACTIONS}
 
 
 def _validate_value(field, value):
@@ -146,6 +208,22 @@ def validate_model_config(value, action=None) -> dict:
     model = value["model"]
     if not isinstance(model, str):
         raise ValueError("Некорректное название модели.")
+    if model == "FixedBlend":
+        if action is not None:
+            raise ValueError("Ансамбль создаётся только автоподбором, а не отдельным рецептом.")
+        parameters = value["parameters"]
+        if (not isinstance(parameters, dict) or set(parameters) != {"weight", "components"}
+                or type(parameters["weight"]) not in {int, float} or parameters["weight"] != 0.5
+                or not isinstance(parameters["components"], list) or len(parameters["components"]) != 2):
+            raise ValueError("Нужны два компонента ансамбля с фиксированным весом 0.5.")
+        if any(not isinstance(component, dict) or component.get("model") == "FixedBlend"
+               for component in parameters["components"]):
+            raise ValueError("Вложенные ансамбли запрещены.")
+        components = [validate_model_config(component) for component in parameters["components"]]
+        types = {_task_type_for_model(component["model"]) for component in components}
+        if len(types) != 1:
+            raise ValueError("Компоненты ансамбля должны решать один тип задачи.")
+        return {"model": model, "parameters": {"weight": 0.5, "components": components}}
     choice = next(((recipe, task_type, definition) for (recipe, task_type), definition in _MODELS.items()
                    if definition["model"] == model), None)
     if choice is None:
@@ -157,3 +235,16 @@ def validate_model_config(value, action=None) -> dict:
     if not isinstance(parameters, dict) or set(parameters) != set(definition["defaults"]):
         raise ValueError("В отчёте нужны все разрешённые параметры модели.")
     return make_model_config(recipe, task_type, parameters)
+
+
+def _task_type_for_model(model):
+    return next(task_type for (_, task_type), definition in _MODELS.items()
+                if definition["model"] == model)
+
+
+def model_task_type(value) -> str:
+    """Resolve a checked individual or fixed blend for report/task validation."""
+    config = validate_model_config(value)
+    if config["model"] == "FixedBlend":
+        return _task_type_for_model(config["parameters"]["components"][0]["model"])
+    return _task_type_for_model(config["model"])

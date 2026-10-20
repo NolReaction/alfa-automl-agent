@@ -121,7 +121,7 @@ class PlatformContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "solution.zip"
             build_archive(archive)
-            self.assertLess(archive.stat().st_size, 128 * 1024 * 1024)
+            self.assertLessEqual(archive.stat().st_size, 100_000_000)
             with zipfile.ZipFile(archive) as zipped:
                 names = zipped.namelist()
                 self.assertIn("solution.py", names)
@@ -136,9 +136,7 @@ class PlatformContractTests(unittest.TestCase):
                         self.assertFalse(path.is_absolute())
                         self.assertNotIn("..", path.parts)
                         self.assertTrue(name == "requirements.txt" or (
-                            path.suffix == ".py" and (
-                                len(path.parts) == 1 or path.parts[0] == "agent"
-                            )
+                            path.suffix == ".py" and len(path.parts) == 1
                         ))
                         if path.suffix != ".py":
                             continue
@@ -162,8 +160,11 @@ class PlatformContractTests(unittest.TestCase):
             archive = root / "solution.zip"
             build_archive(archive)
             package = root / "package"
+            package.mkdir()
             with zipfile.ZipFile(archive) as zipped:
-                zipped.extractall(package)
+                for name in zipped.namelist():
+                    if "/" not in name and (name.endswith(".py") or name == "requirements.txt"):
+                        (package / name).write_bytes(zipped.read(name))
             for default_task in (True, False):
                 with self.subTest(default_task=default_task):
                     task = root / ("default task" if default_task else "relative task")

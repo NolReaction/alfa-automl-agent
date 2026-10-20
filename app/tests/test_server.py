@@ -7,6 +7,8 @@ from io import BytesIO
 import json
 from html.parser import HTMLParser
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -26,7 +28,7 @@ class ServerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         task = self.root / "case"
         task.mkdir()
-        (task / "task.md").write_text("Classification. Metric: Macro F1", encoding="utf-8")
+        (task / "task.md").write_text("Classification.\nPrimary metric: Macro F1", encoding="utf-8")
         records = {
             "data_dictionary.csv": [["feature", "role", "dtype"], ["id", "id", "category"],
                                     ["feature", "feature", "binary"], ["label", "target", "category"]],
@@ -255,7 +257,7 @@ class ServerTests(unittest.TestCase):
             status, _, response = self.request("/api/tasks/case/profile")
         self.assertEqual(status, 200, response)
         options = json.loads(response)["model_options"]
-        self.assertEqual(set(options), {"baseline", "extra_trees"})
+        self.assertEqual(set(options), {"baseline", "extra_trees", "catboost", "lightgbm", "linear"})
         self.assertEqual(options["baseline"]["model"], "RandomForestClassifier")
         self.assertEqual(options["extra_trees"]["model"], "ExtraTreesClassifier")
         self.assertIn("n_estimators", options["baseline"]["defaults"])
@@ -295,13 +297,38 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200, package)
         self.assertEqual(headers["Content-Type"], "application/zip")
         self.assertIn('filename="solution.zip"', headers["Content-Disposition"])
+        self.assertEqual(int(headers["Content-Length"]), len(package))
+        self.assertLessEqual(len(package), build_submission.MAX_ARCHIVE_BYTES)
         with ZipFile(BytesIO(package)) as archive:
-            expected = {path.relative_to(build_submission.ROOT).as_posix()
-                        for path in build_submission.source_files()}
-            self.assertEqual(set(archive.namelist()), expected)
-            self.assertIn("solution.py", archive.namelist())
-            self.assertFalse(any(name.startswith(("app/", "data/")) or name.endswith(".env")
-                                 for name in archive.namelist()))
+            files = {name: archive.read(name) for name in archive.namelist()}
+            self.assertEqual(files, build_submission.archive_files())
+            self.assertIn("solution.py", files)
+            self.assertIn("agent.py", files)
+            self.assertTrue(all("/" not in name and "\\" not in name
+                                and (name.endswith(".py") or name == "requirements.txt")
+                                for name in files))
+            self.assertNotIn(b"must-never-be-served", b"".join(files.values()))
+        # Model the platform's root-only copy, outside the repository import path.
+        downloaded = self.root / "platform"
+        downloaded.mkdir()
+        for name, content in files.items():
+            (downloaded / name).write_bytes(content)
+        script = """
+import importlib
+from pathlib import Path
+import sys
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+for name in ('solution', 'offline_baseline', 'validation', 'agent', 'agent.automl',
+             'agent.automl_worker', 'agent.building_history', 'agent.research'):
+    module = importlib.import_module(name)
+    assert Path(module.__file__).resolve().parent == root, name
+print('flat-download-imports-ok')
+"""
+        imported = subprocess.run([sys.executable, "-I", "-c", script, str(downloaded)],
+                                  cwd=downloaded, text=True, capture_output=True, timeout=30)
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        self.assertIn("flat-download-imports-ok", imported.stdout)
 
     def test_zip_report_import_is_bounded_and_never_extracts_other_files(self):
         def package(entries):

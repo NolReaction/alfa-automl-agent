@@ -12,14 +12,15 @@ import tempfile
 
 from agent.execution import child_environment, run_python, stop_process_tree, tail
 from agent.llm import (
-    API_FIELDS, ROOT, SYSTEM_PROMPT, TOOL, check_api, load_local_env,
-    make_client, require_api_settings,
+    API_FIELDS, REQUIRED_API_FIELDS, ROOT, SYSTEM_PROMPT, TOOL, check_api, get_model, load_local_env,
+    make_client, require_api_settings, safe_error_message,
 )
 from agent.research import run_agent
 from validation import validate_predictions
 
 
-REQUIRED_PACKAGES = ("openai", "dotenv", "numpy", "pandas", "sklearn")
+REQUIRED_PACKAGES = ("openai", "dotenv", "numpy", "pandas", "sklearn", "catboost",
+                     "lightgbm", "optuna", "psutil")
 
 
 def select_mode(requested: str) -> str:
@@ -28,9 +29,9 @@ def select_mode(requested: str) -> str:
         return requested
     present = [name for name in API_FIELDS if os.environ.get(name, "").strip()]
     if not present:
-        print("No API settings supplied: offline fallback (fixed recipes; no LLM research).", flush=True)
+        print("No API settings supplied: offline fallback (budgeted AutoML; no LLM research).", flush=True)
         return "offline"
-    missing = [name for name in API_FIELDS if name not in present]
+    missing = [name for name in REQUIRED_API_FIELDS if name not in present]
     if missing:
         raise ValueError("Incomplete competition API environment; missing: " + ", ".join(missing)
                          + ". Use --mode offline for an intentional local run without API.")
@@ -45,7 +46,7 @@ def check_setup() -> bool:
     with tempfile.TemporaryDirectory() as directory:
         folder = Path(directory)
         result = run_python(
-            "import numpy, pandas, sklearn, openai; print('python-child-ok')",
+            "import numpy, pandas, sklearn, openai, catboost, lightgbm, optuna, psutil; print('python-child-ok')",
             folder, folder / "runs", 1, 30,
         )
     worker_ok = result["exit_code"] == 0 and "python-child-ok" in result["stdout"]
@@ -55,6 +56,8 @@ def check_setup() -> bool:
         "python_child_error": result["stderr"] if not worker_ok else "",
         "api_settings_present": {name: bool(os.environ.get(name, "").strip())
                                  for name in API_FIELDS},
+        "api_required_settings": list(REQUIRED_API_FIELDS),
+        "api_model": get_model(),
         "api_called": False,
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -66,7 +69,7 @@ def main() -> int:
     parser.add_argument("task", nargs="?", default="task.md")
     parser.add_argument("--mode", choices=("auto", "offline", "llm"), default="auto",
                         help="auto (default): use supplied competition API, otherwise offline fallback; "
-                             "offline: fixed recipes without API; llm: Qwen research with local .env support")
+                             "offline: budgeted AutoML without API; llm: Qwen research with local .env support")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Offline environment check; no API calls")
     mode.add_argument("--check-api", action="store_true", help="Make one short request to the configured API")
@@ -114,11 +117,7 @@ def main() -> int:
                 run_agent(task_path, client, max_steps=args.max_steps, time_budget=time_budget)
         return 0
     except Exception as error:
-        detail = str(error)
-        key = os.environ.get("OPENAI_API_KEY", "")
-        if key:
-            detail = detail.replace(key, "[REDACTED]")
-        print(f"Error: {detail}", file=sys.stderr)
+        print(f"Error: {safe_error_message(error)}", file=sys.stderr)
         return 1
 
 

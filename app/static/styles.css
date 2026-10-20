@@ -4053,3 +4053,101 @@ th {
     margin: 5px 0 0 17px;
   }
 }
+
+/* Expanded search keeps screening and independent verification distinct. */
+.recipe-options {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+.recipe-option small {
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.search-stages {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin: 17px 0;
+  padding: 0;
+}
+.search-stages li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-top: 2px solid #e6e9ed;
+  padding-top: 11px;
+  color: #7c8796;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.search-stages li.active {
+  color: var(--ink);
+  border-top-color: var(--red);
+}
+.search-stages li.complete {
+  color: #467163;
+  border-top-color: #8fb6a5;
+}
+.search-step-number {
+  display: inline-flex;
+  flex: 0 0 21px;
+  width: 21px;
+  height: 21px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #dfe4e9;
+  border-radius: 50%;
+  font-size: 10px;
+}
+.search-stages .active .search-step-number {
+  border-color: #e6a5aa;
+  background: #fff1f2;
+  color: var(--red);
+}
+.search-stages .complete .search-step-number {
+  border-color: transparent;
+  background: #e9f3ee;
+}
+.search-step-number svg { width: 14px; height: 14px; }
+.search-stages small {
+  display: block;
+  min-height: 16px;
+  margin-top: 3px;
+  color: inherit;
+  font-size: 11px;
+}
+.search-summary p { font-size: 12px; }
+.search-candidates { min-width: 690px; font-size: 12px; }
+.search-candidates thead th,
+.search-candidates small,
+.search-error summary { font-size: 11px; }
+.search-candidates th[scope="row"] { min-width: 180px; }
+.search-candidates .metric-cell { white-space: nowrap; }
+.search-duration,
+.search-memory { white-space: nowrap; }
+.search-feature-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+.search-feature-tags > span {
+  display: inline-block;
+  border: 1px solid #e4e8ed;
+  border-radius: 4px;
+  padding: 2px 5px;
+  color: #647486;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.search-summary > .search-feature-tags { margin: 0 0 12px; }
+@media (max-width: 650px) {
+  .search-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 15px; }
+  .search-summary { padding: 14px; }
+  .automl-plan { justify-content: flex-start; }
+  .automl-plan > span { flex: 1 1 40%; }
+}

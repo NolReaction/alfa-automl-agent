@@ -11,14 +11,73 @@ import sys
 import time
 from uuid import uuid4
 
-from agent.automl import INPUT_NAMES, _atomic_copy, _atomic_json, data_fingerprint
+from agent.automl import INPUT_NAMES, _atomic_copy, _atomic_json, data_fingerprint, read_accepted_checkpoint
 from agent.execution import run_python
-from agent.llm import ROOT, SYSTEM_PROMPT, TOOL
+from agent.llm import ROOT, SYSTEM_PROMPT, TOOL, get_model, safe_error_message
+from agent.research_feedback import ResearchLedger, error_analysis
 from agent.research_validation import (
     HOLDOUT_NAME, HYPOTHESIS_NAME, MANIFEST_NAME, ResearchValidation, read_hypothesis,
 )
 from offline_baseline import find_data
+from offline_baseline import read_csv
 from validation import validate_predictions
+
+
+def checked_completion(response) -> dict:
+    """Validate the SDK envelope before executing any returned tool call."""
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Invalid API response: choices must be a non-empty list")
+    choice = choices[0]
+    message = getattr(choice, "message", None)
+    if (message is None or not hasattr(message, "content") or not hasattr(message, "tool_calls")
+            or getattr(message, "role", "assistant") != "assistant"):
+        raise ValueError("Invalid API response: missing assistant message")
+    content = message.content
+    if content is not None and not isinstance(content, str):
+        raise ValueError("Invalid API response: assistant content must be text or null")
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason not in {"stop", "tool_calls", "length"}:
+        raise ValueError("Invalid API response: unsupported finish reason")
+    calls = message.tool_calls
+    if calls is not None and not isinstance(calls, list):
+        raise ValueError("Invalid API response: tool_calls must be a list or null")
+    if (finish_reason == "tool_calls" and not calls) or (finish_reason == "stop" and calls):
+        raise ValueError("Invalid API response: tool calls conflict with the finish reason")
+    checked_calls, seen_ids = [], set()
+    for call in calls or []:
+        call_id = getattr(call, "id", None)
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None)
+        if (not isinstance(call_id, str) or not call_id.strip() or call_id in seen_ids
+                or getattr(call, "type", "function") != "function"
+                or not isinstance(name, str) or not name.strip()):
+            raise ValueError("Invalid API response: tool calls require unique IDs and named functions")
+        seen_ids.add(call_id)
+        arguments = getattr(function, "arguments", None)
+        # Invalid argument types receive a tool error below. Keep the assistant
+        # history schema valid so the next request can carry that feedback.
+        history_arguments = arguments if isinstance(arguments, str) else json.dumps(arguments, allow_nan=False)
+        checked_calls.append({"id": call_id, "name": name, "arguments": arguments,
+                              "history": {"id": call_id, "type": "function", "function": {
+                                  "name": name, "arguments": history_arguments}}})
+    return {"content": content, "finish_reason": finish_reason, "tool_calls": checked_calls}
+
+
+def record_usage(state, response) -> None:
+    """Optional provider accounting must not invalidate a usable response."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    fields = ("prompt_tokens", "completion_tokens", "total_tokens")
+    counts = {field: getattr(usage, field, None) for field in fields}
+    invalid = [field for field, value in counts.items() if type(value) is not int or value < 0]
+    if invalid:
+        state.event("invalid_api_usage", fields=invalid)
+        return
+    state.report["api"]["usage_reported_responses"] += 1
+    for field, value in counts.items():
+        state.report["api"][field] += value
 
 
 class RunState:
@@ -37,9 +96,10 @@ class RunState:
         self.source_dir = None
         self.source_fingerprint = None
         self.work_data = None
+        self.ledger = ResearchLedger()
         self.report = {
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "task": str(task_path), "model": os.environ.get("OPENAI_MODEL", ""),
+            "task": str(task_path), "model": get_model(),
             "max_steps": max_steps, "time_budget_seconds": time_budget,
             "status": "running", "baseline": "not_started", "experiments": 0,
             "successful_experiments": 0, "improvements": 0,
@@ -70,6 +130,10 @@ class RunState:
     def save(self) -> None:
         self.report["elapsed_seconds"] = round(time.monotonic() - self.started, 3)
         _atomic_json(self.run_dir / "run.json", self.clean(self.report))
+        _atomic_json(self.run_dir / "research_journal.json", self.clean({
+            "version": 1, "trials": self.ledger.trials,
+            "consecutive_execution_failures": self.ledger.failure_streak,
+        }))
 
     def event(self, kind: str, **details) -> None:
         self.report["events"].append({"kind": kind, **details})
@@ -84,7 +148,13 @@ class RunState:
     def checkpoint(self, directory: Path, metric: dict | None = None) -> bool:
         """Publish only after the caller has checked quality; keep a private backup."""
         self.check_source()
-        if not validate_predictions(directory)["valid"]:
+        if self.validator is not None:
+            try:
+                self.validator.spec.validate_frame(read_csv(directory / "submission.csv"),
+                                                   self.validator.expected_test_ids)
+            except (OSError, ValueError):
+                return False
+        elif not validate_predictions(directory)["valid"]:
             return False
         pending = self.run_dir / "pending_submission.csv"
         try:
@@ -158,8 +228,15 @@ class RunState:
                 raise ValueError("Could not retain the verified submission")
             _atomic_copy(self.workspace / HOLDOUT_NAME, self.run_dir / "best_holdout_predictions.csv")
             self.report["improvements"] += 1
-        return {"accepted": better, "verified": True, "metric": metric,
-                "reason": "improved" if better else "not_better", "hypothesis": hypothesis}
+        result = {"accepted": better, "verified": True, "metric": metric,
+                  "reason": "improved" if better else "not_better", "hypothesis": hypothesis}
+        try:
+            result["diagnostics"] = error_analysis(self.validator.spec,
+                self.workspace / HOLDOUT_NAME, groups=self.validator.groups)
+        except (ValueError, OSError):
+            # Optional analysis never changes an independently verified score.
+            pass
+        return result
 
 
 def prepare_workspace(state: RunState) -> None:
@@ -216,15 +293,20 @@ def prepare_starting_output(state: RunState) -> None:
     print(f"Preparing checked AutoML starting predictions (up to {timeout:.0f}s)...", flush=True)
     try:
         result = run_python(code, state.workspace, state.run_dir, 0, timeout=timeout)
-        if result.get("exit_code") != 0 or result.get("timed_out") or "error" in result:
-            raise ValueError(result.get("stderr") or result.get("error") or "Startup timed out")
+        interrupted = result.get("exit_code") != 0 or result.get("timed_out") or "error" in result
+        # Recover only a committed pair. A timeout between two loose-file writes
+        # must not attach one candidate's holdout score to another candidate's CSV.
+        checkpoint = read_accepted_checkpoint(startup_dir)
+        if checkpoint is None:
+            raise ValueError("Startup did not commit a complete prediction checkpoint")
         state.check_source()
-        metric = state.validator.evaluate(startup_dir / HOLDOUT_NAME, state.workspace)
-        if not state.checkpoint(state.workspace, metric):
+        metric = state.validator.evaluate(checkpoint / HOLDOUT_NAME, checkpoint)
+        if not state.checkpoint(checkpoint, metric):
             raise ValueError("Starting predictions failed their final check")
-        _atomic_copy(startup_dir / HOLDOUT_NAME, state.run_dir / "best_holdout_predictions.csv")
+        _atomic_copy(checkpoint / HOLDOUT_NAME, state.run_dir / "best_holdout_predictions.csv")
         state.report["baseline"] = "trained"
-        state.event("baseline", valid=True, metric=metric, result=result)
+        state.event("baseline", valid=True, metric=metric, result=result,
+                    recovered_checkpoint=bool(interrupted))
         print(f"Starting {metric['name']}: {metric['value']:.6f}; predictions saved.", flush=True)
     except (OSError, ValueError, RuntimeError) as error:
         state.report["baseline"] = "existing_output" if state.backup.is_file() else "unavailable"
@@ -249,13 +331,28 @@ def starting_context(state: RunState) -> str:
         "Also refit your selected pipeline on all training rows and write submission.csv. "
         "The accepted result is stored separately and survives failed experiments. "
         f"Local helper modules can be imported after sys.path.insert(0, {str(ROOT)!r}). "
+        "The runtime includes CatBoost 1.2.8, LightGBM 4.6.0, scikit-learn 1.5.2 and "
+        "Optuna 4.2.1. Use installed libraries only, with at most 8 CPU threads; "
+        "do not download data, pretrained weights or packages. "
+        "agent.models.build_pipeline and agent.task_spec.load_task/load_task_data provide "
+        "tested model and output helpers. Try a distinct model family, regularization, "
+        "fold-fitted features or a fixed probability/prediction blend based on measured errors. "
+        "For regression history, build_pipeline(history_config=...) requires explicit entity "
+        "columns and an ordered time column. Pass raw strings into that pipeline: its history "
+        "adapter uses strictly earlier fitted periods, including for training features. "
     )
     if state.validator is not None:
         context += (
             f"Read {MANIFEST_NAME}: it gives exact fit_rows and validation_rows as zero-based "
             "train.csv positions, data_directory, feature lists, target, ID, metric and split. "
             "Fit preprocessing/model only on fit_rows, then predict validation_rows in the "
-            "specified order. Save holdout_predictions.csv with exactly id,actual,prediction. "
+            "specified order. Save holdout_predictions.csv with the manifest's exact "
+            "holdout_columns (probability tasks may require several columns). "
+            "The manifest also gives output_columns, classes and positive_class; do not guess "
+            "class order or substitute labels for probabilities. Use TaskSpec.holdout_frame "
+            "and prediction_frame with prediction_classes=model.classes_ to align probabilities. "
+            "Tune parameters only on inner_fit_rows/inner_validation_rows when available, "
+            "then use fit_rows/validation_rows for the final candidate verification. "
             "id and actual must retain the original CSV strings: read source columns with "
             "dtype=str, keep_default_na=False (including literal NA and leading zeroes). "
             "Do not train on validation answers before recording holdout predictions. "
@@ -275,7 +372,7 @@ def starting_context(state: RunState) -> str:
     startup = state.run_dir / "startup" / "automl_report.json"
     if startup.is_file():
         report = json.loads(startup.read_text(encoding="utf-8"))
-        summary = {key: report[key] for key in ("model", "model_config", "metric", "classification_diagnostics")
+        summary = {key: report[key] for key in ("model", "model_config", "metric", "classification_diagnostics", "search")
                    if key in report}
         context += "\nStarting model and error analysis:\n" + json.dumps(summary, ensure_ascii=False)
     return state.redact(context)
@@ -301,50 +398,58 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                     return state.finish("fallback", "time_limit")
                 raise TimeoutError(f"Agent time budget reached. Experiments: {state.run_dir}")
             print(f"Step {step}/{max_steps}; remaining {int(remaining)}s", file=sys.stderr)
+            if state.ledger.trials:
+                messages.append({"role": "user", "content": "Host research history:\n" + state.redact(
+                    state.ledger.context(best=state.report["best_metric"], remaining=remaining,
+                                         api=state.report["api"]))})
             state.report["api"]["attempts"] += 1
             state.save()
             try:
                 response = client.with_options(timeout=min(120, remaining)).chat.completions.create(
-                    model=os.environ["OPENAI_MODEL"], messages=messages,
+                    model=get_model(), messages=messages,
                     tools=[TOOL], parallel_tool_calls=False, max_tokens=4096,
                 )
+                state.report["api"]["responses"] += 1
+                completion = checked_completion(response)
             except Exception as error:
-                state.event("api_error", error=str(error))
+                state.event("api_error", error=safe_error_message(error))
                 if state.recover():
                     print("API request failed; the retained submission.csv was preserved.")
                     return state.finish("fallback", "api_error")
                 raise
-            state.report["api"]["responses"] += 1
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                state.report["api"]["usage_reported_responses"] += 1
-                for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    state.report["api"][field] += getattr(usage, field, None) or 0
+            record_usage(state, response)
             state.save()
-            message = response.choices[0].message
-            if response.choices[0].finish_reason == "length":
+            if completion["finish_reason"] == "length":
                 if state.recover():
                     print("Model response was truncated; retained predictions were preserved.")
                     return state.finish("fallback", "truncated_response")
                 raise RuntimeError("Model response was truncated; no code from it was executed.")
-            if message.tool_calls:
+            if completion["tool_calls"]:
                 messages.append({
-                    "role": "assistant", "content": message.content,
-                    "tool_calls": [call.model_dump(exclude_none=True) for call in message.tool_calls],
+                    "role": "assistant", "content": completion["content"],
+                    "tool_calls": [call["history"] for call in completion["tool_calls"]],
                 })
-                for index, call in enumerate(message.tool_calls, start=1):
+                for index, call in enumerate(completion["tool_calls"], start=1):
+                    code = ""
                     try:
-                        if call.function.name != "run_python":
-                            raise ValueError("Unknown tool: " + call.function.name)
-                        arguments = json.loads(call.function.arguments)
+                        if call["name"] != "run_python":
+                            raise ValueError("Unknown tool: " + call["name"])
+                        if not isinstance(call["arguments"], str):
+                            raise ValueError("run_python arguments must be a JSON string")
+                        arguments = json.loads(call["arguments"])
                         if not isinstance(arguments, dict) or set(arguments) != {"code"}:
                             raise ValueError("run_python requires exactly one argument: code")
+                        if not isinstance(arguments["code"], str) or not arguments["code"].strip():
+                            raise ValueError("run_python code must be a non-empty string")
+                        code = arguments["code"]
+                        if state.ledger.is_repeated_failure(code):
+                            raise ValueError("This code already failed. Change the failed approach before retrying.")
                         state.begin_attempt()
                         remaining = state.remaining()
                         if remaining <= 5:
                             raise TimeoutError("No time remains for another experiment")
                         result = run_python(
-                            arguments["code"], state.workspace, state.run_dir,
+                            code, state.workspace, state.run_dir,
                             step * 100 + index, timeout=min(1800, remaining - 2),
                         )
                         state.report["experiments"] += 1
@@ -352,7 +457,7 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                         result = {"error": str(error)}
                     result["output_check"] = validate_predictions(state.workspace)
                     failed = ("error" in result or result.get("exit_code") != 0
-                              or result.get("timed_out", False))
+                              or result.get("timed_out", False) or result.get("memory_limit_exceeded", False))
                     if not failed:
                         try:
                             result["selection"] = state.consider()
@@ -366,15 +471,20 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                     # generated code attempted to write through an absolute path.
                     if state.backup.is_file():
                         result["previous_output_restored"] = state.recover()
+                    state.ledger.record(code, result, remaining=state.remaining())
                     state.event("experiment", step=step, tool_index=index, result=result)
                     messages.append({
-                        "role": "tool", "tool_call_id": call.id,
+                        "role": "tool", "tool_call_id": call["id"],
                         "content": json.dumps(state.clean(result), ensure_ascii=False),
                     })
+                    if state.ledger.failure_streak >= 3:
+                        if state.recover():
+                            return state.finish("fallback", "repeated_failures")
+                        raise RuntimeError("Three consecutive execution failures without an accepted output")
             else:
                 valid = state.recover()
                 if valid and (state.report["successful_experiments"] or state.report["unverified_experiments"]):
-                    print(state.redact(message.content or "Agent finished."))
+                    print(state.redact(completion["content"] or "Agent finished."))
                     if state.validator is None:
                         return state.finish("fallback", "host_metric_unsupported")
                     return state.finish("completed", "model_finished")
@@ -387,7 +497,7 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                 if state.validator is not None:
                     instruction += " Follow research_validation.json."
                 messages.extend([
-                    {"role": "assistant", "content": message.content or "Finished."},
+                    {"role": "assistant", "content": completion["content"] or "Finished."},
                     {"role": "user", "content": instruction},
                 ])
         if state.recover():
@@ -395,7 +505,7 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
             return state.finish("fallback", "step_limit")
         raise RuntimeError(f"Step limit reached without an accepted output. Logs: {state.run_dir}")
     except Exception as error:
-        state.report.update(status="failed", error=state.redact(str(error)))
+        state.report.update(status="failed", error=safe_error_message(error))
         state.save()
         state.recover()
         raise

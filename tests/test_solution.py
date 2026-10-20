@@ -30,7 +30,8 @@ class FakeClient:
     def create(self, **kwargs):
         self.received_messages.append(list(kwargs["messages"]))
         message = next(self.responses)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=message, finish_reason="tool_calls" if message.tool_calls else "stop")])
 
 
 class ExecutionTests(unittest.TestCase):
@@ -125,7 +126,8 @@ class AgentTests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENAI_MODEL": "provided-test-model"}):
                 logs = solution.run_agent(task, client, max_steps=3, time_budget=30)
             self.assertEqual((task.parent / "submission.csv").read_text(encoding="utf-8"), "id,y\n1,2\n")
-            failure = json.loads(client.received_messages[1][-1]["content"])
+            failure = json.loads(next(item["content"] for item in reversed(client.received_messages[1])
+                                      if item["role"] == "tool"))
             self.assertNotEqual(failure["exit_code"], 0)
             self.assertIn("try again", failure["stderr"])
             self.assertTrue(logs.is_dir())
