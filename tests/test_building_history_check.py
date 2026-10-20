@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import math
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -207,6 +208,78 @@ class ScriptTests(unittest.TestCase):
             self.assertTrue(all(math.isfinite(ref[name]) for name in (
                 "rmse_model_all", "rmse_model_with_history", "rmse_history_with_history", "rmse_blend_with_history")))
             self.assertLess(ref["rmse_history_with_history"], ref["rmse_model_with_history"])  # planted building effect
+
+
+class ReportFileTests(unittest.TestCase):
+    def run_main(self, inputs: Path, target: Path) -> tuple[int, str]:
+        errors = io.StringIO()
+        with mock.patch("sys.argv", ["bh", "--data-dir", str(inputs), "--json", str(target), "--bootstrap", "20"]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            return bh.main(), errors.getvalue()
+
+    def test_json_over_train_csv_fails_and_keeps_its_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = make_task(Path(directory))
+            before = {path.name: path.read_bytes() for path in inputs.iterdir()}
+
+            code, message = self.run_main(inputs, inputs / "train.csv")
+
+            self.assertEqual(code, 1)
+            self.assertIn("train.csv", message)
+            self.assertEqual({path.name: path.read_bytes() for path in inputs.iterdir()}, before)
+
+    def test_report_through_a_hard_link_or_symlink_to_an_input_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = make_task(Path(directory))
+            train_bytes = (inputs / "train.csv").read_bytes()
+            hard = Path(directory) / "hard.json"
+            os.link(inputs / "train.csv", hard)
+            self.assertEqual(self.run_main(inputs, hard)[0], 1)
+            self.assertEqual(hard.read_bytes(), train_bytes)
+
+            soft = Path(directory) / "soft.json"
+            try:
+                soft.symlink_to(inputs / "train.csv")
+            except (OSError, NotImplementedError):
+                pass  # symbolic links need a privilege on Windows
+            else:
+                self.assertEqual(self.run_main(inputs, soft)[0], 1)
+            self.assertEqual((inputs / "train.csv").read_bytes(), train_bytes)
+
+    def test_report_needs_the_json_extension_and_a_file_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = make_task(Path(directory))
+            for name in ("report.txt", "report.csv", "report"):
+                target = Path(directory) / name
+                self.assertEqual(self.run_main(inputs, target)[0], 1, name)
+                self.assertFalse(target.exists(), name)
+            self.assertEqual(self.run_main(inputs, Path(directory))[0], 1)
+
+    def test_failed_write_keeps_the_previous_report_and_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "report.json"
+            target.write_text('{"old": true}\n', encoding="utf-8")
+
+            with mock.patch("os.replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+                bh.write_json_atomically(target, {"new": 1})
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"old": true}\n')
+            with mock.patch("json.dumps", side_effect=ValueError("not JSON")), self.assertRaises(ValueError):
+                bh.write_json_atomically(target, {"new": 1})
+
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"old": true}\n')
+            self.assertEqual(sorted(path.name for path in Path(directory).iterdir()), ["report.json"])
+
+    def test_successful_write_replaces_the_report_in_one_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = make_task(Path(directory))
+            target = Path(directory) / "report.json"
+            target.write_text("old", encoding="utf-8")
+
+            code, _ = self.run_main(inputs, target)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["years"], {"train": [1, 2, 3, 4, 5], "test": [6]})
+            self.assertEqual(sorted(path.name for path in Path(directory).iterdir()), ["regression", "report.json"])
 
 
 if __name__ == "__main__":

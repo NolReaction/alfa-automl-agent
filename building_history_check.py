@@ -15,10 +15,13 @@ rows whose key is unique per year are only consistent with one building. Nothing
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -397,10 +400,44 @@ def jsonable(value):
     return value
 
 
+def checked_report_path(path: Path, data_dir: Path) -> Path:
+    """Where the JSON report may go: a .json file that is not one of the input files, also through links."""
+    target = Path(path).resolve()
+    for name in (Path(path), target):
+        if name.suffix.lower() != ".json":
+            raise ValueError(f"The report file must have the .json extension: {path}")
+    if target.is_dir():
+        raise ValueError(f"The report path is a folder: {path}")
+    folder = Path(data_dir)
+    inputs = [item for item in folder.iterdir() if item.is_file()] if folder.is_dir() else []
+    if target.exists() and any(os.path.samefile(target, item) for item in inputs):
+        raise ValueError(f"The report must not overwrite an input file: {path}")
+    return target
+
+
+def write_json_atomically(target: Path, report: dict) -> None:
+    """Write the whole report into a temporary file next to the target, then replace the target in one step.
+
+    The text is built first, so a serialization error or a failed write leaves the previous file untouched.
+    """
+    text = json.dumps(jsonable(report), ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    handle, temporary = tempfile.mkstemp(prefix=f"{target.name}.", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument("--json", type=Path, help="Also write all numbers to this JSON file")
+    parser.add_argument("--json", type=Path, help="Also write all numbers to this .json file (never over an input file)")
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP, help="Bootstrap resamples (0 disables the interval)")
     parser.add_argument("--with-baseline", action="store_true",
                         help="Also compare with the project's baseline model on year 5 (needs scikit-learn)")
@@ -408,14 +445,15 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
+        report_path = checked_report_path(args.json, args.data_dir) if args.json else None
         train, test = load(args.data_dir)
         report = analyze(train, test, args.bootstrap)
         if args.with_baseline:
             report["baseline_reference"] = baseline_reference(args.data_dir, train, make_keys(train, "strict"),
                                                               bootstrap=args.bootstrap)
         print(render(report))
-        if args.json:
-            args.json.write_text(json.dumps(jsonable(report), ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        if report_path:
+            write_json_atomically(report_path, report)
         return 0
     except (OSError, ValueError, KeyError, pd.errors.ParserError) as error:
         print(f"Error: {error}", file=sys.stderr)
