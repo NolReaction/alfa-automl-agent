@@ -204,6 +204,24 @@ class BenchmarkAgentTests(unittest.TestCase):
                 (output / "automl_report.json").write_text(json.dumps(report), encoding="utf-8")
                 self.assertIsNone(benchmark._solver_summary(root))
 
+    def test_failed_progress_prints_bounded_redacted_cause_without_requiring_another_run(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                "OPENAI_API_KEY": "fixture-secret-key"}):
+            root = Path(directory)
+            solver = fake_checkout(root / "solver", "raise RuntimeError('x' * 4000 + ' injected failure fixture-secret-key')")
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                report = benchmark.benchmark(root / "results", solver_root=solver,
+                    cases=("linear_regression",), modes=("automl",), time_budget=5)
+            progress = json.loads(captured.getvalue().splitlines()[0])
+            self.assertEqual(report["status"], "incomplete")
+            self.assertEqual(progress["status"], "solver_failed")
+            self.assertEqual(progress["failure"]["exit_code"], 1)
+            self.assertIn("injected failure [REDACTED]", progress["failure"]["stderr_tail"])
+            self.assertLessEqual(len(progress["failure"]["stderr_tail"]), 2000)
+            self.assertNotIn("fixture-secret-key", captured.getvalue())
+            self.assertEqual(progress["failure"]["report"], str((root / "results" / "report.json").resolve()))
+
     def test_previous_output_and_invalid_flags_are_rejected_without_overwriting_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

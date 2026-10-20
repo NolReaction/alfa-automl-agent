@@ -23,6 +23,7 @@ import time
 from uuid import uuid4
 
 from agent.execution import run_python
+from agent.llm import safe_error_message
 from agent.metrics import get_metric, score_predictions
 from agent.task_spec import load_task
 from benchmark_cases import ALL_CASE_NAMES, CASE_NAMES, make_case, write_case
@@ -533,8 +534,23 @@ def benchmark(output: Path, *, solver_root: Path = ROOT, cases=CASE_NAMES, seeds
                                 expected_source_hash=source["source_sha256"])
                 report["trials"].append(row)
                 _write_json(path, report)
-                print(json.dumps({"case": case_name, "seed": seed, "mode": mode, "status": row["status"],
-                                  "audit": row["audit"]["metric"], "seconds": row["elapsed_seconds"]}), flush=True)
+                progress = {"case": case_name, "seed": seed, "mode": mode, "status": row["status"],
+                            "audit": row["audit"]["metric"], "seconds": row["elapsed_seconds"]}
+                if row["status"] != "completed":
+                    execution = row["execution"]
+
+                    def diagnostic_tail(value):
+                        return safe_error_message(RuntimeError(str(value or "")))[-2000:]
+
+                    progress["failure"] = {
+                        "exit_code": execution.get("exit_code"),
+                        "error": diagnostic_tail(execution.get("error")),
+                        "stderr_tail": diagnostic_tail(execution.get("stderr")),
+                        "stdout_tail": diagnostic_tail(execution.get("stdout")),
+                        "contract_errors": row.get("research_contract_errors", []),
+                        "report": str(path),
+                    }
+                print(json.dumps(progress), flush=True)
                 if row["status"] in {"source_changed", "input_changed"}:
                     aborted = True
                     break
