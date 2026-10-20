@@ -27,6 +27,57 @@ def csv_file(path, rows):
         csv.writer(stream).writerows(rows)
 
 
+class APISettingsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.enterContext(patch.object(jobs, "ROOT", self.root))
+        self.enterContext(patch.dict(os.environ, {}, clear=True))
+
+    def test_two_environment_fields_use_default_model_and_private_readiness(self):
+        os.environ.update(OPENAI_API_KEY=" fixture-key ", OPENAI_BASE_URL=" https://fixture.invalid/v1 ")
+        self.assertEqual(jobs._settings_values(), {
+            "OPENAI_API_KEY": "fixture-key", "OPENAI_BASE_URL": "https://fixture.invalid/v1",
+            "OPENAI_MODEL": jobs.DEFAULT_MODEL,
+        })
+        self.assertEqual(jobs.api_settings(), {"ready": True, "missing": [], "model_configured": True})
+
+    def test_two_local_fields_use_default_model_without_mutating_environment(self):
+        (self.root / ".env").write_text(
+            "OPENAI_API_KEY=fixture-local-key\nOPENAI_BASE_URL=https://local.invalid/v1\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(jobs._settings_values(), {
+            "OPENAI_API_KEY": "fixture-local-key", "OPENAI_BASE_URL": "https://local.invalid/v1",
+            "OPENAI_MODEL": jobs.DEFAULT_MODEL,
+        })
+        self.assertEqual(jobs.api_settings(), {"ready": True, "missing": [], "model_configured": True})
+        self.assertTrue(all(name not in os.environ for name in jobs.API_FIELDS))
+
+    def test_environment_values_override_local_values_including_explicit_empty(self):
+        (self.root / ".env").write_text(
+            "OPENAI_API_KEY=local-key\nOPENAI_BASE_URL=https://local.invalid/v1\nOPENAI_MODEL=local-model\n",
+            encoding="utf-8",
+        )
+        injected = {"OPENAI_API_KEY": "injected-key", "OPENAI_BASE_URL": "https://injected.invalid/v1",
+                    "OPENAI_MODEL": "injected-model"}
+        os.environ.update(injected)
+        self.assertEqual(jobs._settings_values(), injected)
+        os.environ.update(OPENAI_API_KEY="", OPENAI_MODEL=" ")
+        self.assertEqual(jobs._settings_values()["OPENAI_MODEL"], jobs.DEFAULT_MODEL)
+        self.assertEqual(jobs.api_settings(), {
+            "ready": False, "missing": ["OPENAI_API_KEY"], "model_configured": True,
+        })
+
+    def test_missing_settings_require_only_key_and_base_url(self):
+        self.assertEqual(jobs.api_settings(), {
+            "ready": False, "missing": list(jobs.REQUIRED_API_FIELDS), "model_configured": True,
+        })
+        os.environ["OPENAI_MODEL"] = "explicit-model"
+        self.assertEqual(jobs.api_settings()["missing"], list(jobs.REQUIRED_API_FIELDS))
+
+
 class JobTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -438,6 +489,26 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager.detail("example", "../private")
         self.assertEqual(self.manager.list(), [])
+
+    def test_agent_launch_accepts_two_local_fields_and_passes_default_model_privately(self):
+        (self.root / ".env").write_text(
+            "OPENAI_API_KEY=fixture-launch-key\nOPENAI_BASE_URL=https://unused.invalid/v1\n",
+            encoding="utf-8",
+        )
+        # Check scheduling and settings handoff without starting an API worker.
+        self.addCleanup(setattr, self.manager, "_active", None)
+        with patch.object(jobs, "ROOT", self.root), patch.dict(os.environ, {}, clear=True), \
+                patch.object(jobs.threading, "Thread") as worker:
+            job = self.manager.start("example", "agent")
+        worker.return_value.start.assert_called_once()
+        self.assertEqual(worker.call_args.kwargs["args"][3], {
+            "OPENAI_API_KEY": "fixture-launch-key", "OPENAI_BASE_URL": "https://unused.invalid/v1",
+            "OPENAI_MODEL": jobs.DEFAULT_MODEL,
+        })
+        stored = (self.state / "jobs" / job["id"] / "job.json").read_text(encoding="utf-8")
+        self.assertNotIn("fixture-launch-key", stored)
+        self.assertNotIn("unused.invalid", stored)
+        self.assertNotIn("OPENAI_API_KEY", json.dumps(job))
 
     def test_second_manager_is_refused_and_old_active_job_is_interrupted(self):
         with self.assertRaises(ValueError):

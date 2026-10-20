@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from agent.automl import INPUT_NAMES, _atomic_copy, _atomic_json, data_fingerprint, read_accepted_checkpoint
 from agent.execution import run_python
-from agent.llm import ROOT, SYSTEM_PROMPT, TOOL
+from agent.llm import ROOT, SYSTEM_PROMPT, TOOL, get_model, safe_error_message
 from agent.research_feedback import ResearchLedger, error_analysis
 from agent.research_validation import (
     HOLDOUT_NAME, HYPOTHESIS_NAME, MANIFEST_NAME, ResearchValidation, read_hypothesis,
@@ -99,7 +99,7 @@ class RunState:
         self.ledger = ResearchLedger()
         self.report = {
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "task": str(task_path), "model": os.environ.get("OPENAI_MODEL", ""),
+            "task": str(task_path), "model": get_model(),
             "max_steps": max_steps, "time_budget_seconds": time_budget,
             "status": "running", "baseline": "not_started", "experiments": 0,
             "successful_experiments": 0, "improvements": 0,
@@ -406,13 +406,13 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
             state.save()
             try:
                 response = client.with_options(timeout=min(120, remaining)).chat.completions.create(
-                    model=os.environ["OPENAI_MODEL"], messages=messages,
+                    model=get_model(), messages=messages,
                     tools=[TOOL], parallel_tool_calls=False, max_tokens=4096,
                 )
                 state.report["api"]["responses"] += 1
                 completion = checked_completion(response)
             except Exception as error:
-                state.event("api_error", error=str(error))
+                state.event("api_error", error=safe_error_message(error))
                 if state.recover():
                     print("API request failed; the retained submission.csv was preserved.")
                     return state.finish("fallback", "api_error")
@@ -505,7 +505,7 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
             return state.finish("fallback", "step_limit")
         raise RuntimeError(f"Step limit reached without an accepted output. Logs: {state.run_dir}")
     except Exception as error:
-        state.report.update(status="failed", error=state.redact(str(error)))
+        state.report.update(status="failed", error=safe_error_message(error))
         state.save()
         state.recover()
         raise

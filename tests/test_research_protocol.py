@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import solution
+from agent.llm import DEFAULT_MODEL
 from tests.test_research import FakeClient, known_start, make_regression, response as fake_response
 
 
@@ -50,7 +51,8 @@ def tool_completion(calls):
 
 @unittest.skipUnless(HAS_PACKAGES, "Install requirements.txt for SDK protocol tests")
 class ResearchProtocolTests(unittest.TestCase):
-    def run_case(self, replies, *, starter=True, max_steps=2, fake_client=None, on_request=None):
+    def run_case(self, replies, *, starter=True, max_steps=2, fake_client=None, on_request=None,
+                 model="provided-test-model", response_status=200):
         """Exercise the real SDK parser; only startup training and tools are mocked."""
         requests = []
 
@@ -65,8 +67,9 @@ class ResearchProtocolTests(unittest.TestCase):
                     on_request(task_dir)
                 reply = replies[len(requests) - 1] if len(requests) <= len(replies) else completion()
                 body = json.dumps(reply).encode("utf-8")
-                self.send_response(200)
+                self.send_response(response_status)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("X-Request-Id", "req-local-protocol")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -82,9 +85,11 @@ class ResearchProtocolTests(unittest.TestCase):
                        if not name.lower().endswith("_proxy")}
                 env.update({
                     "OPENAI_API_KEY": "local-protocol-placeholder",
-                    "OPENAI_MODEL": "provided-test-model",
                     "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
                 })
+                env.pop("OPENAI_MODEL", None)
+                if model is not None:
+                    env["OPENAI_MODEL"] = model
                 output, errors = io.StringIO(), io.StringIO()
                 with patch.dict(os.environ, env, clear=True), \
                         patch("sys.argv", ["solution.py", str(task), "--max-steps", str(max_steps),
@@ -118,6 +123,34 @@ class ResearchProtocolTests(unittest.TestCase):
                          ("fallback", reason))
         self.assertEqual(result["executions"], 0)
         self.assertEqual(result["report"]["best_metric"]["value"], 10)
+
+    def test_required_environment_alone_uses_default_model_in_request_and_report(self):
+        for model in (None, "   ", "provided-test-model"):
+            with self.subTest(model=model):
+                result = self.run_case([completion()], max_steps=1, model=model)
+                self.assert_preserved_fallback(result, "step_limit")
+                expected = model if model and model.strip() else DEFAULT_MODEL
+                self.assertEqual(result["requests"][0]["model"], expected)
+                self.assertEqual(result["report"]["model"], expected)
+
+    def test_rate_limit_has_no_retries_or_provider_body_in_output_and_report(self):
+        reply = {"error": {"code": "insufficient_quota", "message":
+                          "Authorization: Bearer local-protocol-placeholder; private-body-marker"}}
+        for starter in (True, False):
+            with self.subTest(starter=starter):
+                result = self.run_case([reply], starter=starter, response_status=429, model=None)
+                self.assertEqual(len(result["requests"]), 1)
+                if starter:
+                    self.assert_preserved_fallback(result, "api_error")
+                else:
+                    self.assertEqual(result["status"], 1)
+                evidence = json.dumps(result["report"]) + result["stdout"] + result["stderr"]
+                self.assertIn("RateLimitError", evidence)
+                self.assertIn("HTTP 429", evidence)
+                self.assertIn("req-local-protocol", evidence)
+                self.assertIn("insufficient_quota", evidence)
+                for forbidden in ("Authorization", "local-protocol-placeholder", "private-body-marker"):
+                    self.assertNotIn(forbidden, evidence)
 
     def test_empty_choices_and_null_message_return_success_with_retained_csv(self):
         malformed = {

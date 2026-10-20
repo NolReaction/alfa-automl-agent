@@ -82,16 +82,27 @@ def _archive(files: dict[str, bytes]) -> bytes:
 
 
 def delivery_archive() -> bytes:
-    """Use exactly the competition builder's allowlist; never call its writer."""
-    paths = build_submission.source_files()
-    if len(paths) > MAX_SOURCE_FILES:
-        raise ValueError("Слишком много исходных файлов для сборки через панель.")
-    files, remaining = {}, MAX_SOURCE_BYTES
-    for path in paths:
+    """Use the competition builder's flat manifest with bounded source reads."""
+    remaining, count = MAX_SOURCE_BYTES, 0
+
+    def read_bytes(path: Path) -> bytes:
+        nonlocal remaining, count
+        count += 1
+        if count > MAX_SOURCE_FILES:
+            raise ValueError("Слишком много исходных файлов для сборки через панель.")
         content = _regular_bytes(path, remaining)
         remaining -= len(content)
-        files[path.relative_to(build_submission.ROOT).as_posix()] = content
-    return _archive(files)
+        return content
+
+    files = build_submission.archive_files(read_bytes=read_bytes)
+    if len(files) > MAX_SOURCE_FILES:
+        raise ValueError("Слишком много исходных файлов для сборки через панель.")
+    if sum(len(content) for content in files.values()) > MAX_SOURCE_BYTES:
+        raise ValueError("Размер файлов превышает лимит выгрузки.")
+    package = _archive(files)
+    if len(package) > build_submission.MAX_ARCHIVE_BYTES:
+        raise ValueError("ZIP для конкурса превышает 100 МБ.")
+    return package
 
 
 def _readable_report(report: dict) -> bytes:

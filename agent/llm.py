@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
+import re
+
+from agent import project_root
 
 
-ROOT = Path(__file__).resolve().parents[1]
-API_FIELDS = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
+ROOT = project_root()
+REQUIRED_API_FIELDS = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+API_FIELDS = (*REQUIRED_API_FIELDS, "OPENAI_MODEL")
+DEFAULT_MODEL = "qwen/qwen3.8-27b"
 TOOL = {
     "type": "function",
     "function": {
@@ -62,9 +66,44 @@ def load_local_env() -> None:
 
 
 def require_api_settings() -> None:
-    missing = [name for name in API_FIELDS if not os.environ.get(name, "").strip()]
+    missing = [name for name in REQUIRED_API_FIELDS if not os.environ.get(name, "").strip()]
     if missing:
-        raise ValueError("Fill in these settings in .env: " + ", ".join(missing))
+        raise ValueError("Missing required API settings: " + ", ".join(missing)
+                         + ". Supply them in the environment (or .env for --mode llm).")
+
+
+def get_model() -> str:
+    """The contest proxy may replace this optional OpenAI request field."""
+    return os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def safe_error_message(error: Exception) -> str:
+    """Keep useful SDK diagnostics without echoing response bodies or headers."""
+    try:
+        from openai import APIError
+    except ImportError:
+        APIError = ()
+
+    if isinstance(error, APIError):
+        details = [type(error).__name__]
+        status = getattr(error, "status_code", None)
+        if type(status) is int and 100 <= status <= 599:
+            details.append(f"HTTP {status}")
+        request_id = getattr(error, "request_id", None)
+        if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
+            details.append(f"request_id={request_id}")
+        code = getattr(error, "code", None)
+        if isinstance(code, str) and code in {
+            "rate_limit_exceeded", "rate_limit_error", "insufficient_quota",
+            "quota_exceeded", "budget_exceeded", "budget_limit_exceeded",
+            "daily_budget_exceeded", "insufficient_balance",
+        }:
+            details.append(f"code={code}")
+        detail = "API request failed (" + ", ".join(details) + ")."
+    else:
+        detail = str(error)
+    key = os.environ.get("OPENAI_API_KEY", "")
+    return detail.replace(key, "[REDACTED]") if key else detail
 
 
 def make_client():
@@ -81,7 +120,7 @@ def make_client():
 def check_api() -> None:
     with make_client() as client:
         response = client.chat.completions.create(
-            model=os.environ["OPENAI_MODEL"],
+            model=get_model(),
             messages=[{"role": "user", "content": "Reply with OK."}],
             max_tokens=64,
         )

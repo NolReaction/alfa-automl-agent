@@ -469,6 +469,18 @@ const cases = {
     assert.match(get("classificationDiagnosticView")(current), /На проверочных строках этого запуска/);
     assert.doesNotMatch(get("classificationDiagnosticView")(current), /не проверен локально/);
   },
+  api_required_fields() {
+    const state = setup();
+    state.session = { api: { ready: false } };
+    get("showHelp")();
+    assert.match(element.innerHTML, /OPENAI_API_KEY/);
+    assert.match(element.innerHTML, /OPENAI_BASE_URL/);
+    assert.doesNotMatch(element.innerHTML, /OPENAI_MODEL/);
+    state.session.api = { ready: true, missing: [], model_configured: true };
+    get("showHelp")();
+    assert.match(element.innerHTML, /Настройки API заполнены/);
+    assert.doesNotMatch(element.innerHTML, /OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_MODEL/);
+  },
   escaping() {
     setup();
     const malicious = job({ model_config: { model: '<img src=x onerror="evil()">', parameters: { '<script>evil()</script>': '"<svg/onload=evil()>"' } } });

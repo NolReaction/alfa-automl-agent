@@ -80,6 +80,14 @@ class ResearchValidationTests(unittest.TestCase):
         self.assertEqual(len(gate.fit_rows) + len(gate.held_rows), 80)
         self.assertFalse(set(gate.fit_rows) & set(gate.held_rows))
 
+    def test_float_serialized_regression_actuals_preserve_the_frozen_holdout_score(self):
+        gate = ResearchValidation(self.task)
+        path, rows = self.evidence(gate, [float(value) + 3.25 for value in gate.expected_actuals])
+        for row in rows[1:]:
+            row[1] = float(row[1])
+        write_csv(path, rows)
+        self.assertEqual(gate.evaluate(path, self.root)["value"], 3.25)
+
     def test_equivalent_parent_path_alias_uses_one_canonical_root_for_manifest_and_scoring(self):
         # This lexical alias reproduces resolved-data/unresolved-parent failures
         # on every platform without requiring Windows symlink privileges.

@@ -71,11 +71,31 @@ class ModeTests(unittest.TestCase):
                                              max_steps=12, time_budget=10500)
             offline.assert_not_called()
 
+    def test_auto_with_required_platform_environment_and_optional_model_starts_research(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = Path(directory) / "task.md"
+            task.write_text("Research this task", encoding="utf-8")
+            for optional_model in (None, "   "):
+                environment = {name: value for name, value in PLATFORM_ENV.items()
+                               if name != "OPENAI_MODEL"}
+                if optional_model is not None:
+                    environment["OPENAI_MODEL"] = optional_model
+                with self.subTest(model=optional_model), \
+                        patch.dict(os.environ, environment, clear=True), \
+                        patch.object(solution, "load_local_env", side_effect=AssertionError("Unexpected dotenv")), \
+                        patch.object(solution, "make_client") as client, \
+                        patch.object(solution, "run_agent") as research, patch("agent.automl.run_automl") as offline:
+                    status, _, errors = self.invoke([str(task)])
+                self.assertEqual(status, 0, errors)
+                research.assert_called_once_with(task, client.return_value.__enter__.return_value,
+                                                 max_steps=12, time_budget=10500)
+                offline.assert_not_called()
+
     def test_auto_rejects_incomplete_platform_environment_before_training(self):
         with tempfile.TemporaryDirectory() as directory:
             task = Path(directory) / "task.md"
             task.write_text("Metric: RMSE", encoding="utf-8")
-            for missing in PLATFORM_ENV:
+            for missing in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
                 for absent_value in (None, "   "):
                     environment = dict(PLATFORM_ENV)
                     if absent_value is None:

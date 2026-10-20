@@ -5,11 +5,13 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
 from agent.task_spec import TaskSpec, load_task, load_task_data, score_holdout
+from agent.metrics import score_predictions
 from offline_baseline import load_data
 from validation import validate_predictions
 
@@ -133,6 +135,72 @@ class TaskSpecTests(unittest.TestCase):
             frame.to_csv(path, index=False)
             with self.assertRaisesRegex(ValueError, "actual answers"):
                 score_holdout(path, spec, ids, actual)
+
+    def test_regression_holdout_accepts_equivalent_numbers_but_scores_frozen_actuals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_task(Path(directory), metric="RMSE")
+            spec = load_task(task)
+            ids = ["001", "NA", "03", "04", "05"]
+            frozen = ["251", "1.25", "-0", "9007199254740993", "0.000000000000000000123"]
+            written = ["251.0", "125e-2", "0.0", "9.007199254740993e15", "123e-21"]
+            path = task.parent / "holdout.csv"
+            write_csv(path, [["id", "actual", "prediction"], *zip(ids, written, frozen)])
+            with patch("agent.task_spec.score_predictions", wraps=score_predictions) as score:
+                self.assertEqual(score_holdout(path, spec, ids, iter(frozen)), 0)
+            self.assertEqual(score.call_args.args[1], frozen)
+            self.assertNotEqual(score.call_args.args[1], written)
+
+    def test_regression_holdout_rejects_changed_values_without_float_rounding_or_tolerance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_task(Path(directory), metric="RMSE")
+            spec = load_task(task)
+            path = task.parent / "holdout.csv"
+            cases = [
+                ("251", "251.00000000000000000000000000001"),
+                ("9007199254740993", "9007199254740992"),
+                ("1e-100", "0"),
+            ]
+            for frozen, written in cases:
+                with self.subTest(frozen=frozen, written=written):
+                    write_csv(path, [["id", "actual", "prediction"], ["001", written, frozen]])
+                    with patch("agent.task_spec.score_predictions") as score:
+                        with self.assertRaisesRegex(ValueError, "actual answers"):
+                            score_holdout(path, spec, ["001"], [frozen])
+                    score.assert_not_called()
+
+    def test_regression_holdout_rejects_missing_nonfinite_or_nonnumeric_actuals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_task(Path(directory), metric="RMSE")
+            spec = load_task(task)
+            path = task.parent / "holdout.csv"
+            for invalid in ("", " ", "NaN", "sNaN", "Infinity", "-inf", "missing"):
+                # Invalid frozen values must fail even if the CSV repeats them.
+                for frozen in ("251", invalid):
+                    with self.subTest(frozen=frozen, written=invalid):
+                        write_csv(path, [["id", "actual", "prediction"], ["001", invalid, "251"]])
+                        with self.assertRaisesRegex(ValueError, "actual answers"):
+                            score_holdout(path, spec, ["001"], [frozen])
+
+    def test_regression_numeric_equivalence_never_normalizes_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_task(Path(directory), metric="RMSE")
+            spec = load_task(task)
+            path = task.parent / "holdout.csv"
+            write_csv(path, [["id", "actual", "prediction"], ["1", "251.0", "251"]])
+            with self.assertRaisesRegex(ValueError, "Holdout IDs"):
+                score_holdout(path, spec, ["001"], ["251"])
+
+    def test_classification_numeric_looking_actuals_remain_distinct_literal_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_task(Path(directory), metric="Accuracy", labels=("1", "1.0"), dtype="category")
+            spec = load_task(task)
+            path = task.parent / "holdout.csv"
+            ids, frozen = ["001", "NA"], ["1", "1.0"]
+            write_csv(path, [["id", "actual", "prediction"], *zip(ids, frozen, frozen)])
+            self.assertEqual(score_holdout(path, spec, ids, frozen), 1)
+            write_csv(path, [["id", "actual", "prediction"], *zip(ids, ["1.0", "1.0"], frozen)])
+            with self.assertRaisesRegex(ValueError, "actual answers"):
+                score_holdout(path, spec, ids, frozen)
 
     def test_ambiguous_probability_columns_and_task_type_are_rejected(self):
         for kwargs in (

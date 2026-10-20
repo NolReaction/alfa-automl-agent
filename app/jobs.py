@@ -27,6 +27,7 @@ from app.model_config import make_model_config, validate_model_config, model_tas
 from app.file_io import replace_file
 from app.search_summary import validate_search_summary
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
+from agent.llm import API_FIELDS, DEFAULT_MODEL, REQUIRED_API_FIELDS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +35,6 @@ ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"
 OFFLINE_ACTIONS = ACTIONS - {"agent", "prepare"}
 ACTIVE = {"queued", "running"}
 JOB_ID = re.compile(r"[0-9a-f]{32}\Z")
-API_FIELDS = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
 MAX_LOG_BYTES = 20 * 1024 * 1024
 LOG_TAIL_BYTES = 128 * 1024
 MAX_INPUT_BYTES = 512 * 1024 * 1024
@@ -159,14 +159,15 @@ def _settings_values():
         from dotenv import dotenv_values
         configured = dotenv_values(local)
         for name in API_FIELDS:
-            if name in configured:
+            if name not in os.environ and name in configured:
                 values[name] = str(configured[name] or "").strip()
+    values["OPENAI_MODEL"] = values["OPENAI_MODEL"] or DEFAULT_MODEL
     return values
 
 
 def api_settings():
     values = _settings_values()
-    missing = [name for name, value in values.items() if not value]
+    missing = [name for name in REQUIRED_API_FIELDS if not values.get(name)]
     return {"ready": not missing, "missing": missing,
             "model_configured": bool(values["OPENAI_MODEL"])}
 
@@ -585,8 +586,8 @@ class JobManager:
             if self._active:
                 raise RuntimeError("Уже выполняется другой запуск. Дождитесь завершения или остановите его.")
             values = _settings_values() if action == "agent" else {}
-            if action == "agent" and any(not values.get(name) for name in API_FIELDS):
-                raise ValueError("Для Qwen заполните OPENAI_API_KEY, OPENAI_BASE_URL и OPENAI_MODEL в локальном .env.")
+            if action == "agent" and any(not values.get(name) for name in REQUIRED_API_FIELDS):
+                raise ValueError("Для Qwen заполните OPENAI_API_KEY и OPENAI_BASE_URL в окружении или локальном .env.")
             if action == "prepare":
                 if task_id is not None:
                     raise ValueError("Загрузка материалов запускается без выбранной задачи.")

@@ -12,8 +12,8 @@ import tempfile
 
 from agent.execution import child_environment, run_python, stop_process_tree, tail
 from agent.llm import (
-    API_FIELDS, ROOT, SYSTEM_PROMPT, TOOL, check_api, load_local_env,
-    make_client, require_api_settings,
+    API_FIELDS, REQUIRED_API_FIELDS, ROOT, SYSTEM_PROMPT, TOOL, check_api, get_model, load_local_env,
+    make_client, require_api_settings, safe_error_message,
 )
 from agent.research import run_agent
 from validation import validate_predictions
@@ -31,7 +31,7 @@ def select_mode(requested: str) -> str:
     if not present:
         print("No API settings supplied: offline fallback (budgeted AutoML; no LLM research).", flush=True)
         return "offline"
-    missing = [name for name in API_FIELDS if name not in present]
+    missing = [name for name in REQUIRED_API_FIELDS if name not in present]
     if missing:
         raise ValueError("Incomplete competition API environment; missing: " + ", ".join(missing)
                          + ". Use --mode offline for an intentional local run without API.")
@@ -56,6 +56,8 @@ def check_setup() -> bool:
         "python_child_error": result["stderr"] if not worker_ok else "",
         "api_settings_present": {name: bool(os.environ.get(name, "").strip())
                                  for name in API_FIELDS},
+        "api_required_settings": list(REQUIRED_API_FIELDS),
+        "api_model": get_model(),
         "api_called": False,
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -115,11 +117,7 @@ def main() -> int:
                 run_agent(task_path, client, max_steps=args.max_steps, time_budget=time_budget)
         return 0
     except Exception as error:
-        detail = str(error)
-        key = os.environ.get("OPENAI_API_KEY", "")
-        if key:
-            detail = detail.replace(key, "[REDACTED]")
-        print(f"Error: {detail}", file=sys.stderr)
+        print(f"Error: {safe_error_message(error)}", file=sys.stderr)
         return 1
 
 

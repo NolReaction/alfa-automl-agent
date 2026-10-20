@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score, mean_squared_error
 
+from agent import project_root
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from agent.execution import run_python
 from agent.file_io import replace_file
@@ -33,7 +34,7 @@ from agent.task_spec import load_task, load_task_data, score_holdout
 from agent.splits import normalize_validation, split_rows
 from offline_baseline import read_csv
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = project_root()
 INPUT_NAMES = ("train.csv", "test.csv", "data_dictionary.csv", "sample_submission.csv")
 
 

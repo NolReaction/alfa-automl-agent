@@ -26,24 +26,39 @@ class ExportTests(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("# source " + name, encoding="utf-8")
-        for name in ("agent/sub/module.py", "agent/__pycache__/ignored.py", "app/private.py",
-                     "data/task/train.csv", "data/task/submission.csv", ".env", "agent/key.txt"):
+        module = self.root / "agent/sub/module.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text("# nested source", encoding="utf-8")
+        for name in ("agent/__pycache__/ignored.py", "app/private.py",
+                     "data/task/train.csv", "data/task/submission.csv", ".env", ".env.example",
+                     "config.json", "agent/key.txt", "requirements.txt"):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("private fixture", encoding="utf-8")
 
-    def test_delivery_uses_original_builder_allowlist_without_writing_output(self):
+    def test_delivery_uses_flat_cli_manifest_without_writing_output(self):
         with patch.object(build_submission, "ROOT", self.root):
-            expected = {path.relative_to(self.root).as_posix() for path in build_submission.source_files()}
+            expected = build_submission.archive_files()
             package = delivery_archive()
+            self.assertFalse((self.root / "delivery").exists())
+            cli_path = self.root / "delivery/solution.zip"
+            build_submission.build_archive(cli_path)
         with ZipFile(BytesIO(package)) as archive:
-            self.assertEqual(set(archive.namelist()), expected)
+            actual = {name: archive.read(name) for name in archive.namelist()}
+            self.assertEqual(actual, expected)
             self.assertIsNone(archive.testzip())
             self.assertEqual(archive.read("solution.py"), (self.root / "solution.py").read_bytes())
-            self.assertIn("agent/sub/module.py", archive.namelist())
-            self.assertFalse(any(name.startswith(("app/", "data/")) or "__pycache__" in name
-                                 or name.endswith(".env") for name in archive.namelist()))
-        self.assertFalse((self.root / "delivery").exists())
+            self.assertEqual(archive.read("requirements.txt"),
+                             (self.root / "requirements.platform.txt").read_bytes())
+            self.assertIn("agent.py", actual)
+            self.assertIn("_alfa_agent__sub__module.py", actual)
+            self.assertTrue(all("/" not in name and "\\" not in name
+                                and (name.endswith(".py") or name == "requirements.txt")
+                                for name in actual))
+            self.assertNotIn(b"private fixture", b"".join(actual.values()))
+        with ZipFile(cli_path) as archive:
+            self.assertEqual(actual, {name: archive.read(name) for name in archive.namelist()})
+        self.assertLessEqual(len(package), build_submission.MAX_ARCHIVE_BYTES)
 
     def test_required_missing_or_linked_source_and_size_limit_are_rejected(self):
         with patch.object(build_submission, "ROOT", self.root):
@@ -62,6 +77,19 @@ class ExportTests(unittest.TestCase):
                 return
             with self.assertRaises(ValueError):
                 delivery_archive()
+
+    def test_delivery_limits_count_generated_sources_and_final_zip(self):
+        with patch.object(build_submission, "ROOT", self.root):
+            with patch("app.exports.MAX_SOURCE_FILES", 1):
+                with self.assertRaisesRegex(ValueError, "много"):
+                    delivery_archive()
+            source_size = sum(path.stat().st_size for path in build_submission.source_files())
+            with patch("app.exports.MAX_SOURCE_BYTES", source_size):
+                with self.assertRaisesRegex(ValueError, "лимит"):
+                    delivery_archive()
+            with patch.object(build_submission, "MAX_ARCHIVE_BYTES", 100):
+                with self.assertRaisesRegex(ValueError, "100 МБ"):
+                    delivery_archive()
 
     def test_report_has_no_script_injection_and_labels_fallback_without_metric(self):
         report = {"id": "a" * 32, "action": "agent", "agent_status": "fallback",

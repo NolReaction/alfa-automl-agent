@@ -21,11 +21,13 @@ class OfflineArchiveTests(unittest.TestCase):
             archive = root / "solution.zip"
             names = build_archive(archive)
             self.assertFalse(any(name.startswith("app/") for name in names))
-            self.assertIn("agent/automl.py", names)
-            package = root / "package"
-            with zipfile.ZipFile(archive) as zipped:
-                zipped.extractall(package)
+            self.assertIn("_alfa_agent__automl.py", names)
             task = root / "task"
+            task.mkdir()
+            with zipfile.ZipFile(archive) as zipped:
+                for name in zipped.namelist():
+                    if "/" not in name and (name.endswith(".py") or name == "requirements.txt"):
+                        (task / name).write_bytes(zipped.read(name))
             inputs = task / "inputs"
             inputs.mkdir(parents=True)
             (task / "task.md").write_text("Predict outcome from inputs/*.csv.\nMetric: RMSE\n", encoding="utf-8")
@@ -45,9 +47,9 @@ class OfflineArchiveTests(unittest.TestCase):
             env.update(OPENAI_API_KEY="this-key-must-not-be-used", OPENAI_BASE_URL="http://127.0.0.1:1/v1",
                        OPENAI_MODEL="must-not-call", PYTHONIOENCODING="utf-8")
             result = subprocess.run(
-                [sys.executable, str(package / "solution.py"), str(task / "task.md"),
+                [sys.executable, "solution.py", "task.md",
                  "--mode", "offline", "--time-budget", "60"],
-                cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", timeout=85,
+                cwd=task, env=env, capture_output=True, text=True, encoding="utf-8", timeout=85,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("API calls: 0", result.stdout)

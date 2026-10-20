@@ -7,6 +7,7 @@ semantics are rejected instead of being silently treated as a different task.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 import csv
 import io
 import json
@@ -306,7 +307,23 @@ def score_holdout(path: Path, spec: TaskSpec, expected_ids, expected_actuals) ->
     frame = read_csv(Path(path))
     if list(frame.columns) != list(spec.holdout_columns):
         raise ValueError("Holdout prediction columns do not match the task specification")
-    if frame["id"].tolist() != list(expected_ids) or frame["actual"].tolist() != list(expected_actuals):
+    frozen_actuals = list(expected_actuals)
+    actuals = frame["actual"].tolist()
+    if frame["id"].tolist() != list(expected_ids) or len(actuals) != len(frozen_actuals):
+        raise ValueError("Holdout IDs or actual answers differ from the frozen validation rows")
+    if spec.classification:
+        actuals_match = actuals == frozen_actuals
+    else:
+        # CSV writers may spell the same regression target as 251 or 251.0.
+        # Decimal equality permits that without tolerance or float rounding.
+        try:
+            pairs = ((Decimal(str(actual)), Decimal(str(expected)))
+                     for actual, expected in zip(actuals, frozen_actuals))
+            actuals_match = all(actual.is_finite() and expected.is_finite() and actual == expected
+                               for actual, expected in pairs)
+        except (InvalidOperation, ValueError):
+            actuals_match = False
+    if not actuals_match:
         raise ValueError("Holdout IDs or actual answers differ from the frozen validation rows")
     if spec.prediction_kind == "probabilities" and len(spec.probability_columns) > 1:
         predictions = frame.loc[:, list(spec.holdout_columns[2:])].to_numpy()
@@ -314,6 +331,6 @@ def score_holdout(path: Path, spec: TaskSpec, expected_ids, expected_actuals) ->
     else:
         predictions = frame["prediction"].to_numpy()
         provided = None
-    return score_predictions(spec.metric, frame["actual"].to_numpy(), predictions,
+    return score_predictions(spec.metric, frozen_actuals, predictions,
                              classes=spec.classes, prediction_classes=provided,
                              positive_class=spec.positive_class)

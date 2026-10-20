@@ -50,6 +50,9 @@ class FrontendTests(unittest.TestCase):
     def test_qwen_and_prepare_requests_omit_offline_model_settings(self):
         self.check_case("payload")
 
+    def test_qwen_help_requires_only_key_and_base_url(self):
+        self.check_case("api_required_fields")
+
     def test_reported_model_settings_are_escaped_and_never_invented(self):
         self.check_case("escaping")
 
