@@ -27,6 +27,7 @@ from app.model_config import make_model_config, validate_model_config, model_tas
 from app.file_io import replace_file
 from app.search_summary import validate_search_summary
 from app.research_summary import validate_research_summary
+from app.supervisor import process_inventory_matches
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from agent.llm import API_FIELDS, DEFAULT_MODEL, REQUIRED_API_FIELDS
 
@@ -204,6 +205,8 @@ def _identity(pid: int):
             return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
         finally:
             kernel.CloseHandle(handle)
+    if sys.platform == "linux" and not process_inventory_matches():
+        return None
     try:
         text = Path(f"/proc/{pid}/stat").read_text()
         return text[text.rfind(")") + 2:].split()[19]
@@ -212,6 +215,8 @@ def _identity(pid: int):
 
 
 def _descendants(pid: int):
+    if sys.platform == "linux" and not process_inventory_matches():
+        return []
     pairs = []
     proc = Path("/proc")
     if proc.is_dir():

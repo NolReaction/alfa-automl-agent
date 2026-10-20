@@ -35,7 +35,18 @@ def _frozen_rows(value, count: int, name: str) -> np.ndarray:
     return result
 
 
-def _task_text(spec) -> str:
+def _additional_hypothesis(text: str) -> str | None:
+    """Preserve the bounded explicit Alfa Lab hint, not arbitrary task prose."""
+    marker = "## Дополнительная гипотеза для исследования\n"
+    if marker not in text:
+        return None
+    hint = text.rsplit(marker, 1)[1].split("\n\nПроверь эту гипотезу,", 1)[0].strip()
+    if not hint or len(hint) > 500:
+        raise ValueError("Additional research hypothesis must contain 1..500 characters")
+    return hint
+
+
+def _task_text(spec, hypothesis=None) -> str:
     """Recreate required declarations without source paths or prior results."""
     metric = spec.metric.name
     if metric == "ROC AUC" and len(spec.classes) > 2:
@@ -55,6 +66,9 @@ def _task_text(spec) -> str:
         lines.append("Class order: " + json.dumps(list(spec.classes), ensure_ascii=False))
     if spec.positive_class is not None:
         lines.append("Positive class: " + json.dumps(spec.positive_class, ensure_ascii=False))
+    if hypothesis is not None:
+        lines.extend(["", "## Additional user hypothesis", hypothesis,
+                      "Test this suggestion using only the approved inputs and inner validation."])
     return "\n".join(lines) + "\n"
 
 
@@ -136,7 +150,7 @@ class ResearchWorkspace:
         self.work_task = self.workspace / "task.md"
         self.work_data = self.workspace / "data"
         self.work_data.mkdir()
-        self.task_text = _task_text(self.spec)
+        self.task_text = _task_text(self.spec, _additional_hypothesis(self.source_task_text))
         self.work_task.write_text(self.task_text, encoding="utf-8")
         self.research_train.to_csv(self.work_data / "train.csv", index=False)
         # Keep a valid CSV task for the existing AutoML entry point. These rows

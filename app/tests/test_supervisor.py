@@ -16,7 +16,7 @@ from app import supervisor
 
 SCRIPT = Path(supervisor.__file__)
 SUPPORTED = os.name == "nt" or sys.platform == "linux"
-FULL_CONTAINMENT = os.name == "nt" or (sys.platform == "linux" and Path("/proc/self/stat").is_file())
+FULL_CONTAINMENT = os.name == "nt" or (sys.platform == "linux" and supervisor.process_inventory_matches())
 
 
 def alive(pid):
@@ -44,7 +44,7 @@ def alive(pid):
 
 @unittest.skipUnless(SUPPORTED, "Supervisor supports Windows and Linux")
 class SupervisorTests(unittest.TestCase):
-    @unittest.skipUnless(FULL_CONTAINMENT, "Full lifecycle needs Windows or Linux /proc")
+    @unittest.skipUnless(FULL_CONTAINMENT, "Full lifecycle needs Windows or Linux /proc in the current PID namespace")
     def test_original_exit_code_and_logs(self):
         code = "import sys; print('ordinary output'); print('ordinary error',file=sys.stderr); sys.exit(23)"
         result = subprocess.run([sys.executable, str(SCRIPT), "--", sys.executable, "-c", code],
@@ -53,7 +53,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "ordinary output")
         self.assertEqual(result.stderr.strip(), "ordinary error")
 
-    @unittest.skipUnless(FULL_CONTAINMENT, "Full lifecycle needs Windows or Linux /proc")
+    @unittest.skipUnless(FULL_CONTAINMENT, "Full lifecycle needs Windows or Linux /proc in the current PID namespace")
     def test_detached_child_of_fast_parent_is_terminated(self):
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "child.pid"
@@ -76,7 +76,7 @@ class SupervisorTests(unittest.TestCase):
                 if alive(pid):
                     os.kill(pid, signal.SIGTERM)
 
-    @unittest.skipUnless(FULL_CONTAINMENT, "Full lifecycle needs Windows or Linux /proc")
+    @unittest.skipUnless(FULL_CONTAINMENT, "Full lifecycle needs Windows or Linux /proc in the current PID namespace")
     def test_cancellation_reaches_adopted_child(self):
         from app.jobs import _kill_tree
         with tempfile.TemporaryDirectory() as temporary:
@@ -118,6 +118,36 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(ctypes.sizeof(supervisor._BasicLimits), 64)
             self.assertEqual(ctypes.sizeof(supervisor._IOCounters), 48)
             self.assertEqual(ctypes.sizeof(supervisor._ExtendedLimits), 144)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux process inventory")
+    def test_process_inventory_requires_a_matching_readable_pid_namespace(self):
+        with patch.object(supervisor.Path, "is_file", return_value=True), \
+                patch.object(supervisor.os, "getpid", return_value=123):
+            for target, matches in (("123", True), ("456", False), ("not-a-pid", False)):
+                with self.subTest(target=target), \
+                        patch.object(supervisor.os, "readlink", return_value=target):
+                    self.assertIs(supervisor.process_inventory_matches(), matches)
+            with patch.object(supervisor.os, "readlink", side_effect=OSError("unavailable")):
+                self.assertFalse(supervisor.process_inventory_matches())
+        with patch.object(supervisor.Path, "is_file", return_value=False), \
+                patch.object(supervisor.os, "readlink") as read_link:
+            self.assertFalse(supervisor.process_inventory_matches())
+            read_link.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux mismatched process inventory")
+    def test_mismatched_proc_refuses_generated_command_before_prctl_or_spawn(self):
+        with patch.object(supervisor.Path, "is_file", return_value=True), \
+                patch.object(supervisor.os, "readlink", return_value="456"), \
+                patch.object(supervisor.os, "getpid", return_value=123), \
+                patch.object(supervisor.ctypes, "CDLL") as library, \
+                patch.object(supervisor.subprocess, "call") as launch, \
+                patch.object(supervisor, "_cleanup_linux") as cleanup:
+            self.assertFalse(supervisor._contain_linux())
+            with self.assertRaisesRegex(RuntimeError, "require Linux /proc"):
+                supervisor.main(["--", sys.executable, "-c", "print('must not run')"])
+            library.assert_not_called()
+            launch.assert_not_called()
+            cleanup.assert_not_called()
 
     def test_no_proc_allows_only_exact_fixed_recipes(self):
         worker = [sys.executable, "-u", str(supervisor.ROOT / "app" / "worker.py"), "--config", "job.json"]
