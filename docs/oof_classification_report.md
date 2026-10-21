@@ -233,12 +233,18 @@ rule fit или model fit. Отдельно проверены fit-only medians/
 
 Native Linux/Windows CI public code SHA `1939016f`:
 https://github.com/NolReaction/alfa-automl-agent/actions/runs/39605755638 .
-Linux job завершился успешно: 756 core tests за 444.252 s, 227 app tests
-за 53.574 s, проверка Windows launcher и штатная сборка также прошли.
-Windows job на момент оформления отчёта ещё выполняется. Локальный полный
-dev_check/app suite в этой задаче не запускался; 89 профильных tests не называются
-полным suite. CI относится к точному public code SHA выше; последующие правки
-только этого Markdown-отчёта не меняют проверяемый Python.
+Оба native job завершились успешно:
+
+| Платформа | Core | App | Launcher / build |
+| --- | --- | --- | --- |
+| Linux | 756 tests, 444.252 s, 2 skips, OK | 227 tests, 53.574 s, 3 skips, OK | success / success |
+| Windows | 756 tests, 767.369 s, 1 skip, OK | 227 tests, 113.554 s, 6 skips, OK | success / success |
+
+Локальный полный dev_check/app suite в этой задаче не запускался; локальные
+89 профильных tests не называются полным suite. Native CI относится к точному
+public code SHA выше; последующие правки только этого Markdown-отчёта
+не меняют проверяемый Python. Компактное подтверждение — `native_ci_final_proof.json`
+в игнорируемом каталоге экспериментов.
 
 ## Ограничения и решение
 
