@@ -8,8 +8,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -149,6 +150,151 @@ class QualificationTests(unittest.TestCase):
                                                    root / "timeout", .1, 1024**3)
             self.assertTrue(execution["external_timeout"])
             self.assertNotEqual(execution["exit_code"], 0)
+
+    def test_owned_processes_retain_orphans_and_reject_reused_pids(self):
+        class Member:
+            def __init__(self, pid, created):
+                self.pid, self.created, self.live = pid, created, True
+                self.descendants, self.kills = [], 0
+
+            def create_time(self): return self.created
+            def ppid(self): return os.getpid()
+            def is_running(self): return self.live
+            def status(self): return "running"
+            def children(self, recursive=True): return list(self.descendants)
+            def suspend(self): pass
+            def kill(self):
+                self.kills += 1
+                self.live = False
+
+        class ProcessError(Exception):
+            pass
+
+        root, child, grandchild = Member(101, 1), Member(102, 2), Member(103, 3)
+        root.descendants = [child]
+        monitor = SimpleNamespace(Process=lambda pid: root, Error=ProcessError,
+                                  NoSuchProcess=ProcessError, ZombieProcess=ProcessError,
+                                  STATUS_ZOMBIE="zombie")
+        handle = Mock(pid=root.pid)
+        handle.poll.return_value = 0
+        owned = qualification._OwnedProcesses(handle, monitor)
+        owned.sample()
+        root.live = False
+        child.descendants = [grandchild]
+        owned.discover()
+        self.assertIn((grandchild.pid, grandchild.created), owned.owned)
+        # A numerically reused PID is no longer our sampled process identity.
+        child.created += 100
+        with patch.object(qualification, "_stop_tree"):
+            cleanup = owned.stop()
+        self.assertEqual(child.kills, 0)
+        self.assertEqual(grandchild.kills, 1)
+        self.assertTrue(cleanup["complete"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX detached-session regression")
+    def test_timeout_stops_a_worker_in_a_new_session_when_inventory_is_available(self):
+        monitor, reason = qualification._process_inventory()
+        if monitor is None:
+            self.skipTest(reason)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pidfile = root / "owned-child.pid"
+            child_code = "import time;time.sleep(8)"
+            code = ("import json,psutil,subprocess,sys,time\nfrom pathlib import Path\n"
+                    f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}],start_new_session=True)\n"
+                    f"Path({str(pidfile)!r}).write_text(json.dumps([child.pid,psutil.Process(child.pid).create_time()]),encoding='utf-8')\n"
+                    "time.sleep(8)\n")
+            try:
+                execution = qualification.run_solver([sys.executable, "-c", code], root,
+                                                       root / "detached", 1, 1024**3)
+                self.assertTrue(execution["external_timeout"])
+                self.assertTrue(execution["cleanup"]["complete"], execution["cleanup"])
+                pid, created = json.loads(pidfile.read_text(encoding="utf-8"))
+                try:
+                    child = monitor.Process(pid)
+                    self.assertTrue(child.create_time() != created or not child.is_running()
+                                    or child.status() == monitor.STATUS_ZOMBIE)
+                except monitor.NoSuchProcess:
+                    pass
+            finally:
+                if pidfile.exists():
+                    try:
+                        pid, created = json.loads(pidfile.read_text(encoding="utf-8"))
+                        child = monitor.Process(pid)
+                        if child.create_time() == created and child.is_running():
+                            child.kill()
+                    except (ProcessLookupError, monitor.NoSuchProcess):
+                        pass
+
+    def test_unverified_forced_cleanup_aborts_remaining_but_verified_cleanup_can_continue(self):
+        for complete in (None, False, True):
+            for forced in ("external_timeout", "memory_limit_exceeded"):
+                with self.subTest(complete=complete, forced=forced), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    identity = self.fake_identity(root)
+                    with patch.object(qualification, "solver_identity", return_value=identity), \
+                            patch.object(qualification, "environment_versions", return_value={"python": "unit"}):
+                        qualification.prepare_run(root, root / "run", python=sys.executable,
+                                                  cases=["flow_rmse", "inventory_mae"])
+                    execution = {"exit_code": -9, "external_timeout": forced == "external_timeout",
+                                 "memory_limit_exceeded": forced == "memory_limit_exceeded", "stderr": "",
+                                 "stdout": "", "resources": {"available": False}, "cleanup": {"complete": complete}}
+                    with patch.object(qualification, "solver_identity", return_value=identity), \
+                            patch.object(qualification, "environment_versions", return_value={"python": "unit"}), \
+                            patch.object(qualification, "run_solver", return_value=execution) as launch:
+                        report = qualification.execute_run(root / "run")
+                    self.assertEqual(report["results"][0]["execution"]["exit_code"], -9)
+                    self.assertEqual(report["results"][0]["status"],
+                                     "external_timeout" if forced == "external_timeout" else "external_memory_limit")
+                    if complete is True:
+                        self.assertEqual(launch.call_count, 2)
+                        self.assertEqual(report["status"], "completed")
+                    else:
+                        self.assertEqual(launch.call_count, 1)
+                        self.assertEqual(report["status"], "aborted_cleanup_unverified")
+                        self.assertEqual(report["results"][1]["status"], "skipped_cleanup_unverified")
+
+    def test_intentional_offline_censor_is_skipped_without_process_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity = self.fake_identity(root)
+            with patch.object(qualification, "solver_identity", return_value=identity), \
+                    patch.object(qualification, "environment_versions", return_value={"python": "unit"}):
+                qualification.prepare_run(root, root / "run", python=sys.executable,
+                                          cases=["flow_rmse", "inventory_mae"], timeout_seconds=1,
+                                          solver_seconds=30)
+            with patch.object(qualification, "solver_identity", return_value=identity), \
+                    patch.object(qualification, "environment_versions", return_value={"python": "unit"}), \
+                    patch.object(qualification, "_process_inventory", return_value=(None, "test unavailable")), \
+                    patch.object(qualification, "run_solver") as launch:
+                report = qualification.execute_run(root / "run")
+            launch.assert_not_called()
+            self.assertEqual([row["status"] for row in report["results"]],
+                             ["skipped_cleanup_unavailable", "skipped_cleanup_unavailable"])
+            self.assertFalse(report["qualification_passed"])
+
+    def test_failed_root_cleanup_has_bounded_wait_unknown_exit_and_partial_telemetry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = Mock(pid=101)
+            process.poll.return_value = None
+            process.wait.side_effect = subprocess.TimeoutExpired("owned-test-child", 5)
+            member = Mock()
+            member.memory_info.return_value = SimpleNamespace(rss=2)
+            member.cpu_times.return_value = (1, 1)
+            owned = Mock(unavailable_reason="inventory lost after sampling")
+            owned.sample.return_value = [member]
+            owned.stop.return_value = {"complete": False, "inventory_available": False}
+            with patch.object(qualification, "_process_inventory", return_value=(SimpleNamespace(Error=RuntimeError), None)), \
+                    patch.object(qualification, "_OwnedProcesses", return_value=owned), \
+                    patch.object(qualification.subprocess, "Popen", return_value=process):
+                execution = qualification.run_solver(["owned-test-child"], root, root / "bounded", 1, 1)
+            process.wait.assert_called_once_with(timeout=5)
+            self.assertIsNone(execution["exit_code"])
+            self.assertTrue(execution["memory_limit_exceeded"])
+            self.assertFalse(execution["cleanup"]["complete"])
+            self.assertFalse(execution["resources"]["available"])
+            self.assertEqual(execution["resources"]["unavailable_reason"], "inventory lost after sampling")
 
     def test_statuses_distinguish_refusal_prior_censoring_and_full_model(self):
         entry = {"definition": {"expected_status": "model_or_prior"}, "mode": "offline"}

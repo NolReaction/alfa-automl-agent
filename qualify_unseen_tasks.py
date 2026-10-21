@@ -464,32 +464,147 @@ def inspect_model_evidence(task_dir, published_hash, audit):
     return {"kind": "unverified_output", "verified": False, "artifacts": [], "errors": errors[:5]}
 
 
+def _process_inventory():
+    """Reject a host /proc inventory whose PIDs cannot identify our children."""
+    try:
+        import psutil
+        if (sys.platform.startswith("linux")
+                and int(Path("/proc/self/stat").read_text(encoding="utf-8").split()[0]) != os.getpid()):
+            raise RuntimeError("PID namespace differs")
+        psutil.Process(os.getpid()).create_time()
+        return psutil, None
+    except Exception as error:
+        return None, type(error).__name__ + ": process inventory unavailable"
+
+
 def _stop_tree(process):
-    if os.name != "nt":
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        until = time.monotonic() + 2
-        while time.monotonic() < until:
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(.02)
-        else:
+    # Only signal a group while its launched root is still alive. Once reaped,
+    # its numeric PID/PGID could have been reused by an unrelated process.
+    if process.poll() is None:
+        if os.name != "nt":
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except OSError:
                 pass
-    else:
-        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+        else:
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if process.poll() is None:
+            process.kill()
+    process.wait(timeout=5)
+
+
+class _OwnedProcesses:
+    """Retain sampled descendant identities across session and parent changes.
+
+    This is best effort: polling cannot see a child orphaned entirely between
+    samples. No global process list is signalled, and PID reuse never grants
+    ownership. An unavailable inventory cannot certify descendant cleanup.
+    """
+
+    def __init__(self, process, monitor, unavailable_reason=None):
+        self.process, self.monitor = process, monitor
+        self.owned = {}
+        self.unavailable_reason = unavailable_reason
+        if monitor is not None:
+            try:
+                root = monitor.Process(process.pid)
+                if root.ppid() != os.getpid():
+                    raise RuntimeError("Launched child is outside process inventory")
+                self._remember(root)
+            except (monitor.Error, OSError, RuntimeError) as error:
+                self._unavailable(error)
+
+    def _unavailable(self, error):
+        self.unavailable_reason = type(error).__name__ + ": process inventory unavailable"
+
+    def _remember(self, member):
+        self.owned.setdefault((member.pid, member.create_time()), member)
+
+    def _alive(self, identity, member):
+        try:
+            return (member.is_running() and member.create_time() == identity[1]
+                    and member.status() != self.monitor.STATUS_ZOMBIE)
+        except (self.monitor.NoSuchProcess, self.monitor.ZombieProcess):
+            return False
+
+    def discover(self):
+        if self.monitor is None:
+            return
+        for identity, member in tuple(self.owned.items()):
+            try:
+                if self._alive(identity, member):
+                    for child in member.children(recursive=True):
+                        try:
+                            self._remember(child)
+                        except (self.monitor.NoSuchProcess, self.monitor.ZombieProcess):
+                            pass
+            except (self.monitor.NoSuchProcess, self.monitor.ZombieProcess):
+                pass
+            except (self.monitor.Error, OSError) as error:
+                self._unavailable(error)
+
+    def sample(self):
+        self.discover()
+        members = []
+        for identity, member in tuple(self.owned.items()):
+            try:
+                if self._alive(identity, member):
+                    members.append(member)
+            except (self.monitor.Error, OSError) as error:
+                self._unavailable(error)
+        return members
+
+    def stop(self):
+        # Freeze each retained owner, then discover again so ordinary forks
+        # cannot escape between the final inventory and termination.
+        frozen = set()
+        deadline = time.monotonic() + 1
+        if self.monitor is not None:
+            while True:
+                self.discover()
+                pending = [(key, member) for key, member in self.owned.items() if key not in frozen]
+                if not pending:
+                    break
+                for identity, member in pending:
+                    try:
+                        if self._alive(identity, member):
+                            member.suspend()
+                    except (self.monitor.NoSuchProcess, self.monitor.ZombieProcess):
+                        pass
+                    except (self.monitor.Error, OSError) as error:
+                        self._unavailable(error)
+                    frozen.add(identity)
+                if time.monotonic() >= deadline:
+                    self.unavailable_reason = "Process discovery exceeded cleanup deadline"
+                    break
+            for identity, member in reversed(tuple(self.owned.items())):
+                try:
+                    if self._alive(identity, member):
+                        member.kill()
+                except (self.monitor.NoSuchProcess, self.monitor.ZombieProcess):
+                    pass
+                except (self.monitor.Error, OSError) as error:
+                    self._unavailable(error)
+        root_stopped = True
+        try:
+            _stop_tree(self.process)
+        except (OSError, subprocess.SubprocessError) as error:
+            root_stopped = False
+            self._unavailable(error)
+        remaining = self.sample()
+        deadline = time.monotonic() + 2
+        while remaining and time.monotonic() < deadline:
+            time.sleep(.01)
+            remaining = self.sample()
+        available = self.monitor is not None and self.unavailable_reason is None
+        complete = False if remaining or not root_stopped else True if available else None
+        return {"inventory_available": available, "tracked_processes": len(self.owned),
+                "complete": complete, "unavailable_reason": self.unavailable_reason,
+                "scope": "Retained descendants; polling cannot prove absence of unsampled orphans"}
 
 
 def run_solver(argv, cwd, output_dir, timeout_seconds, memory_limit_bytes):
@@ -501,49 +616,40 @@ def run_solver(argv, cwd, output_dir, timeout_seconds, memory_limit_bytes):
     telemetry = {"available": False, "peak_rss_bytes": None, "cpu_seconds": None,
                  "scope": "solver process tree; sampled, not a hard OS limit",
                  "cpu_scope": "Maximum sampled sum of live process CPU; exited children may be omitted"}
-    monitor = None
-    try:
-        import psutil
-        if sys.platform.startswith("linux") and int(Path("/proc/self/stat").read_text().split()[0]) != os.getpid():
-            raise RuntimeError("PID namespace differs")
-        psutil.Process(os.getpid()).create_time()
-        monitor = psutil
-    except Exception as error:
-        telemetry["unavailable_reason"] = type(error).__name__
+    monitor, unavailable_reason = _process_inventory()
+    if unavailable_reason:
+        telemetry["unavailable_reason"] = unavailable_reason
     timed_out = memory_exceeded = False
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(argv, cwd=cwd, env=sanitized_environment(), stdout=stdout, stderr=stderr,
                                    start_new_session=os.name != "nt")
-        while process.poll() is None:
-            if time.monotonic() - started >= timeout_seconds:
-                timed_out = True
-                _stop_tree(process)
-                break
-            if monitor is not None:
-                try:
-                    parent = monitor.Process(process.pid)
-                    members = [parent, *parent.children(recursive=True)]
-                    rss = sum(item.memory_info().rss for item in members)
-                    cpu = sum(sum(item.cpu_times()[:2]) for item in members)
-                    telemetry.update(available=True, peak_rss_bytes=max(telemetry["peak_rss_bytes"] or 0, rss),
-                                     cpu_seconds=max(telemetry["cpu_seconds"] or 0, cpu))
-                    if rss > memory_limit_bytes:
-                        memory_exceeded = True
-                        _stop_tree(process)
-                        break
-                except (monitor.Error, OSError):
-                    pass
-            time.sleep(0.05)
-        returncode = process.wait()
-    if os.name != "nt":
-        # A normal parent exit must not leave a background descendant from
-        # this qualification process group running into the next case.
+        owned = _OwnedProcesses(process, monitor, unavailable_reason)
         try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            _stop_tree(process)
+            while process.poll() is None:
+                if monitor is not None:
+                    try:
+                        members = owned.sample()
+                        if members:
+                            rss = sum(item.memory_info().rss for item in members)
+                            cpu = sum(sum(item.cpu_times()[:2]) for item in members)
+                            telemetry.update(available=True, peak_rss_bytes=max(telemetry["peak_rss_bytes"] or 0, rss),
+                                             cpu_seconds=max(telemetry["cpu_seconds"] or 0, cpu))
+                            if rss > memory_limit_bytes:
+                                memory_exceeded = True
+                                break
+                    except (monitor.Error, OSError) as error:
+                        owned._unavailable(error)
+                if time.monotonic() - started >= timeout_seconds:
+                    timed_out = True
+                    break
+                time.sleep(0.05)
+        finally:
+            cleanup = owned.stop()
+        try:
+            returncode = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            returncode = None
+            cleanup.update(complete=False, unavailable_reason="Root process did not exit within cleanup deadline")
     logs = {}
     for role, path in (("stdout", stdout_path), ("stderr", stderr_path)):
         with path.open("rb") as stream:
@@ -551,9 +657,11 @@ def run_solver(argv, cwd, output_dir, timeout_seconds, memory_limit_bytes):
             logs[role] = safe_text(stream.read().decode("utf-8", errors="replace"))
         (output_dir / (role + ".txt")).write_text(logs[role], encoding="utf-8")
         path.unlink()
+    if owned.unavailable_reason:
+        telemetry.update(available=False, unavailable_reason=owned.unavailable_reason)
     if not telemetry["available"]:
         telemetry.setdefault("unavailable_reason", "No compatible process telemetry samples")
-    return {"argv": argv, "exit_code": returncode, "external_timeout": timed_out,
+    return {"argv": argv, "exit_code": returncode, "external_timeout": timed_out, "cleanup": cleanup,
             "memory_limit_exceeded": memory_exceeded, "elapsed_seconds": time.monotonic() - started,
             "timeout_seconds": timeout_seconds, "resources": telemetry, **logs}
 
@@ -649,11 +757,15 @@ def execute_run(output_dir):
     report = {"format": "unseen-qualification-result", "version": VERSION, "status": "running",
               "plan_sha256": plan["plan_sha256"], "results": [], "api_calls": 0,
               "quality_scope": "External fixture answers; not a platform/private score"}
-    aborted_mutation = False
+    aborted_mutation = aborted_cleanup = False
     for entry in plan["entries"]:
         if aborted_mutation:
             report["results"].append({"id": entry["id"], "case_id": entry["case_id"], "mode": entry["mode"],
                                       "status": "skipped_input_mutation", "qualified": False})
+            continue
+        if aborted_cleanup:
+            report["results"].append({"id": entry["id"], "case_id": entry["case_id"], "mode": entry["mode"],
+                                      "status": "skipped_cleanup_unverified", "qualified": False})
             continue
         remaining = plan["budgets"]["total_seconds"] - (time.monotonic() - started)
         if remaining <= 0:
@@ -661,6 +773,18 @@ def execute_run(output_dir):
                                       "status": "skipped_total_budget", "qualified": False})
             continue
         load_plan(output_dir, execution=True)
+        if (entry["mode"] == "offline"
+                and min(remaining, plan["budgets"]["timeout_seconds"]) < plan["budgets"]["solver_seconds"]):
+            inventory, reason = _process_inventory()
+            if inventory is None:
+                result = {"id": entry["id"], "case_id": entry["case_id"], "mode": entry["mode"],
+                          "status": "skipped_cleanup_unavailable", "qualified": False,
+                          "reason": "Offline budget would be externally censored without descendant inventory",
+                          "cleanup_capability": {"inventory_available": False, "unavailable_reason": reason}}
+                report["results"].append(result)
+                write_json(output_dir / ("result-" + entry["id"] + ".json"), result)
+                write_json(output_dir / "summary.json", report)
+                continue
         task_dir = Path(entry["task_dir"])
         if (task_dir / "submission.csv").exists():
             raise ValueError("A stale submission exists before solver invocation")
@@ -707,6 +831,8 @@ def execute_run(output_dir):
                 checked = {"valid": False, "error": "Contract probe did not return valid JSON"}
         status, qualified = _classify(entry, execution, checked, provenance, unchanged)
         aborted_mutation = not unchanged
+        aborted_cleanup = (bool(execution["external_timeout"] or execution["memory_limit_exceeded"])
+                           and execution.get("cleanup", {}).get("complete") is not True)
         result = {"id": entry["id"], "case_id": entry["case_id"], "mode": entry["mode"],
                   "status": status, "qualified": qualified, "inputs_unchanged": unchanged,
                   "input_check_error": input_error,
@@ -721,7 +847,8 @@ def execute_run(output_dir):
         write_json(output_dir / ("result-" + entry["id"] + ".json"), result)
         report["results"].append(result)
         write_json(output_dir / "summary.json", report)
-    report.update(status="aborted_input_mutation" if aborted_mutation else "completed",
+    report.update(status=("aborted_input_mutation" if aborted_mutation else
+                          "aborted_cleanup_unverified" if aborted_cleanup else "completed"),
                   elapsed_seconds=time.monotonic()-started)
     report["qualification_passed"] = all(row.get("qualified", False) for row in report["results"])
     report["counts"] = {status: sum(row["status"] == status for row in report["results"])
