@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
+import venv
 
 import os
 import tempfile
@@ -199,6 +201,40 @@ class ResearchLabRunnerTests(unittest.TestCase):
         self.tmp_path = Path(temporary.name).resolve()
         self.monkeypatch = _MonkeyPatch()
         self.addCleanup(self.monkeypatch.close)
+
+    def test_worker_keeps_site_packages_of_venv_inside_auditor_checkout(self):
+        auditor = self.tmp_path / "auditor"
+        copied_worker = auditor / "research_lab" / "worker.py"
+        copied_worker.parent.mkdir(parents=True)
+        shutil.copy2(WORKER, copied_worker)
+        runtime = auditor / ".venv"
+        venv.EnvBuilder(with_pip=False).create(runtime)
+        executable = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        package_probe = subprocess.run(
+            [str(executable), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+            capture_output=True, text=True, timeout=15, check=True)
+        packages = Path(package_probe.stdout.strip())
+        self.assertTrue(packages.is_relative_to(auditor))
+        (packages / "lab_nested_runtime_dependency.py").write_text("VALUE = 'nested-venv-ok'\n")
+        dependency_probe = subprocess.run(
+            [str(executable), "-I", "-c",
+             "import lab_nested_runtime_dependency as dep; print(dep.VALUE)"],
+            capture_output=True, text=True, timeout=15, check=True)
+        self.assertEqual(dependency_probe.stdout.strip(), "nested-venv-ok")
+
+        config, task, arm = worker_fixture(self.tmp_path)
+        solution = self.tmp_path / "solver" / "solution.py"
+        solution.write_text("import lab_nested_runtime_dependency as dep\n"
+                            "assert dep.VALUE == 'nested-venv-ok'\n" + solution.read_text())
+        process = subprocess.run(
+            [str(executable), "-I", str(copied_worker), str(config),
+             "--deadline", str(time.monotonic() + 10)],
+            capture_output=True, text=True, timeout=15)
+        evidence = read_json(arm / "worker_evidence.json")
+        self.assertEqual(process.returncode, 0, str(evidence.get("terminal_error")))
+        self.assertIsNone(evidence["terminal_error"])
+        self.assertTrue(evidence["solver_returned"])
+        self.assertTrue((task / "argv.json").is_file())
 
     def test_worker_charges_imports_and_uses_exact_returned_current_run(self):
         tmp_path = self.tmp_path

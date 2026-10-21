@@ -78,6 +78,20 @@ py -3.12 -m venv .venv
 
 Quote executable/root paths containing spaces or Cyrillic text. PowerShell uses the call operator for a quoted executable, for example `& "C:\ML Проект\.venv\Scripts\python.exe" -m research_lab catalog`. No virtualenv activation is necessary. Unit tests for Unicode paths and Windows branches do not establish that the full native series ran on Windows; actual Windows execution must be recorded separately.
 
+If `py` opens a Windows file-association dialog, inspect `Get-Command py -All`
+and invoke the verified launcher by its full executable path. For example,
+`& "C:\Windows\py.exe" "-3.12" -m venv .venv` bypasses an extensionless file
+named `py` earlier in command lookup.
+
+The worker retains the selected interpreter's site-packages even when `.venv`
+is inside the auditor checkout. Earlier laboratory revisions incorrectly removed
+all import paths under the checkout, causing an immediate `ModuleNotFoundError`
+despite successful package preflight. Preserve affected failed plans and use a
+fresh output after the fix. To retain their exact frozen auditor as well, create
+a separate detached auditor worktree for the corrected revision and reuse the
+already installed virtualenv by its absolute `Scripts\python.exe` path. Package
+reinstallation is unnecessary when its recorded versions are unchanged.
+
 ## Linux / Bash
 
 ```bash

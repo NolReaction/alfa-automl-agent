@@ -143,11 +143,13 @@ def execute(config_path, deadline):
     persist()
     try:
         os.chdir(task_dir)
-        # -I excludes ambient PYTHONPATH/site injection. Only this selected root
-        # is added; the auditor never imports code from it in its own process.
+        # -I excludes ambient PYTHONPATH/cwd injection. Preserve the selected
+        # interpreter's libraries, including a venv inside the auditor checkout.
+        # Remove only auditor source entries before adding the selected solver.
         trusted_root = Path(__file__).resolve().parents[1]
+        auditor_sources = {trusted_root, Path(__file__).resolve().parent}
         sys.path[:] = [value for value in sys.path
-                       if value and not Path(value).absolute().is_relative_to(trusted_root)]
+                       if value and Path(value).resolve() not in auditor_sources]
         sys.path.insert(0, str(root))
         spec = importlib.util.spec_from_file_location("solution", root / "solution.py")
         solution = importlib.util.module_from_spec(spec)
