@@ -196,7 +196,7 @@ class ResearchLabRunnerTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.tmp_path = Path(temporary.name)
+        self.tmp_path = Path(temporary.name).resolve()
         self.monkeypatch = _MonkeyPatch()
         self.addCleanup(self.monkeypatch.close)
 

@@ -28,7 +28,7 @@ The worker deadline starts before imports and covers startup, prior/fallback, pr
 | `agent/resources.py`, `agent/execution.py` | Existing process/resource behavior is preserved; laboratory adapters retain unavailable observations and measure cleanup separately. |
 | Frequency experiment protocol | Development/confirmation separation, frozen methods and retention of losing or incomplete outcomes. |
 
-Only `research_lab/**`, `tests/test_research_lab_*.py` and this document belong to the laboratory. The auditor imports the pinned trusted root, never Python code from a supplied candidate checkout. Candidate code executes in its isolated child. The runner's environment excludes API credentials, proxies and developer import paths, sets native thread limits and hides CUDA devices for the CPU lane. Actual report API attempts/responses are checked; an empty API environment alone does not prove zero calls.
+Only `research_lab/**`, `tests/test_research_lab_*.py` and this document belong to the laboratory. The auditor imports the pinned trusted root, never Python code from a supplied candidate checkout. Candidate code executes in a fresh child with a sanitized import path. This is a data-flow protocol, not a filesystem or network OS sandbox; the frozen offline code and actual API reports are audited. Sampled RSS is not an OS memory sandbox. The runner's environment excludes API credentials, proxies and developer import paths, sets native thread limits and hides CUDA devices for the CPU lane. Actual report API attempts/responses are checked; an empty API environment alone does not prove zero calls.
 
 ## Public data and leakage rules
 
@@ -99,7 +99,7 @@ The pinned runtime subset is `requirements.txt`; the supplied full platform list
 
 ## Stage A fixture and safe continuation
 
-Run fixture smoke before public-data measurements. It uses one synthetic task, a 20-second test-only cap and two incumbent checkouts. It is neither an adaptive production-quality test nor evidence that candidate policy improves a model.
+Run fixture smoke before public-data measurements. The example below uses one synthetic task, a 20-second test-only cap and two incumbent checkouts. It is neither an adaptive production-quality test nor evidence that candidate policy improves a model.
 
 ```powershell
 git worktree add --detach ..\alfa-incumbent-copy a45861d7e5588288db66f9ae088a9726f9597370
@@ -167,16 +167,38 @@ Use a new GPU output directory. The lane is labelled `exploratory_gpu`; GPU succ
 
 ## Measured execution ledger
 
-This section distinguishes implementation checks from experiments. The main owner updates it only from saved receipts after execution.
+The published measurement checkpoint is `c473aa62ec590709ae49cf32a61a144df0351faa`, with the exact same tree (`802662b157b05c978772b6b34570f7f81fb586dc`) as the locally frozen auditor `356e8c71baf901d5535bd83e97c1d5207898a436`. Later delivery changes canonicalize three Windows test fixtures and add reports/documentation; they do not retrain or replace this measured method. The original auditor checkout is retained at `/workspace/scratch/de9281f42bd1/alfa-external-benchmark` so its sealed plans remain re-auditable. Run these saved plans from that frozen root, or restore its source-equivalent checkpoint at the recorded paths; running a different method correctly triggers source drift.
 
-| Stage | Current measurement status |
+| Stage | Actual result |
 | --- | --- |
-| A: fast report tests | Report-only tests exercise outcome admission, fixed denominators, API provenance and read-only reporting; zero fits/downloads. Exact passing count and full laboratory validation are recorded by the main owner. |
-| A: native 20-second fixture smoke | Pending actual execution/evidence; fixtures and mocked worker tests are not a completed native smoke. |
-| B: real four-case development pilot | Pending actual execution/evidence; currently no measured result is asserted here. |
-| C: bounded suite / confirmation | Not executed by these instructions. |
-| D: 10,500-second CPU qualification | Not executed by these instructions. |
-| Native Windows series | Not established by Linux tests or Windows branch mocks. |
-| GPU model fits | Not established by CPU tests, capability imports or this document. |
+| A: laboratory tests | 100 pass normally and under `python -O`; no downloads/LLM/benchmark fits in these tests. Three Windows temporary-path fixtures use canonical paths. |
+| A: native fixture | `fixture-002`: two actual native CLI exits 0, two valid 80-row CSVs, read-only re-audit valid with no integrity errors. Candidate full outer/refit/publication chain verified; short-budget adaptive quality is not admitted. The earlier `fixture-001` exposed transient artifact indexing and remains preserved as a failed integrity smoke. |
+| B: real pilot | Four pairs/eight arms planned at 360 s, seed 1729. Bank incumbent executed; one internal trial timed out with unknown cleanup. One arm censored, seven never started, **0/4 completed pairs**, zero candidate starts. |
+| C: bounded suite / confirmation | Zero model runs. All ten sources downloaded and their contracts/splits preflighted; this is not confirmation measurement. |
+| D: 10,500-second CPU qualification | Not run. |
+| Native Windows ML series | Not run in this Linux executor. Windows commands and process-path tests are supplied; CI status is stated separately. |
+| GPU | Actual capability probe: CatBoost 1.2.8 reports 0 devices; `nvidia-smi` absent. CPU gate also remains censored. Four explicit skips, **0 GPU model fits**. GPU saved-artifact re-audit passed. |
 
-Record the exact laboratory commit, plan/method/manifest/source hashes, incumbent/candidate identities, actual environment, UTC start/end, qualified/provisional/completed/failed/censored arm counts, all four pilot outcomes and local evidence path before replacing a pending entry. Preserve negative results. A working tool and a completed independent experiment remain distinct claims.
+Actual runtime: Python 3.12.14, the 15 pinned `requirements.txt` packages, AutoGluon/XGBoost absent identically for both prepared arms. The container had 8 CPU quota and 8 GiB total cgroup memory, although the child RSS preset remained the workstation's 24 GiB. RSS/CPU inventory and descendant cleanup were unavailable; this is development evidence, not official CPU resource qualification. Hardware/version details are in [summary.json](../research_lab/results/summary.json).
+
+| Dataset / seed / tier | Metric | Incumbent diagnostic CSV score | Candidate | Outcome |
+| --- | --- | ---: | --- | --- |
+| Bank Marketing / 1729 / CPU 360 s | LogLoss, minimize | 0.7231302207780654 | Never started | Censored; no quality/policy admission. |
+| WDBC / 1729 / CPU 360 s | ROC AUC, maximize | Never started | Never started | Not completed. |
+| Red Wine / 1729 / CPU 360 s | RMSE, minimize | Never started | Never started | Not completed. |
+| Auto MPG / 1729 / CPU 360 s | RMSE, minimize | Never started | Never started | Not completed. |
+
+Bank's saved CSV has 9,043 rows; outer receipts prove 28,936 fit / 7,232 validation rows and full refit proves 36,168 fit / 9,043 test rows. Exact source/recipe/context/nonces and byte-identical full-refit/checkpoint/published CSV passed independent checks. The native CLI returned 0 with adaptive coordinator active and actual API attempts/responses **0/0**. Worker wall time was 269.1723 s; measured cleanup was 0.00105 s but its completeness is unknown. Internal `baseline_search` candidate 14 (`refine_6`, CatBoost depth 10 / 400 iterations / learning rate 0.03) timed out after 10.02 s, exit −9, with unknown cleanup. The censor guard therefore stopped the series despite the valid final CSV. No retry, new budget or selective continuation was used.
+
+Wins/ties/losses: 0/0/0; denominator four planned pairs, one censored and three incomplete pairs. A candidate improvement estimate is unavailable. Do not read the diagnostic Bank metric as a qualified baseline or a candidate win.
+
+Artifacts:
+
+- [Paired report](../research_lab/results/pilot-001.md), [JSON](../research_lab/results/pilot-001.json), [GPU report](../research_lab/results/gpu-001.json).
+- [Source/adapter/split fingerprints](../research_lab/results/source-split-fingerprints.json): all ten official sources, actual bytes/SHA and prepared split hashes; no targets or confirmation scores. This enriched snapshot is evidence-only; use `research_lab/datasets.json` as the input to `fetch`/`prepare`.
+- [Summary and versions](../research_lab/results/summary.json), [file hashes](../research_lab/results/SHA256SUMS).
+- Report SHA-256: `655139a5701fce94501d9e92686807b554cfa471dc07e65802188d6e00d07d00`.
+- Source/split manifest SHA-256: `96350492c3c0f4fd0606e55b3b39b549a38b48ba98123fc9898710655dcab75d`.
+- Full local evidence bundle: `/workspace/scratch/de9281f42bd1/alfa-external-benchmark/data/lab-evidence-bundles/external-benchmark-evidence-v1.tar.gz`. Code/history bundle is stored alongside it. Raw data/labels/models/logs are excluded from Git and the contest archive.
+
+The saved pilot is censored: do not mechanically resume it or erase its outcome. On the Windows PC, run the commands above with a fresh named plan; only after verified CPU cleanup does the opt-in GPU fit gate open. No paid API, rental or platform submission was performed.

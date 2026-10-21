@@ -19,6 +19,7 @@ from tests.test_task_spec import make_task, write_csv
 
 def fixture(root, *, probabilities=False):
     """A positive native receipt chain without importing/fitting its candidate."""
+    root = Path(root).resolve()
     arm_dir = root / "cases" / "literal-1" / "incumbent"
     task = arm_dir / "task"
     task.mkdir(parents=True)

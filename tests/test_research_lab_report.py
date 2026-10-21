@@ -15,7 +15,7 @@ class ReportTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="lab report Пример ")
         self.addCleanup(directory.cleanup)
-        self.output = Path(directory.name)
+        self.output = Path(directory.name).resolve()
         self.plan = {"schema_version": 1, "plan_id": "fixture", "profile": "pilot", "policy_comparison": True,
                      "self_check": False, "tie_tolerance": 1e-12, "time_budget_seconds": 360,
                      "threads": 8, "memory_limit_bytes": 24 * 1024**3, "manifest_copy_sha256": "a" * 64,
