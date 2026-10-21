@@ -227,7 +227,10 @@ Smoke показывает безопасный тип сетевой ошибк
 очередной попытки и сохраняет резерв outer/full refit. Обычный запуск остаётся
 на `legacy`. Опция доступна и для offline, и для Research v3, включая локальное
 продолжение после отказа API. Переключение политики само по себе не подтверждает
-рост качества: протокол сравнения находится в `docs/night_quality_protocol.md`.
+рост качества: [протокол](docs/night_quality_protocol.md) и
+[результаты независимой проверки](docs/night_quality_report.md) показывают
+смешанный эффект. На confirmation выиграла MAE с тяжёлыми хвостами, signed MAE
+ухудшилась; заранее заданный допуск нового default не пройден.
 
 ```powershell
 .venv\Scripts\python.exe solution.py data/regression/task.md --mode offline --time-budget 180 --search-policy adaptive_v1

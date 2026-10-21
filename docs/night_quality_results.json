@@ -1,0 +1,2548 @@
+{
+  "auditor_sha256": "4138bc82e8be15ea3c681d6807d90816dfe49ca87f1d3beb82d4a15162270548",
+  "kind": "independent_descriptive_paired_audit",
+  "reports": [
+    {
+      "abort_reason": null,
+      "arms": {
+        "baseline": {
+          "elapsed_seconds": 387.957394,
+          "failures": [],
+          "full_refit_v1_verified": 18,
+          "full_refit_v2_verified": 18,
+          "planned_trials": 18,
+          "recorded_trials": 18,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 18
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 18
+        },
+        "candidate": {
+          "elapsed_seconds": 339.599571,
+          "failures": [],
+          "full_refit_v1_verified": 17,
+          "full_refit_v2_verified": 18,
+          "planned_trials": 18,
+          "recorded_trials": 18,
+          "refit_v1_unverified": [
+            {
+              "reason": {
+                "kind": "source_bound_worker_artifacts",
+                "reason": "ValueError: No source-bound full-train worker completion evidence",
+                "train_rows": null,
+                "valid": false
+              },
+              "trial_index": 1
+            }
+          ],
+          "statuses": {
+            "completed": 18
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 18
+        }
+      },
+      "confirmation_gate": {
+        "assessed": false,
+        "reason": "Not independent confirmation"
+      },
+      "counts": {
+        "loss": 4,
+        "tie": 6,
+        "win": 8
+      },
+      "environment": {
+        "catboost": "1.2.8",
+        "lightgbm": "4.6.0",
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+        "psutil": "6.1.1",
+        "python": "3.12.14",
+        "scikit-learn": "1.5.2"
+      },
+      "external_api_calls": 0,
+      "families": [
+        {
+          "baseline_seconds": 45.72563,
+          "candidate_seconds": 36.950825,
+          "case": "categorical_shift",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.006032015406586877,
+          "median_baseline": 0.36539352527195756,
+          "median_candidate": 0.3714255406785445,
+          "median_gain": -0.01634699878256134,
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1,
+            "win": 1
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 44.28216,
+          "candidate_seconds": 38.39034,
+          "case": "imbalanced_binary",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.004342985270820915,
+          "median_baseline": 0.3355751305853573,
+          "median_candidate": 0.3312321453145364,
+          "median_gain": 0.015388790568774688,
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcomes": {
+            "win": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 39.744166,
+          "candidate_seconds": 32.681817,
+          "case": "linear_regression",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.0,
+          "median_baseline": 0.9107123979965732,
+          "median_candidate": 0.9107123979965732,
+          "median_gain": -0.0,
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcomes": {
+            "tie": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 47.104793,
+          "candidate_seconds": 40.652235,
+          "case": "mae_heavy_tailed",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.24369964339348027,
+          "median_baseline": 1.7208227319044598,
+          "median_candidate": 1.4771230885109794,
+          "median_gain": 0.14128648378913486,
+          "metric": "MAE",
+          "mode": "automl",
+          "outcomes": {
+            "win": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 43.582147,
+          "candidate_seconds": 47.606352,
+          "case": "mae_signed_nonlinear",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.005214510051403692,
+          "median_baseline": 0.42358604193461225,
+          "median_candidate": 0.4183715318832085,
+          "median_gain": 0.012204658899225722,
+          "metric": "MAE",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1,
+            "win": 1
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 41.993629,
+          "candidate_seconds": 33.506574,
+          "case": "mae_symmetric_linear",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.0021549814056363026,
+          "median_baseline": 0.6613159911554762,
+          "median_candidate": 0.6634709725611125,
+          "median_gain": -0.003243279389826058,
+          "metric": "MAE",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1,
+            "tie": 1
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 46.415898999999996,
+          "candidate_seconds": 35.588897,
+          "case": "multiclass_duplicates",
+          "comparable_pairs": 2,
+          "gain_kind": "absolute_score",
+          "median_absolute_delta": 0.0,
+          "median_baseline": 0.9113277203979566,
+          "median_candidate": 0.9113277203979566,
+          "median_gain": 0.0,
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcomes": {
+            "tie": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 42.619203999999996,
+          "candidate_seconds": 36.784163,
+          "case": "nonlinear_regression",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -3.057439509392652,
+          "median_baseline": 5.413730445559596,
+          "median_candidate": 2.3562909361669435,
+          "median_gain": 0.5661189916395541,
+          "metric": "MAE",
+          "mode": "automl",
+          "outcomes": {
+            "win": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "baseline_seconds": 36.489766,
+          "candidate_seconds": 37.438368,
+          "case": "temporal_drift",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.002023633133928532,
+          "median_baseline": 0.4939574532542971,
+          "median_candidate": 0.49598108638822563,
+          "median_gain": -0.004749938035749274,
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1,
+            "tie": 1
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 90.0
+        }
+      ],
+      "harness_sha256": {
+        "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+        "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+        "experiment_night_quality.py": "4363763dfba8f34aff9674edd9ee6243e8374ae4004a6af7ff2f3f28db515d5b"
+      },
+      "kind": "night_quality_comparison",
+      "manifest_sha256": "3a481c894daeac5c02bd4366bf9d9097c2082c1c38039dc7bb1b8d8caeacceb1",
+      "pairs": [
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "8dbed1481cdbd531e90bd5ab2b614a8cb88b860b8559f2954bf9ad2879b9623a",
+          "baseline": 0.9375284318700454,
+          "baseline_seconds": 19.959066,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.9375284318700454,
+          "candidate_seconds": 16.560179,
+          "candidate_status": "completed",
+          "case": "linear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.3988869999999984,
+          "improvement": -0.0,
+          "input_sha256": "7384f2144047680234a750dcb4302a935f21ff1d7149b050a3794f85706442ea",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 0,
+          "relative_loss_gain": -0.0,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "fa61bde899ef8439bc839e2d1fa41afa2fb480365da95f6a217e72dda1db1204",
+          "baseline": 0.8838963641231009,
+          "baseline_seconds": 19.7851,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.8838963641231009,
+          "candidate_seconds": 16.121638,
+          "candidate_status": "completed",
+          "case": "linear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.663461999999999,
+          "improvement": -0.0,
+          "input_sha256": "e902e681435a7a9945d4cea8dc84b5e3bace30b9709026546370f3122f5bb072",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 1,
+          "relative_loss_gain": -0.0,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -2.8162303929228445,
+          "audit_sha256": "95c27202f11591769029c459ff7a3e5461db62994ca704570ed174e2a2dcd53d",
+          "baseline": 5.541165976236497,
+          "baseline_seconds": 20.138508,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 2.724935583313653,
+          "candidate_seconds": 18.264487,
+          "candidate_status": "completed",
+          "case": "nonlinear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -1.8740210000000026,
+          "improvement": 2.8162303929228445,
+          "input_sha256": "e59dc701a6011fca0f88e4a80c5832cb1933fbe5348d4a0193ef161fb5217c05",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 2,
+          "relative_loss_gain": 0.5082378699718356,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -3.29864862586246,
+          "audit_sha256": "04748b71229891b4cc16d5e48b7865f403952e53e289d652a351ad2ece25668d",
+          "baseline": 5.286294914882694,
+          "baseline_seconds": 22.480696,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 1.9876462890202338,
+          "candidate_seconds": 18.519676,
+          "candidate_status": "completed",
+          "case": "nonlinear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.9610199999999978,
+          "improvement": 3.29864862586246,
+          "input_sha256": "7b8dd1e3a9d22ad3f6b3b7d9d0be074bbe653cba18b1a8faf735526cda2acd20",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 3,
+          "relative_loss_gain": 0.6240001133072727,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "b8e7609bf1075ac483d8f519e1b22d86fd5bb9b95af6591189d6d3462c7ed6a5",
+          "baseline": 0.5618813206600757,
+          "baseline_seconds": 18.533511,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.5618813206600757,
+          "candidate_seconds": 17.728728,
+          "candidate_status": "completed",
+          "case": "temporal_drift",
+          "comparable": true,
+          "elapsed_delta_seconds": -0.8047830000000005,
+          "improvement": -0.0,
+          "input_sha256": "da25431af8f0096bc1e1aab3e8bcb21c220a77d89cf192b1b47164b55eaf95c7",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 4,
+          "relative_loss_gain": -0.0,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.004047266267857064,
+          "audit_sha256": "b87d6ee059bc0d217bdd2e071de3c08555d7589ffa09bc8a611b109ef446b448",
+          "baseline": 0.4260335858485185,
+          "baseline_seconds": 17.956255,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.4300808521163756,
+          "candidate_seconds": 19.70964,
+          "candidate_status": "completed",
+          "case": "temporal_drift",
+          "comparable": true,
+          "elapsed_delta_seconds": 1.7533850000000015,
+          "improvement": -0.004047266267857064,
+          "input_sha256": "2126aac867ee23f3d9c6a4b32f0625024c11a219c2eef2d624947e6d9aa5c022",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 5,
+          "relative_loss_gain": -0.009499876071498548,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -0.00025456513712363016,
+          "audit_sha256": "fcb38b4508953c42fd2ba6c983ee299a9042ff4d2f718a9fa13269d6d843df49",
+          "baseline": 0.3912881533287407,
+          "baseline_seconds": 22.368,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.39103358819161704,
+          "candidate_seconds": 18.925629,
+          "candidate_status": "completed",
+          "case": "imbalanced_binary",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.442370999999998,
+          "improvement": 0.00025456513712363016,
+          "input_sha256": "9edaba3edf7df4b954557a86251490dd75dd7367fab90e294b89da1762e01dec",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 6,
+          "relative_loss_gain": 0.0006505822753845484,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -0.0084314054045182,
+          "audit_sha256": "93db106c5d2b21226a163cd85267f32fe07a452a4ec3b0b6779b2592788442a3",
+          "baseline": 0.27986210784197396,
+          "baseline_seconds": 21.91416,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.27143070243745576,
+          "candidate_seconds": 19.464711,
+          "candidate_status": "completed",
+          "case": "imbalanced_binary",
+          "comparable": true,
+          "elapsed_delta_seconds": -2.4494489999999978,
+          "improvement": 0.0084314054045182,
+          "input_sha256": "866b79b795ca2f638858a231512986559ef782229cd98f65145d723203751621",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 7,
+          "relative_loss_gain": 0.030126998862164828,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "062bfea1ea21b6f479a0c5504d166ee3b803b25235456239924579de410c2f21",
+          "baseline": 0.9540665713888087,
+          "baseline_seconds": 22.597617,
+          "baseline_status": "completed",
+          "bounded_score_gain": 0.0,
+          "candidate": 0.9540665713888087,
+          "candidate_seconds": 17.142764,
+          "candidate_status": "completed",
+          "case": "multiclass_duplicates",
+          "comparable": true,
+          "elapsed_delta_seconds": -5.454853,
+          "improvement": 0.0,
+          "input_sha256": "680c7d63eda4defd82e27adcf23bf6a801da58b17e52b14fd310a36b192b61f3",
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 8,
+          "relative_loss_gain": null,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "8dabb343c34bb28b5ea1735b794c3dba1ebd077c37482806af2534894a640fdc",
+          "baseline": 0.8685888694071044,
+          "baseline_seconds": 23.818282,
+          "baseline_status": "completed",
+          "bounded_score_gain": 0.0,
+          "candidate": 0.8685888694071044,
+          "candidate_seconds": 18.446133,
+          "candidate_status": "completed",
+          "case": "multiclass_duplicates",
+          "comparable": true,
+          "elapsed_delta_seconds": -5.372149,
+          "improvement": 0.0,
+          "input_sha256": "1c5de5e8f1cfdf8033551ceff198d582eab7a99250326db58428387dd5b01157",
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 9,
+          "relative_loss_gain": null,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -0.0004965488670639617,
+          "audit_sha256": "b1102a2874a62703851bb47843383a4e98094b5202843141b6d7d76903ee5e49",
+          "baseline": 0.36206772759914785,
+          "baseline_seconds": 24.808713,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.3615711787320839,
+          "candidate_seconds": 18.297923,
+          "candidate_status": "completed",
+          "case": "categorical_shift",
+          "comparable": true,
+          "elapsed_delta_seconds": -6.51079,
+          "improvement": 0.0004965488670639617,
+          "input_sha256": "1a7fbef8f567e5f3456fef64976611441a277788e4222b3b6b291df85daf1750",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 10,
+          "relative_loss_gain": 0.0013714253693819973,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.012560579680237716,
+          "audit_sha256": "91c988e96b8ca68582cb42179614fc65b5680be1c364c40bcde21d1bde55274c",
+          "baseline": 0.36871932294476734,
+          "baseline_seconds": 20.916917,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.38127990262500505,
+          "candidate_seconds": 18.652902,
+          "candidate_status": "completed",
+          "case": "categorical_shift",
+          "comparable": true,
+          "elapsed_delta_seconds": -2.2640150000000006,
+          "improvement": -0.012560579680237716,
+          "input_sha256": "b93250845fb6fd68706bd0acd13c193a1f40258efc101a59b593fd2cafb6dc81",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 11,
+          "relative_loss_gain": -0.03406542293450468,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -0.012791847758271246,
+          "audit_sha256": "1e0958bbf7e4ccf57610e2eb0db6cbaa0ae057265c7d7eb0ffc87a843f6e4d21",
+          "baseline": 0.4260998839344951,
+          "baseline_seconds": 21.706684,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.41330803617622386,
+          "candidate_seconds": 21.01323,
+          "candidate_status": "completed",
+          "case": "mae_signed_nonlinear",
+          "comparable": true,
+          "elapsed_delta_seconds": -0.6934539999999991,
+          "improvement": 0.012791847758271246,
+          "input_sha256": "a4af36322ba02f2fe31cca046fec8f7518ea9695cd390918a9a39e734afcb000",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 12,
+          "relative_loss_gain": 0.030020772688681967,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.0023628276554638616,
+          "audit_sha256": "8f177f868ddb959c0b389edb5a3492fdbb53937ba3ad096a88e5dd61af1f9f54",
+          "baseline": 0.4210721999347294,
+          "baseline_seconds": 21.875463,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.42343502759019325,
+          "candidate_seconds": 26.593122,
+          "candidate_status": "completed",
+          "case": "mae_signed_nonlinear",
+          "comparable": true,
+          "elapsed_delta_seconds": 4.717659000000001,
+          "improvement": -0.0023628276554638616,
+          "input_sha256": "bb109e0abbb9acd8eb4c5e51154769b8f97884111133957eebd73cc0c5f40b29",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 13,
+          "relative_loss_gain": -0.005611454890230523,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.004309962811272605,
+          "audit_sha256": "7a41824129d7a702155c899381b293ef266b12171228732de5cdbf015c298514",
+          "baseline": 0.6644451946990226,
+          "baseline_seconds": 20.257548,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.6687551575102952,
+          "candidate_seconds": 17.013221,
+          "candidate_status": "completed",
+          "case": "mae_symmetric_linear",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.2443269999999984,
+          "improvement": -0.004309962811272605,
+          "input_sha256": "8261a29f77cb007a63545dbc894e1ba491c8d339e600a68d368565e907e9cb2c",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 14,
+          "relative_loss_gain": -0.006486558779652116,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "9b0c00a7620f51f37d89faf9ac180fcc0e3d7041d782de1028fa2a780787d71a",
+          "baseline": 0.6581867876119297,
+          "baseline_seconds": 21.736081,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.6581867876119297,
+          "candidate_seconds": 16.493353,
+          "candidate_status": "completed",
+          "case": "mae_symmetric_linear",
+          "comparable": true,
+          "elapsed_delta_seconds": -5.242728,
+          "improvement": -0.0,
+          "input_sha256": "7bd881a1c3e764a45ba7f11d7ea0a9a82ec39d94102641af2a50b838b5f36dae",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 15,
+          "relative_loss_gain": -0.0,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -0.2694325698177542,
+          "audit_sha256": "ab52c8de1263602f4b21539002c9141e52eb564b50dd9f5f53cd75e7889bf03c",
+          "baseline": 1.7752453733012552,
+          "baseline_seconds": 24.415212,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 1.505812803483501,
+          "candidate_seconds": 20.750441,
+          "candidate_status": "completed",
+          "case": "mae_heavy_tailed",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.6647710000000018,
+          "improvement": 0.2694325698177542,
+          "input_sha256": "c9cc5474d32b1734ff440e510824df9b11561c611e413be79ceb74f162325812",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 16,
+          "relative_loss_gain": 0.15177201634764215,
+          "seed": 42,
+          "time_budget_seconds": 90.0
+        },
+        {
+          "absolute_delta": -0.21796671696920633,
+          "audit_sha256": "e0fc409429e25888c88bda853e61cd9d9a4b91f03f7909ebd9350f0db8393ef2",
+          "baseline": 1.6664000905076641,
+          "baseline_seconds": 22.689581,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 1.4484333735384578,
+          "candidate_seconds": 19.901794,
+          "candidate_status": "completed",
+          "case": "mae_heavy_tailed",
+          "comparable": true,
+          "elapsed_delta_seconds": -2.7877870000000016,
+          "improvement": 0.21796671696920633,
+          "input_sha256": "d15dd63685deffa437d435ff9ef00d9931e9dd525102abe3acd1570d2174a13f",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 17,
+          "relative_loss_gain": 0.13080095123062757,
+          "seed": 73,
+          "time_budget_seconds": 90.0
+        }
+      ],
+      "planned_trial_wall_caps_seconds": 3240.0,
+      "purpose": "development",
+      "reaudit_v2": {
+        "auditor": {
+          "environment": {
+            "catboost": "1.2.8",
+            "lightgbm": "4.6.0",
+            "numpy": "1.26.4",
+            "pandas": "2.2.3",
+            "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+            "psutil": "6.1.1",
+            "python": "3.12.14",
+            "scikit-learn": "1.5.2"
+          },
+          "harness_sha256": {
+            "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+            "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+            "experiment_night_quality.py": "b5f95610d69cfce9217fd65230c40441635951d7aa213e05371ebe21c4cc8ec2"
+          },
+          "source": {
+            "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+            "files": [
+              {
+                "bytes": 335,
+                "path": "agent/__init__.py",
+                "sha256": "7374e8671080e47c78368884cf5a04f1e9f88f65c09121551f560dfbfdd33ebe"
+              },
+              {
+                "bytes": 5756,
+                "path": "agent/adaptive_local.py",
+                "sha256": "24e531f0e08420cf92cad780d8c3cac5617797dd5b378420117ad7ef4284a516"
+              },
+              {
+                "bytes": 47377,
+                "path": "agent/automl.py",
+                "sha256": "ce9353d052676700a6cfc77b93048ad6ba4bd663201b6979d5a3bb2c4b79d480"
+              },
+              {
+                "bytes": 4195,
+                "path": "agent/automl_worker.py",
+                "sha256": "ca3b2d782df5aa8f37b7c27c5d20b77bc0747af3f8e8bd8e72bf322931d4ae6d"
+              },
+              {
+                "bytes": 9727,
+                "path": "agent/building_history.py",
+                "sha256": "12ffa3bd1a178a0982b30abe74b71ed52e6ec6fd5b08deb7804a08ac8ff97ff2"
+              },
+              {
+                "bytes": 26849,
+                "path": "agent/classification_decision.py",
+                "sha256": "e81dc5ca13483ea55dc5f5d3798868fe643e4d64d01bbe82400ee54698cded30"
+              },
+              {
+                "bytes": 8367,
+                "path": "agent/diagnostics.py",
+                "sha256": "d632bf7f20d45d8a77bab965721124c9a02616a3ed98cda31123f626d32c6f3a"
+              },
+              {
+                "bytes": 21112,
+                "path": "agent/emergency.py",
+                "sha256": "ffb4123601614850c0e7c0096acf4d7794de0d5778926bfb836237399d49bca6"
+              },
+              {
+                "bytes": 6127,
+                "path": "agent/execution.py",
+                "sha256": "b2d576f765941b392bd470d98ce0a420e9ae00c533723e225e48005f003085b5"
+              },
+              {
+                "bytes": 9632,
+                "path": "agent/features.py",
+                "sha256": "514871b6cee977e925d106ea09549215ff00f41d99e9b74957c187accf5516b8"
+              },
+              {
+                "bytes": 1286,
+                "path": "agent/file_io.py",
+                "sha256": "fc374b6a628e97f47499b5baa720344a783e905707b5cccc297d4c4aeb1a33c9"
+              },
+              {
+                "bytes": 8859,
+                "path": "agent/history.py",
+                "sha256": "87d66717cd8903d3accd3d7f7977c4a097493d385dc90958013964e1cad0baae"
+              },
+              {
+                "bytes": 8430,
+                "path": "agent/inner_feedback.py",
+                "sha256": "7c9248719102153638bbf366ec41718f1b3cf98a93c1bebe0e8db3915001578c"
+              },
+              {
+                "bytes": 9701,
+                "path": "agent/llm.py",
+                "sha256": "f3de40c43ce0eb8711208eb804c29ef0feee4d6189eaf3d1fc02cf1d4baf2c13"
+              },
+              {
+                "bytes": 10240,
+                "path": "agent/metrics.py",
+                "sha256": "c88123013037f532e67dd77e5223c00c141ea01b3a9475fc84fce21aaeadfcf3"
+              },
+              {
+                "bytes": 14876,
+                "path": "agent/model_config.py",
+                "sha256": "e03a31843cd8875e0161cb25abd9fafef4935b86a5f5367d3eae3a897983bec2"
+              },
+              {
+                "bytes": 15159,
+                "path": "agent/models.py",
+                "sha256": "6a50538eadef5b53e43294a0819b6c5c8a8988a461a6138c43b8bf8990b43b5c"
+              },
+              {
+                "bytes": 11269,
+                "path": "agent/offline_research.py",
+                "sha256": "0fe9fe70304ea489207264eb11e6785e98de6cc8f7cdd3918e2d2ec12ea0efda"
+              },
+              {
+                "bytes": 4129,
+                "path": "agent/portfolio_recipes.py",
+                "sha256": "aafd0e2e12ea3994c6a4b72f43dca97a31b9590fe7a3be0147a4f23e9b24bb7c"
+              },
+              {
+                "bytes": 29573,
+                "path": "agent/research.py",
+                "sha256": "84cd71a996801e6b4b4fe4fc907a0c8a054b0a138c17f2c40a4c21b8eb7ea9d6"
+              },
+              {
+                "bytes": 13204,
+                "path": "agent/research_budget.py",
+                "sha256": "eb1a554369b1f4cfe161083221a87d815f9b115b8609023bd28308a641f5b0a2"
+              },
+              {
+                "bytes": 17878,
+                "path": "agent/research_candidate.py",
+                "sha256": "17f684a0a1a248c7cdeeb153ea8791b51970f0bea9eff9c11df404b29499514d"
+              },
+              {
+                "bytes": 5479,
+                "path": "agent/research_feedback.py",
+                "sha256": "017957c89d5ef0956161547152020027be944235ae19034f76c299d4a4e8c3b7"
+              },
+              {
+                "bytes": 7476,
+                "path": "agent/research_stability.py",
+                "sha256": "a94d5979a481dce271c5cddff91dfc01b88a269f2ec65ac145760d12ad6d148a"
+              },
+              {
+                "bytes": 47024,
+                "path": "agent/research_v3.py",
+                "sha256": "973934dc2d4a3cc3e6d5cf10b8974e80ecd539b23058ac7168d37a23797403ce"
+              },
+              {
+                "bytes": 5563,
+                "path": "agent/research_validation.py",
+                "sha256": "f498189af3cb394def988855036742afa35ded8e10cabbbb32c70d5920d9cdde"
+              },
+              {
+                "bytes": 26961,
+                "path": "agent/research_workspace.py",
+                "sha256": "0ffecc601d850b603ce01efc671a2e73cd0bfe041fb44d20064aca540b78cf92"
+              },
+              {
+                "bytes": 9836,
+                "path": "agent/resources.py",
+                "sha256": "e5cdd4fc35276caf3a82672306441bbc47364eabad719b11dd5234aa1a065306"
+              },
+              {
+                "bytes": 12994,
+                "path": "agent/search.py",
+                "sha256": "a2a194953b746d1f130ebc83e7ee690681abf5b95c9997a0f00ce98ea57c0acc"
+              },
+              {
+                "bytes": 7862,
+                "path": "agent/search_policy.py",
+                "sha256": "f540f4228b90d150d481ee7271c3111110b53d91c90efe7a218d9c1eeb937db2"
+              },
+              {
+                "bytes": 10802,
+                "path": "agent/search_schedule.py",
+                "sha256": "4c8348618a622297b857edb5e090274c27b72189f6885ccc67a4e7c1542ff101"
+              },
+              {
+                "bytes": 6942,
+                "path": "agent/splits.py",
+                "sha256": "cdd7025a53cfc4c38b943dae7e022acbaf79ede5276e360fd45921789cff3b79"
+              },
+              {
+                "bytes": 11813,
+                "path": "agent/stability.py",
+                "sha256": "519735ecdd8cf4edaf89d3a22b8c671d517e93f29528d858feb23c27719e4289"
+              },
+              {
+                "bytes": 3923,
+                "path": "agent/target_transform.py",
+                "sha256": "1572b9ba6d00140ff7237e2a5a80c07da485c6fb6dcb7ec442ba1c3d1e420282"
+              },
+              {
+                "bytes": 6377,
+                "path": "agent/task_contract.py",
+                "sha256": "0b4dfccc6b689273eaf152a9fc3e6eef7f879fbf65c5bc91fb339d6ec7e80d0c"
+              },
+              {
+                "bytes": 18051,
+                "path": "agent/task_spec.py",
+                "sha256": "63d4ac94422bd77784d1a1f5fe9be48203d26af750093f185404b5dbfe1e8a8c"
+              },
+              {
+                "bytes": 14500,
+                "path": "offline_baseline.py",
+                "sha256": "d9d7fb019a717b7bb9d773615d44285ec79bf6686e4ea90495ca87455319794c"
+              },
+              {
+                "bytes": 748,
+                "path": "requirements.platform.txt",
+                "sha256": "9173b0388532fbd2a709e4f4b3029e3b9ccab685fce43a85261ffa1ba95efbe6"
+              },
+              {
+                "bytes": 317,
+                "path": "requirements.txt",
+                "sha256": "94e22e023f514db3177d7d84a9eddd7ce7c3ecd2eb4271f1580511346be4cfc2"
+              },
+              {
+                "bytes": 10969,
+                "path": "solution.py",
+                "sha256": "884c819831954e5b6fc7ada7c0f3d44d27d900c8cf1ded2c0fb948f082b95652"
+              },
+              {
+                "bytes": 7324,
+                "path": "validation.py",
+                "sha256": "6ea9706d80f736a7864d2c24b4750850be83c757033c03d4d85c80daeed31663"
+              }
+            ],
+            "root": "/workspace/scratch/271f408d330f/alfa-night-quality",
+            "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+            "worktree_dirty": true
+          }
+        },
+        "path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/dev_ac628_reaudit_v2.json",
+        "sha256": "2379aebc41faf126f8fe967673203108beca632dabd5a1c21f799604565f88d6"
+      },
+      "report_path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/dev_ac628_frozen/report.json",
+      "report_sha256": "4f6739de221a6df56d59ca52037cb4cc1802dd216d94a2e9af3d6a74d957f579",
+      "sources": {
+        "baseline": {
+          "commit": "390829239bfb245e70d866c02d4cd69d51d4c0d9",
+          "source_sha256": "423227637b7a0441e09d61954092dac8fb5069af5e4a4b2143f929af0d054b68",
+          "worktree_dirty": false
+        },
+        "candidate": {
+          "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+          "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+          "worktree_dirty": false
+        }
+      },
+      "status": "completed"
+    },
+    {
+      "abort_reason": null,
+      "arms": {
+        "baseline": {
+          "elapsed_seconds": 260.790903,
+          "failures": [],
+          "full_refit_v1_verified": 12,
+          "full_refit_v2_verified": 12,
+          "planned_trials": 12,
+          "recorded_trials": 12,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 12
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 12
+        },
+        "candidate": {
+          "elapsed_seconds": 225.050739,
+          "failures": [],
+          "full_refit_v1_verified": 12,
+          "full_refit_v2_verified": 12,
+          "planned_trials": 12,
+          "recorded_trials": 12,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 12
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 12
+        }
+      },
+      "confirmation_gate": {
+        "assessed": true,
+        "checks": {
+          "all_candidate_refits_v1_verified": true,
+          "all_family_medians_within_tolerance": false,
+          "all_pairs_comparable": true,
+          "all_planned_candidate_csvs_normal_exit": true,
+          "at_least_two_practical_improvement_families": false,
+          "locked_confirmation_shape": true,
+          "series_finished": true
+        },
+        "default_eligibility": "not_established_by_this_descriptive_audit",
+        "quality_gate_passed": false,
+        "remaining_evidence": [
+          "strict full-refit re-audit when v1 lacks stdout",
+          "budget/seed/finalization review across both budgets",
+          "Research v3 API-failure full-path evidence",
+          "public nested sanity contract/budget review"
+        ]
+      },
+      "counts": {
+        "loss": 4,
+        "tie": 2,
+        "win": 6
+      },
+      "environment": {
+        "catboost": "1.2.8",
+        "lightgbm": "4.6.0",
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+        "psutil": "6.1.1",
+        "python": "3.12.14",
+        "scikit-learn": "1.5.2"
+      },
+      "external_api_calls": 0,
+      "families": [
+        {
+          "baseline_seconds": 45.110088,
+          "candidate_seconds": 38.185223,
+          "case": "categorical_shift",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.01089639319012961,
+          "median_baseline": 0.41699651676935184,
+          "median_candidate": 0.4278929099594815,
+          "median_gain": -0.02651758573182924,
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1,
+            "win": 1
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 43.644431,
+          "candidate_seconds": 37.346318,
+          "case": "imbalanced_binary",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.0008558628016222813,
+          "median_baseline": 0.2862113680338544,
+          "median_candidate": 0.2870672308354767,
+          "median_gain": -0.002127755903951197,
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1,
+            "win": 1
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 40.619573,
+          "candidate_seconds": 34.086736,
+          "case": "linear_regression",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.0006330517936947166,
+          "median_baseline": 0.7486104608497921,
+          "median_candidate": 0.7479774090560974,
+          "median_gain": 0.0008256225352747163,
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcomes": {
+            "win": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 45.265887,
+          "candidate_seconds": 37.709047,
+          "case": "mae_heavy_tailed",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.1977292920889816,
+          "median_baseline": 1.778148968943504,
+          "median_candidate": 1.5804196768545222,
+          "median_gain": 0.1111321405065119,
+          "metric": "MAE",
+          "mode": "automl",
+          "outcomes": {
+            "win": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 46.074904000000004,
+          "candidate_seconds": 41.27456,
+          "case": "mae_signed_nonlinear",
+          "comparable_pairs": 2,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 0.02198392967103452,
+          "median_baseline": 0.4598473442379406,
+          "median_candidate": 0.4818312739089751,
+          "median_gain": -0.04773352036862134,
+          "metric": "MAE",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": false,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 40.07602,
+          "candidate_seconds": 36.448854999999995,
+          "case": "multiclass_duplicates",
+          "comparable_pairs": 2,
+          "gain_kind": "absolute_score",
+          "median_absolute_delta": 0.0,
+          "median_baseline": 0.9103900360537529,
+          "median_candidate": 0.9103900360537529,
+          "median_gain": 0.0,
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcomes": {
+            "tie": 2
+          },
+          "planned_pairs": 2,
+          "practical_improvement": false,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        }
+      ],
+      "harness_sha256": {
+        "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+        "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+        "experiment_night_quality.py": "4363763dfba8f34aff9674edd9ee6243e8374ae4004a6af7ff2f3f28db515d5b"
+      },
+      "kind": "night_quality_comparison",
+      "manifest_sha256": "849cec342a1aa669649d657ccf1ecbba1a5d7c902e0ede70bdd004571322f1d4",
+      "pairs": [
+        {
+          "absolute_delta": -0.0009511895865846887,
+          "audit_sha256": "39eb839fd2c90d05fd01d8cf458b9d652d43f5be2aa7d8ef1159526dc09153f9",
+          "baseline": 0.7878635864931858,
+          "baseline_seconds": 21.61543,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.7869123969066011,
+          "candidate_seconds": 17.513569,
+          "candidate_status": "completed",
+          "case": "linear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -4.1018609999999995,
+          "improvement": 0.0009511895865846887,
+          "input_sha256": "5577f338f50d796532f8ae3438a8a6a3538cbd62e1c16c3e453d88e77885fc1d",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 0,
+          "relative_loss_gain": 0.001207302384437481,
+          "seed": 211,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -0.00031491400080474463,
+          "audit_sha256": "3ffb1677f21512f665397f4822795be4cadd93cf2909ba5b3acdd526f685f27d",
+          "baseline": 0.7093573352063985,
+          "baseline_seconds": 19.004143,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.7090424212055938,
+          "candidate_seconds": 16.573167,
+          "candidate_status": "completed",
+          "case": "linear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -2.4309759999999976,
+          "improvement": 0.00031491400080474463,
+          "input_sha256": "9b7fac3bc4b2782b6f241005fc33d83a62c9bd938a7ecb2cb6bbdc7831c7043e",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 1,
+          "relative_loss_gain": 0.0004439426861119516,
+          "seed": 307,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.01897533106113991,
+          "audit_sha256": "626cf68898fe10aa000c5c2b93441efb628bf126de2e1513e9ea7560ac0cca7d",
+          "baseline": 0.45417031860341844,
+          "baseline_seconds": 21.470237,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.47314564966455835,
+          "candidate_seconds": 20.729213,
+          "candidate_status": "completed",
+          "case": "mae_signed_nonlinear",
+          "comparable": true,
+          "elapsed_delta_seconds": -0.7410239999999995,
+          "improvement": -0.01897533106113991,
+          "input_sha256": "1866d07a181e55a70830bbcbb40cc6df7c9bc51fa71d8fb72fa985eacde7bb55",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 2,
+          "relative_loss_gain": -0.041780209502658344,
+          "seed": 211,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.024992528280929127,
+          "audit_sha256": "c35db9b21bed1746617800b0b6b2698a93ed1ebcc8a61e6b41161824f5ce9bc7",
+          "baseline": 0.46552436987246276,
+          "baseline_seconds": 24.604667,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.4905168981533919,
+          "candidate_seconds": 20.545347,
+          "candidate_status": "completed",
+          "case": "mae_signed_nonlinear",
+          "comparable": true,
+          "elapsed_delta_seconds": -4.05932,
+          "improvement": -0.024992528280929127,
+          "input_sha256": "b9e1805f31ff84b2e2751c140be6099128385e396930cf07fc6e4b90ca890d44",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 3,
+          "relative_loss_gain": -0.05368683123458434,
+          "seed": 307,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -0.21593936555275106,
+          "audit_sha256": "26b1726cbf8a443a29fb8b4f6e96efd89682fbdbc79a44fb602c08610395a92d",
+          "baseline": 1.929330523564201,
+          "baseline_seconds": 22.446701,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 1.71339115801145,
+          "candidate_seconds": 18.962897,
+          "candidate_status": "completed",
+          "case": "mae_heavy_tailed",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.4838039999999992,
+          "improvement": 0.21593936555275106,
+          "input_sha256": "459075a94f5eb39c42ef25a10b842d1714f7b603dc21a9b67362b3d8e5df614e",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 4,
+          "relative_loss_gain": 0.11192450589224578,
+          "seed": 211,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -0.17951921862521214,
+          "audit_sha256": "51481ba0f5efe92cf59ade9430feb760092374f8714da48d107cbee53afe1629",
+          "baseline": 1.6269674143228066,
+          "baseline_seconds": 22.819186,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 1.4474481956975944,
+          "candidate_seconds": 18.74615,
+          "candidate_status": "completed",
+          "case": "mae_heavy_tailed",
+          "comparable": true,
+          "elapsed_delta_seconds": -4.073035999999998,
+          "improvement": 0.17951921862521214,
+          "input_sha256": "7f91e2855741cf404b65a893f9cdbc866f0ef4f70a58fab65f97cb6dddcfed39",
+          "metric": "MAE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 5,
+          "relative_loss_gain": 0.11033977512077801,
+          "seed": 307,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.0062199850042738425,
+          "audit_sha256": "4489fe50a426610d3472789178d7b2bb295f6e0b00a65386b03d7a74601de2cf",
+          "baseline": 0.2994533288970604,
+          "baseline_seconds": 22.171838,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.30567331390133423,
+          "candidate_seconds": 18.62242,
+          "candidate_status": "completed",
+          "case": "imbalanced_binary",
+          "comparable": true,
+          "elapsed_delta_seconds": -3.5494179999999993,
+          "improvement": -0.0062199850042738425,
+          "input_sha256": "4182684a39f8a4aa33578a4383ad12345b0b765ff2507cc0e1de02f8f04f4f0a",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 6,
+          "relative_loss_gain": -0.020771133275369315,
+          "seed": 211,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -0.00450825940102928,
+          "audit_sha256": "fbe30dfc1e245feefb4f8cd7105b83d7e465545cb3e19d25803d3e5229628f75",
+          "baseline": 0.27296940717064844,
+          "baseline_seconds": 21.472593,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.26846114776961916,
+          "candidate_seconds": 18.723898,
+          "candidate_status": "completed",
+          "case": "imbalanced_binary",
+          "comparable": true,
+          "elapsed_delta_seconds": -2.7486950000000014,
+          "improvement": 0.00450825940102928,
+          "input_sha256": "d47cc3f6416aa0c897900c76597e16b59185745e2de083f728ce6d92d71497ef",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 7,
+          "relative_loss_gain": 0.01651562146746692,
+          "seed": 307,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "4835f07466b7f7c8349748595543500a98c50e0221ddec4a8e4c12bdb677f625",
+          "baseline": 0.9781634294908631,
+          "baseline_seconds": 19.892156,
+          "baseline_status": "completed",
+          "bounded_score_gain": 0.0,
+          "candidate": 0.9781634294908631,
+          "candidate_seconds": 17.398459,
+          "candidate_status": "completed",
+          "case": "multiclass_duplicates",
+          "comparable": true,
+          "elapsed_delta_seconds": -2.493697000000001,
+          "improvement": 0.0,
+          "input_sha256": "8f253cb098e89289c83021f88c452f856c9af8e7bdc13cbb6cbb7e1a1625ae8e",
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 8,
+          "relative_loss_gain": null,
+          "seed": 211,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.0,
+          "audit_sha256": "05a2c80e83d612b110632e946252a4a0133895070585352502cbba1735e28440",
+          "baseline": 0.8426166426166426,
+          "baseline_seconds": 20.183864,
+          "baseline_status": "completed",
+          "bounded_score_gain": 0.0,
+          "candidate": 0.8426166426166426,
+          "candidate_seconds": 19.050396,
+          "candidate_status": "completed",
+          "case": "multiclass_duplicates",
+          "comparable": true,
+          "elapsed_delta_seconds": -1.1334680000000006,
+          "improvement": 0.0,
+          "input_sha256": "c5ae50c158682e57f7c8f417ccbdddd112f29a4b3eaed3d6c62660f5a6f4b004",
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcome": "tie",
+          "pair": 9,
+          "relative_loss_gain": null,
+          "seed": 307,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -0.007293078077119652,
+          "audit_sha256": "313b15bcff27b1d2c98292e2f50624aa4ac8e8eb8af353c7fcd80d4fd28fb91b",
+          "baseline": 0.4206757041349822,
+          "baseline_seconds": 19.849427,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.4133826260578625,
+          "candidate_seconds": 19.076223,
+          "candidate_status": "completed",
+          "case": "categorical_shift",
+          "comparable": true,
+          "elapsed_delta_seconds": -0.7732039999999998,
+          "improvement": 0.007293078077119652,
+          "input_sha256": "206ae45f8784112a1c54d3de4851b63af91de311edcb487bea33f96acdc96a62",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 10,
+          "relative_loss_gain": 0.017336580186193787,
+          "seed": 211,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.029085864457378874,
+          "audit_sha256": "0c9ce50a18043878a9a4488e43c90f73446dde01a48306720212b0f64f1d749e",
+          "baseline": 0.4133173294037215,
+          "baseline_seconds": 25.260661,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.4424031938611004,
+          "candidate_seconds": 19.109,
+          "candidate_status": "completed",
+          "case": "categorical_shift",
+          "comparable": true,
+          "elapsed_delta_seconds": -6.151660999999997,
+          "improvement": -0.029085864457378874,
+          "input_sha256": "955c4cf070a6628ec657f44bae0737d60540c939037f6c93bebe8c68184e44ed",
+          "metric": "LogLoss",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 11,
+          "relative_loss_gain": -0.07037175164985227,
+          "seed": 307,
+          "time_budget_seconds": 180.0
+        }
+      ],
+      "planned_trial_wall_caps_seconds": 4320.0,
+      "purpose": "confirmation",
+      "reaudit_v2": {
+        "auditor": {
+          "environment": {
+            "catboost": "1.2.8",
+            "lightgbm": "4.6.0",
+            "numpy": "1.26.4",
+            "pandas": "2.2.3",
+            "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+            "psutil": "6.1.1",
+            "python": "3.12.14",
+            "scikit-learn": "1.5.2"
+          },
+          "harness_sha256": {
+            "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+            "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+            "experiment_night_quality.py": "b5f95610d69cfce9217fd65230c40441635951d7aa213e05371ebe21c4cc8ec2"
+          },
+          "source": {
+            "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+            "files": [
+              {
+                "bytes": 335,
+                "path": "agent/__init__.py",
+                "sha256": "7374e8671080e47c78368884cf5a04f1e9f88f65c09121551f560dfbfdd33ebe"
+              },
+              {
+                "bytes": 5756,
+                "path": "agent/adaptive_local.py",
+                "sha256": "24e531f0e08420cf92cad780d8c3cac5617797dd5b378420117ad7ef4284a516"
+              },
+              {
+                "bytes": 47377,
+                "path": "agent/automl.py",
+                "sha256": "ce9353d052676700a6cfc77b93048ad6ba4bd663201b6979d5a3bb2c4b79d480"
+              },
+              {
+                "bytes": 4195,
+                "path": "agent/automl_worker.py",
+                "sha256": "ca3b2d782df5aa8f37b7c27c5d20b77bc0747af3f8e8bd8e72bf322931d4ae6d"
+              },
+              {
+                "bytes": 9727,
+                "path": "agent/building_history.py",
+                "sha256": "12ffa3bd1a178a0982b30abe74b71ed52e6ec6fd5b08deb7804a08ac8ff97ff2"
+              },
+              {
+                "bytes": 26849,
+                "path": "agent/classification_decision.py",
+                "sha256": "e81dc5ca13483ea55dc5f5d3798868fe643e4d64d01bbe82400ee54698cded30"
+              },
+              {
+                "bytes": 8367,
+                "path": "agent/diagnostics.py",
+                "sha256": "d632bf7f20d45d8a77bab965721124c9a02616a3ed98cda31123f626d32c6f3a"
+              },
+              {
+                "bytes": 21112,
+                "path": "agent/emergency.py",
+                "sha256": "ffb4123601614850c0e7c0096acf4d7794de0d5778926bfb836237399d49bca6"
+              },
+              {
+                "bytes": 6127,
+                "path": "agent/execution.py",
+                "sha256": "b2d576f765941b392bd470d98ce0a420e9ae00c533723e225e48005f003085b5"
+              },
+              {
+                "bytes": 9632,
+                "path": "agent/features.py",
+                "sha256": "514871b6cee977e925d106ea09549215ff00f41d99e9b74957c187accf5516b8"
+              },
+              {
+                "bytes": 1286,
+                "path": "agent/file_io.py",
+                "sha256": "fc374b6a628e97f47499b5baa720344a783e905707b5cccc297d4c4aeb1a33c9"
+              },
+              {
+                "bytes": 8859,
+                "path": "agent/history.py",
+                "sha256": "87d66717cd8903d3accd3d7f7977c4a097493d385dc90958013964e1cad0baae"
+              },
+              {
+                "bytes": 8430,
+                "path": "agent/inner_feedback.py",
+                "sha256": "7c9248719102153638bbf366ec41718f1b3cf98a93c1bebe0e8db3915001578c"
+              },
+              {
+                "bytes": 9701,
+                "path": "agent/llm.py",
+                "sha256": "f3de40c43ce0eb8711208eb804c29ef0feee4d6189eaf3d1fc02cf1d4baf2c13"
+              },
+              {
+                "bytes": 10240,
+                "path": "agent/metrics.py",
+                "sha256": "c88123013037f532e67dd77e5223c00c141ea01b3a9475fc84fce21aaeadfcf3"
+              },
+              {
+                "bytes": 14876,
+                "path": "agent/model_config.py",
+                "sha256": "e03a31843cd8875e0161cb25abd9fafef4935b86a5f5367d3eae3a897983bec2"
+              },
+              {
+                "bytes": 15159,
+                "path": "agent/models.py",
+                "sha256": "6a50538eadef5b53e43294a0819b6c5c8a8988a461a6138c43b8bf8990b43b5c"
+              },
+              {
+                "bytes": 11269,
+                "path": "agent/offline_research.py",
+                "sha256": "0fe9fe70304ea489207264eb11e6785e98de6cc8f7cdd3918e2d2ec12ea0efda"
+              },
+              {
+                "bytes": 4129,
+                "path": "agent/portfolio_recipes.py",
+                "sha256": "aafd0e2e12ea3994c6a4b72f43dca97a31b9590fe7a3be0147a4f23e9b24bb7c"
+              },
+              {
+                "bytes": 29573,
+                "path": "agent/research.py",
+                "sha256": "84cd71a996801e6b4b4fe4fc907a0c8a054b0a138c17f2c40a4c21b8eb7ea9d6"
+              },
+              {
+                "bytes": 13204,
+                "path": "agent/research_budget.py",
+                "sha256": "eb1a554369b1f4cfe161083221a87d815f9b115b8609023bd28308a641f5b0a2"
+              },
+              {
+                "bytes": 17878,
+                "path": "agent/research_candidate.py",
+                "sha256": "17f684a0a1a248c7cdeeb153ea8791b51970f0bea9eff9c11df404b29499514d"
+              },
+              {
+                "bytes": 5479,
+                "path": "agent/research_feedback.py",
+                "sha256": "017957c89d5ef0956161547152020027be944235ae19034f76c299d4a4e8c3b7"
+              },
+              {
+                "bytes": 7476,
+                "path": "agent/research_stability.py",
+                "sha256": "a94d5979a481dce271c5cddff91dfc01b88a269f2ec65ac145760d12ad6d148a"
+              },
+              {
+                "bytes": 47024,
+                "path": "agent/research_v3.py",
+                "sha256": "973934dc2d4a3cc3e6d5cf10b8974e80ecd539b23058ac7168d37a23797403ce"
+              },
+              {
+                "bytes": 5563,
+                "path": "agent/research_validation.py",
+                "sha256": "f498189af3cb394def988855036742afa35ded8e10cabbbb32c70d5920d9cdde"
+              },
+              {
+                "bytes": 26961,
+                "path": "agent/research_workspace.py",
+                "sha256": "0ffecc601d850b603ce01efc671a2e73cd0bfe041fb44d20064aca540b78cf92"
+              },
+              {
+                "bytes": 9836,
+                "path": "agent/resources.py",
+                "sha256": "e5cdd4fc35276caf3a82672306441bbc47364eabad719b11dd5234aa1a065306"
+              },
+              {
+                "bytes": 12994,
+                "path": "agent/search.py",
+                "sha256": "a2a194953b746d1f130ebc83e7ee690681abf5b95c9997a0f00ce98ea57c0acc"
+              },
+              {
+                "bytes": 7862,
+                "path": "agent/search_policy.py",
+                "sha256": "f540f4228b90d150d481ee7271c3111110b53d91c90efe7a218d9c1eeb937db2"
+              },
+              {
+                "bytes": 10802,
+                "path": "agent/search_schedule.py",
+                "sha256": "4c8348618a622297b857edb5e090274c27b72189f6885ccc67a4e7c1542ff101"
+              },
+              {
+                "bytes": 6942,
+                "path": "agent/splits.py",
+                "sha256": "cdd7025a53cfc4c38b943dae7e022acbaf79ede5276e360fd45921789cff3b79"
+              },
+              {
+                "bytes": 11813,
+                "path": "agent/stability.py",
+                "sha256": "519735ecdd8cf4edaf89d3a22b8c671d517e93f29528d858feb23c27719e4289"
+              },
+              {
+                "bytes": 3923,
+                "path": "agent/target_transform.py",
+                "sha256": "1572b9ba6d00140ff7237e2a5a80c07da485c6fb6dcb7ec442ba1c3d1e420282"
+              },
+              {
+                "bytes": 6377,
+                "path": "agent/task_contract.py",
+                "sha256": "0b4dfccc6b689273eaf152a9fc3e6eef7f879fbf65c5bc91fb339d6ec7e80d0c"
+              },
+              {
+                "bytes": 18051,
+                "path": "agent/task_spec.py",
+                "sha256": "63d4ac94422bd77784d1a1f5fe9be48203d26af750093f185404b5dbfe1e8a8c"
+              },
+              {
+                "bytes": 14500,
+                "path": "offline_baseline.py",
+                "sha256": "d9d7fb019a717b7bb9d773615d44285ec79bf6686e4ea90495ca87455319794c"
+              },
+              {
+                "bytes": 748,
+                "path": "requirements.platform.txt",
+                "sha256": "9173b0388532fbd2a709e4f4b3029e3b9ccab685fce43a85261ffa1ba95efbe6"
+              },
+              {
+                "bytes": 317,
+                "path": "requirements.txt",
+                "sha256": "94e22e023f514db3177d7d84a9eddd7ce7c3ecd2eb4271f1580511346be4cfc2"
+              },
+              {
+                "bytes": 10969,
+                "path": "solution.py",
+                "sha256": "884c819831954e5b6fc7ada7c0f3d44d27d900c8cf1ded2c0fb948f082b95652"
+              },
+              {
+                "bytes": 7324,
+                "path": "validation.py",
+                "sha256": "6ea9706d80f736a7864d2c24b4750850be83c757033c03d4d85c80daeed31663"
+              }
+            ],
+            "root": "/workspace/scratch/271f408d330f/alfa-night-quality",
+            "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+            "worktree_dirty": true
+          }
+        },
+        "path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/confirm_ac628_reaudit_v2.json",
+        "sha256": "c541997dc33097fefa58458d5956bdd02c0046aafec18e9d5c193f3a6c3a555f"
+      },
+      "report_path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/confirm_ac628_frozen/report.json",
+      "report_sha256": "96b32e1cb23332f3a6bf1a5cdabd33fcc493e9037818004982ba58bb7c78f02e",
+      "sources": {
+        "baseline": {
+          "commit": "390829239bfb245e70d866c02d4cd69d51d4c0d9",
+          "source_sha256": "423227637b7a0441e09d61954092dac8fb5069af5e4a4b2143f929af0d054b68",
+          "worktree_dirty": false
+        },
+        "candidate": {
+          "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+          "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+          "worktree_dirty": false
+        }
+      },
+      "status": "completed"
+    },
+    {
+      "abort_reason": null,
+      "arms": {
+        "baseline": {
+          "elapsed_seconds": 62.406377,
+          "failures": [],
+          "full_refit_v1_verified": 2,
+          "full_refit_v2_verified": 2,
+          "planned_trials": 2,
+          "recorded_trials": 2,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 2
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 2
+        },
+        "candidate": {
+          "elapsed_seconds": 63.339323,
+          "failures": [],
+          "full_refit_v1_verified": 2,
+          "full_refit_v2_verified": 2,
+          "planned_trials": 2,
+          "recorded_trials": 2,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 2
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 2
+        }
+      },
+      "confirmation_gate": {
+        "assessed": false,
+        "reason": "Not independent confirmation"
+      },
+      "counts": {
+        "win": 2
+      },
+      "environment": {
+        "catboost": "1.2.8",
+        "lightgbm": "4.6.0",
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+        "psutil": "6.1.1",
+        "python": "3.12.14",
+        "scikit-learn": "1.5.2"
+      },
+      "external_api_calls": 0,
+      "families": [
+        {
+          "baseline_seconds": 32.46199,
+          "candidate_seconds": 34.063327,
+          "case": "imbalanced_binary",
+          "comparable_pairs": 1,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.060660904676826444,
+          "median_baseline": 0.3856307158382103,
+          "median_candidate": 0.32496981116138385,
+          "median_gain": 0.15730309382895855,
+          "metric": "LogLoss",
+          "mode": "research_api_failure",
+          "outcomes": {
+            "win": 1
+          },
+          "planned_pairs": 1,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 29.944387,
+          "candidate_seconds": 29.275996,
+          "case": "nonlinear_regression",
+          "comparable_pairs": 1,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -0.9604567862628395,
+          "median_baseline": 5.412837909319762,
+          "median_candidate": 4.452381123056923,
+          "median_gain": 0.17744052239383262,
+          "metric": "MAE",
+          "mode": "research_api_failure",
+          "outcomes": {
+            "win": 1
+          },
+          "planned_pairs": 1,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        }
+      ],
+      "harness_sha256": {
+        "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+        "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+        "experiment_night_quality.py": "4363763dfba8f34aff9674edd9ee6243e8374ae4004a6af7ff2f3f28db515d5b"
+      },
+      "kind": "night_quality_comparison",
+      "manifest_sha256": "6c7a03bdc393d161219a848c11c5572bbbaf05af9b8d545bb57fe40f14de3e53",
+      "pairs": [
+        {
+          "absolute_delta": -0.9604567862628395,
+          "audit_sha256": "92eb6cbc26e11ce60fc8e3c1ddf208130eaa8741caac878da5b40cb7ac8b5b3d",
+          "baseline": 5.412837909319762,
+          "baseline_seconds": 29.944387,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 4.452381123056923,
+          "candidate_seconds": 29.275996,
+          "candidate_status": "completed",
+          "case": "nonlinear_regression",
+          "comparable": true,
+          "elapsed_delta_seconds": -0.6683909999999997,
+          "improvement": 0.9604567862628395,
+          "input_sha256": "03eb6d43aa9b9d631e4a3d0649c95178040ab42da2998f27ef3c7242daa46f69",
+          "metric": "MAE",
+          "mode": "research_api_failure",
+          "outcome": "win",
+          "pair": 0,
+          "relative_loss_gain": 0.17744052239383262,
+          "seed": 811,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -0.060660904676826444,
+          "audit_sha256": "ddc5059b94774236f8740fbd6bb1b347e5678cd8f6df9a89c655136baffb1d82",
+          "baseline": 0.3856307158382103,
+          "baseline_seconds": 32.46199,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 0.32496981116138385,
+          "candidate_seconds": 34.063327,
+          "candidate_status": "completed",
+          "case": "imbalanced_binary",
+          "comparable": true,
+          "elapsed_delta_seconds": 1.601337000000001,
+          "improvement": 0.060660904676826444,
+          "input_sha256": "766281d19bf49fe28d218f0f6af212364eacb8d576ef3a4b36682d6bf05c1288",
+          "metric": "LogLoss",
+          "mode": "research_api_failure",
+          "outcome": "win",
+          "pair": 1,
+          "relative_loss_gain": 0.15730309382895855,
+          "seed": 811,
+          "time_budget_seconds": 180.0
+        }
+      ],
+      "planned_trial_wall_caps_seconds": 720.0,
+      "purpose": "integration",
+      "reaudit_v2": {
+        "auditor": {
+          "environment": {
+            "catboost": "1.2.8",
+            "lightgbm": "4.6.0",
+            "numpy": "1.26.4",
+            "pandas": "2.2.3",
+            "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+            "psutil": "6.1.1",
+            "python": "3.12.14",
+            "scikit-learn": "1.5.2"
+          },
+          "harness_sha256": {
+            "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+            "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+            "experiment_night_quality.py": "b5f95610d69cfce9217fd65230c40441635951d7aa213e05371ebe21c4cc8ec2"
+          },
+          "source": {
+            "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+            "files": [
+              {
+                "bytes": 335,
+                "path": "agent/__init__.py",
+                "sha256": "7374e8671080e47c78368884cf5a04f1e9f88f65c09121551f560dfbfdd33ebe"
+              },
+              {
+                "bytes": 5756,
+                "path": "agent/adaptive_local.py",
+                "sha256": "24e531f0e08420cf92cad780d8c3cac5617797dd5b378420117ad7ef4284a516"
+              },
+              {
+                "bytes": 47377,
+                "path": "agent/automl.py",
+                "sha256": "ce9353d052676700a6cfc77b93048ad6ba4bd663201b6979d5a3bb2c4b79d480"
+              },
+              {
+                "bytes": 4195,
+                "path": "agent/automl_worker.py",
+                "sha256": "ca3b2d782df5aa8f37b7c27c5d20b77bc0747af3f8e8bd8e72bf322931d4ae6d"
+              },
+              {
+                "bytes": 9727,
+                "path": "agent/building_history.py",
+                "sha256": "12ffa3bd1a178a0982b30abe74b71ed52e6ec6fd5b08deb7804a08ac8ff97ff2"
+              },
+              {
+                "bytes": 26849,
+                "path": "agent/classification_decision.py",
+                "sha256": "e81dc5ca13483ea55dc5f5d3798868fe643e4d64d01bbe82400ee54698cded30"
+              },
+              {
+                "bytes": 8367,
+                "path": "agent/diagnostics.py",
+                "sha256": "d632bf7f20d45d8a77bab965721124c9a02616a3ed98cda31123f626d32c6f3a"
+              },
+              {
+                "bytes": 21112,
+                "path": "agent/emergency.py",
+                "sha256": "ffb4123601614850c0e7c0096acf4d7794de0d5778926bfb836237399d49bca6"
+              },
+              {
+                "bytes": 6127,
+                "path": "agent/execution.py",
+                "sha256": "b2d576f765941b392bd470d98ce0a420e9ae00c533723e225e48005f003085b5"
+              },
+              {
+                "bytes": 9632,
+                "path": "agent/features.py",
+                "sha256": "514871b6cee977e925d106ea09549215ff00f41d99e9b74957c187accf5516b8"
+              },
+              {
+                "bytes": 1286,
+                "path": "agent/file_io.py",
+                "sha256": "fc374b6a628e97f47499b5baa720344a783e905707b5cccc297d4c4aeb1a33c9"
+              },
+              {
+                "bytes": 8859,
+                "path": "agent/history.py",
+                "sha256": "87d66717cd8903d3accd3d7f7977c4a097493d385dc90958013964e1cad0baae"
+              },
+              {
+                "bytes": 8430,
+                "path": "agent/inner_feedback.py",
+                "sha256": "7c9248719102153638bbf366ec41718f1b3cf98a93c1bebe0e8db3915001578c"
+              },
+              {
+                "bytes": 9701,
+                "path": "agent/llm.py",
+                "sha256": "f3de40c43ce0eb8711208eb804c29ef0feee4d6189eaf3d1fc02cf1d4baf2c13"
+              },
+              {
+                "bytes": 10240,
+                "path": "agent/metrics.py",
+                "sha256": "c88123013037f532e67dd77e5223c00c141ea01b3a9475fc84fce21aaeadfcf3"
+              },
+              {
+                "bytes": 14876,
+                "path": "agent/model_config.py",
+                "sha256": "e03a31843cd8875e0161cb25abd9fafef4935b86a5f5367d3eae3a897983bec2"
+              },
+              {
+                "bytes": 15159,
+                "path": "agent/models.py",
+                "sha256": "6a50538eadef5b53e43294a0819b6c5c8a8988a461a6138c43b8bf8990b43b5c"
+              },
+              {
+                "bytes": 11269,
+                "path": "agent/offline_research.py",
+                "sha256": "0fe9fe70304ea489207264eb11e6785e98de6cc8f7cdd3918e2d2ec12ea0efda"
+              },
+              {
+                "bytes": 4129,
+                "path": "agent/portfolio_recipes.py",
+                "sha256": "aafd0e2e12ea3994c6a4b72f43dca97a31b9590fe7a3be0147a4f23e9b24bb7c"
+              },
+              {
+                "bytes": 29573,
+                "path": "agent/research.py",
+                "sha256": "84cd71a996801e6b4b4fe4fc907a0c8a054b0a138c17f2c40a4c21b8eb7ea9d6"
+              },
+              {
+                "bytes": 13204,
+                "path": "agent/research_budget.py",
+                "sha256": "eb1a554369b1f4cfe161083221a87d815f9b115b8609023bd28308a641f5b0a2"
+              },
+              {
+                "bytes": 17878,
+                "path": "agent/research_candidate.py",
+                "sha256": "17f684a0a1a248c7cdeeb153ea8791b51970f0bea9eff9c11df404b29499514d"
+              },
+              {
+                "bytes": 5479,
+                "path": "agent/research_feedback.py",
+                "sha256": "017957c89d5ef0956161547152020027be944235ae19034f76c299d4a4e8c3b7"
+              },
+              {
+                "bytes": 7476,
+                "path": "agent/research_stability.py",
+                "sha256": "a94d5979a481dce271c5cddff91dfc01b88a269f2ec65ac145760d12ad6d148a"
+              },
+              {
+                "bytes": 47024,
+                "path": "agent/research_v3.py",
+                "sha256": "973934dc2d4a3cc3e6d5cf10b8974e80ecd539b23058ac7168d37a23797403ce"
+              },
+              {
+                "bytes": 5563,
+                "path": "agent/research_validation.py",
+                "sha256": "f498189af3cb394def988855036742afa35ded8e10cabbbb32c70d5920d9cdde"
+              },
+              {
+                "bytes": 26961,
+                "path": "agent/research_workspace.py",
+                "sha256": "0ffecc601d850b603ce01efc671a2e73cd0bfe041fb44d20064aca540b78cf92"
+              },
+              {
+                "bytes": 9836,
+                "path": "agent/resources.py",
+                "sha256": "e5cdd4fc35276caf3a82672306441bbc47364eabad719b11dd5234aa1a065306"
+              },
+              {
+                "bytes": 12994,
+                "path": "agent/search.py",
+                "sha256": "a2a194953b746d1f130ebc83e7ee690681abf5b95c9997a0f00ce98ea57c0acc"
+              },
+              {
+                "bytes": 7862,
+                "path": "agent/search_policy.py",
+                "sha256": "f540f4228b90d150d481ee7271c3111110b53d91c90efe7a218d9c1eeb937db2"
+              },
+              {
+                "bytes": 10802,
+                "path": "agent/search_schedule.py",
+                "sha256": "4c8348618a622297b857edb5e090274c27b72189f6885ccc67a4e7c1542ff101"
+              },
+              {
+                "bytes": 6942,
+                "path": "agent/splits.py",
+                "sha256": "cdd7025a53cfc4c38b943dae7e022acbaf79ede5276e360fd45921789cff3b79"
+              },
+              {
+                "bytes": 11813,
+                "path": "agent/stability.py",
+                "sha256": "519735ecdd8cf4edaf89d3a22b8c671d517e93f29528d858feb23c27719e4289"
+              },
+              {
+                "bytes": 3923,
+                "path": "agent/target_transform.py",
+                "sha256": "1572b9ba6d00140ff7237e2a5a80c07da485c6fb6dcb7ec442ba1c3d1e420282"
+              },
+              {
+                "bytes": 6377,
+                "path": "agent/task_contract.py",
+                "sha256": "0b4dfccc6b689273eaf152a9fc3e6eef7f879fbf65c5bc91fb339d6ec7e80d0c"
+              },
+              {
+                "bytes": 18051,
+                "path": "agent/task_spec.py",
+                "sha256": "63d4ac94422bd77784d1a1f5fe9be48203d26af750093f185404b5dbfe1e8a8c"
+              },
+              {
+                "bytes": 14500,
+                "path": "offline_baseline.py",
+                "sha256": "d9d7fb019a717b7bb9d773615d44285ec79bf6686e4ea90495ca87455319794c"
+              },
+              {
+                "bytes": 748,
+                "path": "requirements.platform.txt",
+                "sha256": "9173b0388532fbd2a709e4f4b3029e3b9ccab685fce43a85261ffa1ba95efbe6"
+              },
+              {
+                "bytes": 317,
+                "path": "requirements.txt",
+                "sha256": "94e22e023f514db3177d7d84a9eddd7ce7c3ecd2eb4271f1580511346be4cfc2"
+              },
+              {
+                "bytes": 10969,
+                "path": "solution.py",
+                "sha256": "884c819831954e5b6fc7ada7c0f3d44d27d900c8cf1ded2c0fb948f082b95652"
+              },
+              {
+                "bytes": 7324,
+                "path": "validation.py",
+                "sha256": "6ea9706d80f736a7864d2c24b4750850be83c757033c03d4d85c80daeed31663"
+              }
+            ],
+            "root": "/workspace/scratch/271f408d330f/alfa-night-quality",
+            "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+            "worktree_dirty": true
+          }
+        },
+        "path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/research_failure_ac628_reaudit_v2.json",
+        "sha256": "bd050b471ea99fd82a30ff04f35dc86449475126eaa12b9a400e597f923d3949"
+      },
+      "report_path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/research_failure_ac628_frozen/report.json",
+      "report_sha256": "ca44a0b8de50359701bb8a46dde9fede830849df71b42005854227515b1e791f",
+      "sources": {
+        "baseline": {
+          "commit": "390829239bfb245e70d866c02d4cd69d51d4c0d9",
+          "source_sha256": "423227637b7a0441e09d61954092dac8fb5069af5e4a4b2143f929af0d054b68",
+          "worktree_dirty": false
+        },
+        "candidate": {
+          "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+          "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+          "worktree_dirty": false
+        }
+      },
+      "status": "completed"
+    },
+    {
+      "abort_reason": null,
+      "arms": {
+        "baseline": {
+          "elapsed_seconds": 384.975452,
+          "failures": [],
+          "full_refit_v1_verified": 4,
+          "full_refit_v2_verified": 4,
+          "planned_trials": 4,
+          "recorded_trials": 4,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 4
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 4
+        },
+        "candidate": {
+          "elapsed_seconds": 309.304348,
+          "failures": [],
+          "full_refit_v1_verified": 4,
+          "full_refit_v2_verified": 4,
+          "planned_trials": 4,
+          "recorded_trials": 4,
+          "refit_v1_unverified": [],
+          "statuses": {
+            "completed": 4
+          },
+          "telemetry_available_trials": 0,
+          "timed_out_trials": 0,
+          "valid_outputs": 4
+        }
+      },
+      "confirmation_gate": {
+        "assessed": false,
+        "reason": "Not independent confirmation"
+      },
+      "counts": {
+        "loss": 1,
+        "win": 3
+      },
+      "environment": {
+        "catboost": "1.2.8",
+        "lightgbm": "4.6.0",
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+        "psutil": "6.1.1",
+        "python": "3.12.14",
+        "scikit-learn": "1.5.2"
+      },
+      "external_api_calls": 0,
+      "families": [
+        {
+          "baseline_seconds": 136.604801,
+          "candidate_seconds": 138.151227,
+          "case": "public_classification_seed_1729_fold_0",
+          "comparable_pairs": 1,
+          "gain_kind": "absolute_score",
+          "median_absolute_delta": 0.01197520112295869,
+          "median_baseline": 0.6190641887295254,
+          "median_candidate": 0.6310393898524841,
+          "median_gain": 0.01197520112295869,
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcomes": {
+            "win": 1
+          },
+          "planned_pairs": 1,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 136.26412,
+          "candidate_seconds": 113.929976,
+          "case": "public_classification_seed_2718_fold_0",
+          "comparable_pairs": 1,
+          "gain_kind": "absolute_score",
+          "median_absolute_delta": 0.02292232490341939,
+          "median_baseline": 0.6192908331429425,
+          "median_candidate": 0.6422131580463619,
+          "median_gain": 0.02292232490341939,
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcomes": {
+            "win": 1
+          },
+          "planned_pairs": 1,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 40.12424,
+          "candidate_seconds": 4.818424,
+          "case": "public_regression_year_4",
+          "comparable_pairs": 1,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": 10.483305426142927,
+          "median_baseline": 44.761237777563984,
+          "median_candidate": 55.24454320370691,
+          "median_gain": -0.2342049940226978,
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcomes": {
+            "loss": 1
+          },
+          "planned_pairs": 1,
+          "practical_improvement": false,
+          "regression_tolerance_passed": false,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "baseline_seconds": 71.982291,
+          "candidate_seconds": 52.404721,
+          "case": "public_regression_year_5",
+          "comparable_pairs": 1,
+          "gain_kind": "relative_loss",
+          "median_absolute_delta": -5.014742499032941,
+          "median_baseline": 48.99497992932833,
+          "median_candidate": 43.98023743029539,
+          "median_gain": 0.10235216967669626,
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcomes": {
+            "win": 1
+          },
+          "planned_pairs": 1,
+          "practical_improvement": true,
+          "regression_tolerance_passed": true,
+          "time_budget_seconds": 180.0
+        }
+      ],
+      "harness_sha256": null,
+      "kind": "night_public_comparison",
+      "manifest_sha256": "3d4982f85b125b72a010cc773e5a38a145f209c7e9a31f115d684cfa26604c62",
+      "pairs": [
+        {
+          "absolute_delta": 10.483305426142927,
+          "audit_sha256": "8348ad8524fcc1793a97bd2ca14bb4e67546e7c78d86c2ea0acd9920fbdccf1a",
+          "baseline": 44.761237777563984,
+          "baseline_seconds": 40.12424,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 55.24454320370691,
+          "candidate_seconds": 4.818424,
+          "candidate_status": "completed",
+          "case": "public_regression_year_4",
+          "comparable": true,
+          "elapsed_delta_seconds": -35.305816,
+          "improvement": -10.483305426142927,
+          "input_sha256": "bf5936b3fba3466f90a976acc67505bb15d78bc9b2ffbfb8812d85db86b65234",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "loss",
+          "pair": 0,
+          "relative_loss_gain": -0.2342049940226978,
+          "seed": 0,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": -5.014742499032941,
+          "audit_sha256": "958e16371e25dea77eef809934fe7836a516a15f71d1510cee81f2dc114f76a8",
+          "baseline": 48.99497992932833,
+          "baseline_seconds": 71.982291,
+          "baseline_status": "completed",
+          "bounded_score_gain": null,
+          "candidate": 43.98023743029539,
+          "candidate_seconds": 52.404721,
+          "candidate_status": "completed",
+          "case": "public_regression_year_5",
+          "comparable": true,
+          "elapsed_delta_seconds": -19.57757,
+          "improvement": 5.014742499032941,
+          "input_sha256": "3850ba23b298746a3557e0aa4cec8b800164178897529e38327e1bd91496f74a",
+          "metric": "RMSE",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 1,
+          "relative_loss_gain": 0.10235216967669626,
+          "seed": 0,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.01197520112295869,
+          "audit_sha256": "56c9edafe1fc51581d17297fa735d984b2383d5ff449167b14bdf9d5e36d2a9b",
+          "baseline": 0.6190641887295254,
+          "baseline_seconds": 136.604801,
+          "baseline_status": "completed",
+          "bounded_score_gain": 0.01197520112295869,
+          "candidate": 0.6310393898524841,
+          "candidate_seconds": 138.151227,
+          "candidate_status": "completed",
+          "case": "public_classification_seed_1729_fold_0",
+          "comparable": true,
+          "elapsed_delta_seconds": 1.5464259999999967,
+          "improvement": 0.01197520112295869,
+          "input_sha256": "86aaf3887bcef61d8f5ea4ca5afc000a0a38b7cf0f2878d5186574e502a05238",
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 2,
+          "relative_loss_gain": null,
+          "seed": 1729,
+          "time_budget_seconds": 180.0
+        },
+        {
+          "absolute_delta": 0.02292232490341939,
+          "audit_sha256": "fcf55d5548ead4c08124c54ec4c7db12e91d653e90f0ffcd6914e6725e535c74",
+          "baseline": 0.6192908331429425,
+          "baseline_seconds": 136.26412,
+          "baseline_status": "completed",
+          "bounded_score_gain": 0.02292232490341939,
+          "candidate": 0.6422131580463619,
+          "candidate_seconds": 113.929976,
+          "candidate_status": "completed",
+          "case": "public_classification_seed_2718_fold_0",
+          "comparable": true,
+          "elapsed_delta_seconds": -22.334143999999995,
+          "improvement": 0.02292232490341939,
+          "input_sha256": "ed8c4a810f7ed200db059eb5f7a5cfe8b8c459ebfe6bfeca6b211fd8d171ada7",
+          "metric": "Macro F1",
+          "mode": "automl",
+          "outcome": "win",
+          "pair": 3,
+          "relative_loss_gain": null,
+          "seed": 2718,
+          "time_budget_seconds": 180.0
+        }
+      ],
+      "planned_trial_wall_caps_seconds": 1440.0,
+      "purpose": "public_sanity",
+      "reaudit_v2": {
+        "auditor": {
+          "environment": {
+            "catboost": "1.2.8",
+            "lightgbm": "4.6.0",
+            "numpy": "1.26.4",
+            "pandas": "2.2.3",
+            "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+            "psutil": "6.1.1",
+            "python": "3.12.14",
+            "scikit-learn": "1.5.2"
+          },
+          "harness_sha256": {
+            "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+            "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+            "experiment_night_quality.py": "b5f95610d69cfce9217fd65230c40441635951d7aa213e05371ebe21c4cc8ec2"
+          },
+          "source": {
+            "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+            "files": [
+              {
+                "bytes": 335,
+                "path": "agent/__init__.py",
+                "sha256": "7374e8671080e47c78368884cf5a04f1e9f88f65c09121551f560dfbfdd33ebe"
+              },
+              {
+                "bytes": 5756,
+                "path": "agent/adaptive_local.py",
+                "sha256": "24e531f0e08420cf92cad780d8c3cac5617797dd5b378420117ad7ef4284a516"
+              },
+              {
+                "bytes": 47377,
+                "path": "agent/automl.py",
+                "sha256": "ce9353d052676700a6cfc77b93048ad6ba4bd663201b6979d5a3bb2c4b79d480"
+              },
+              {
+                "bytes": 4195,
+                "path": "agent/automl_worker.py",
+                "sha256": "ca3b2d782df5aa8f37b7c27c5d20b77bc0747af3f8e8bd8e72bf322931d4ae6d"
+              },
+              {
+                "bytes": 9727,
+                "path": "agent/building_history.py",
+                "sha256": "12ffa3bd1a178a0982b30abe74b71ed52e6ec6fd5b08deb7804a08ac8ff97ff2"
+              },
+              {
+                "bytes": 26849,
+                "path": "agent/classification_decision.py",
+                "sha256": "e81dc5ca13483ea55dc5f5d3798868fe643e4d64d01bbe82400ee54698cded30"
+              },
+              {
+                "bytes": 8367,
+                "path": "agent/diagnostics.py",
+                "sha256": "d632bf7f20d45d8a77bab965721124c9a02616a3ed98cda31123f626d32c6f3a"
+              },
+              {
+                "bytes": 21112,
+                "path": "agent/emergency.py",
+                "sha256": "ffb4123601614850c0e7c0096acf4d7794de0d5778926bfb836237399d49bca6"
+              },
+              {
+                "bytes": 6127,
+                "path": "agent/execution.py",
+                "sha256": "b2d576f765941b392bd470d98ce0a420e9ae00c533723e225e48005f003085b5"
+              },
+              {
+                "bytes": 9632,
+                "path": "agent/features.py",
+                "sha256": "514871b6cee977e925d106ea09549215ff00f41d99e9b74957c187accf5516b8"
+              },
+              {
+                "bytes": 1286,
+                "path": "agent/file_io.py",
+                "sha256": "fc374b6a628e97f47499b5baa720344a783e905707b5cccc297d4c4aeb1a33c9"
+              },
+              {
+                "bytes": 8859,
+                "path": "agent/history.py",
+                "sha256": "87d66717cd8903d3accd3d7f7977c4a097493d385dc90958013964e1cad0baae"
+              },
+              {
+                "bytes": 8430,
+                "path": "agent/inner_feedback.py",
+                "sha256": "7c9248719102153638bbf366ec41718f1b3cf98a93c1bebe0e8db3915001578c"
+              },
+              {
+                "bytes": 9701,
+                "path": "agent/llm.py",
+                "sha256": "f3de40c43ce0eb8711208eb804c29ef0feee4d6189eaf3d1fc02cf1d4baf2c13"
+              },
+              {
+                "bytes": 10240,
+                "path": "agent/metrics.py",
+                "sha256": "c88123013037f532e67dd77e5223c00c141ea01b3a9475fc84fce21aaeadfcf3"
+              },
+              {
+                "bytes": 14876,
+                "path": "agent/model_config.py",
+                "sha256": "e03a31843cd8875e0161cb25abd9fafef4935b86a5f5367d3eae3a897983bec2"
+              },
+              {
+                "bytes": 15159,
+                "path": "agent/models.py",
+                "sha256": "6a50538eadef5b53e43294a0819b6c5c8a8988a461a6138c43b8bf8990b43b5c"
+              },
+              {
+                "bytes": 11269,
+                "path": "agent/offline_research.py",
+                "sha256": "0fe9fe70304ea489207264eb11e6785e98de6cc8f7cdd3918e2d2ec12ea0efda"
+              },
+              {
+                "bytes": 4129,
+                "path": "agent/portfolio_recipes.py",
+                "sha256": "aafd0e2e12ea3994c6a4b72f43dca97a31b9590fe7a3be0147a4f23e9b24bb7c"
+              },
+              {
+                "bytes": 29573,
+                "path": "agent/research.py",
+                "sha256": "84cd71a996801e6b4b4fe4fc907a0c8a054b0a138c17f2c40a4c21b8eb7ea9d6"
+              },
+              {
+                "bytes": 13204,
+                "path": "agent/research_budget.py",
+                "sha256": "eb1a554369b1f4cfe161083221a87d815f9b115b8609023bd28308a641f5b0a2"
+              },
+              {
+                "bytes": 17878,
+                "path": "agent/research_candidate.py",
+                "sha256": "17f684a0a1a248c7cdeeb153ea8791b51970f0bea9eff9c11df404b29499514d"
+              },
+              {
+                "bytes": 5479,
+                "path": "agent/research_feedback.py",
+                "sha256": "017957c89d5ef0956161547152020027be944235ae19034f76c299d4a4e8c3b7"
+              },
+              {
+                "bytes": 7476,
+                "path": "agent/research_stability.py",
+                "sha256": "a94d5979a481dce271c5cddff91dfc01b88a269f2ec65ac145760d12ad6d148a"
+              },
+              {
+                "bytes": 47024,
+                "path": "agent/research_v3.py",
+                "sha256": "973934dc2d4a3cc3e6d5cf10b8974e80ecd539b23058ac7168d37a23797403ce"
+              },
+              {
+                "bytes": 5563,
+                "path": "agent/research_validation.py",
+                "sha256": "f498189af3cb394def988855036742afa35ded8e10cabbbb32c70d5920d9cdde"
+              },
+              {
+                "bytes": 26961,
+                "path": "agent/research_workspace.py",
+                "sha256": "0ffecc601d850b603ce01efc671a2e73cd0bfe041fb44d20064aca540b78cf92"
+              },
+              {
+                "bytes": 9836,
+                "path": "agent/resources.py",
+                "sha256": "e5cdd4fc35276caf3a82672306441bbc47364eabad719b11dd5234aa1a065306"
+              },
+              {
+                "bytes": 12994,
+                "path": "agent/search.py",
+                "sha256": "a2a194953b746d1f130ebc83e7ee690681abf5b95c9997a0f00ce98ea57c0acc"
+              },
+              {
+                "bytes": 7862,
+                "path": "agent/search_policy.py",
+                "sha256": "f540f4228b90d150d481ee7271c3111110b53d91c90efe7a218d9c1eeb937db2"
+              },
+              {
+                "bytes": 10802,
+                "path": "agent/search_schedule.py",
+                "sha256": "4c8348618a622297b857edb5e090274c27b72189f6885ccc67a4e7c1542ff101"
+              },
+              {
+                "bytes": 6942,
+                "path": "agent/splits.py",
+                "sha256": "cdd7025a53cfc4c38b943dae7e022acbaf79ede5276e360fd45921789cff3b79"
+              },
+              {
+                "bytes": 11813,
+                "path": "agent/stability.py",
+                "sha256": "519735ecdd8cf4edaf89d3a22b8c671d517e93f29528d858feb23c27719e4289"
+              },
+              {
+                "bytes": 3923,
+                "path": "agent/target_transform.py",
+                "sha256": "1572b9ba6d00140ff7237e2a5a80c07da485c6fb6dcb7ec442ba1c3d1e420282"
+              },
+              {
+                "bytes": 6377,
+                "path": "agent/task_contract.py",
+                "sha256": "0b4dfccc6b689273eaf152a9fc3e6eef7f879fbf65c5bc91fb339d6ec7e80d0c"
+              },
+              {
+                "bytes": 18051,
+                "path": "agent/task_spec.py",
+                "sha256": "63d4ac94422bd77784d1a1f5fe9be48203d26af750093f185404b5dbfe1e8a8c"
+              },
+              {
+                "bytes": 14500,
+                "path": "offline_baseline.py",
+                "sha256": "d9d7fb019a717b7bb9d773615d44285ec79bf6686e4ea90495ca87455319794c"
+              },
+              {
+                "bytes": 748,
+                "path": "requirements.platform.txt",
+                "sha256": "9173b0388532fbd2a709e4f4b3029e3b9ccab685fce43a85261ffa1ba95efbe6"
+              },
+              {
+                "bytes": 317,
+                "path": "requirements.txt",
+                "sha256": "94e22e023f514db3177d7d84a9eddd7ce7c3ecd2eb4271f1580511346be4cfc2"
+              },
+              {
+                "bytes": 10969,
+                "path": "solution.py",
+                "sha256": "884c819831954e5b6fc7ada7c0f3d44d27d900c8cf1ded2c0fb948f082b95652"
+              },
+              {
+                "bytes": 7324,
+                "path": "validation.py",
+                "sha256": "6ea9706d80f736a7864d2c24b4750850be83c757033c03d4d85c80daeed31663"
+              }
+            ],
+            "root": "/workspace/scratch/271f408d330f/alfa-night-quality",
+            "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+            "worktree_dirty": true
+          }
+        },
+        "path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/public_ac628_reaudit_v2.json",
+        "sha256": "08af6c38f53105c299c98af8d3636071cce3839169de536bf240d21030c36beb"
+      },
+      "report_path": "/workspace/scratch/271f408d330f/alfa-night-quality/data/experiments/night_quality/public_ac628_logged/report.json",
+      "report_sha256": "1b053eebe309437a6c33dade56517708fd6837949ac7e8acc42f4e589e1b1407",
+      "sources": {
+        "baseline": {
+          "commit": "390829239bfb245e70d866c02d4cd69d51d4c0d9",
+          "source_sha256": "423227637b7a0441e09d61954092dac8fb5069af5e4a4b2143f929af0d054b68",
+          "worktree_dirty": false
+        },
+        "candidate": {
+          "commit": "ac628cfcf4fc9d87573c226dbc393b52f4e66c73",
+          "source_sha256": "50b802838b615bd23aeb509e062de961874e6cc71af3fd3dfa627b8c603c7ceb",
+          "worktree_dirty": false
+        }
+      },
+      "status": "completed"
+    }
+  ],
+  "version": 1
+}

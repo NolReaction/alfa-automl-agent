@@ -291,5 +291,206 @@ class NightQualityRunnerTests(unittest.TestCase):
         self.assertTrue((self.output / "manifest.json").is_file())
 
 
+class NightQualityReauditV2Tests(unittest.TestCase):
+    """Artifact-only fixtures exercise the proof; no model is trained."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.baseline = fake_checkout(self.root / "baseline")
+        self.candidate = fake_checkout(self.root / "candidate")
+        trusted_worker = (night.ROOT / "agent/automl_worker.py").read_bytes()
+        for root in (self.baseline, self.candidate):
+            (root / "agent/automl_worker.py").write_bytes(trusted_worker)
+        self.output = self.root / "prepared"
+        self.manifest = night.prepare(self.output, baseline_root=self.baseline, candidate_root=self.candidate,
+                                      cases=("linear_regression",), seeds=(42,), budgets=(10,), allow_dirty=True)
+        self.rows = [self.completed_artifact_fixture(index, arm)
+                     for index, arm in ((0, "baseline"), (1, "candidate"))]
+        self.report = {"version": 1, "kind": "night_quality_comparison", "status": "completed",
+                       "manifest_sha256": night._hash((self.output / "manifest.json").read_bytes()),
+                       "sources": self.manifest["sources"], "finished_at": "fixture-finished",
+                       "external_api_calls": 0, "trials": self.rows}
+        night._write(self.output / "report.json", self.report)
+
+    def completed_artifact_fixture(self, index, arm):
+        case = make_case("linear_regression", 42)
+        task = write_case(case, self.output / "runs" / f"trial_{index:04d}_{arm}")
+        spec = benchmark.load_task(task)
+        phase = task.parent / ".agent_runs" / (str(index + 1) * 32) / "seed/seed"
+        phase.mkdir(parents=True)
+        shutil.copytree(task.parent / "inputs", phase / "inputs")
+        shutil.copyfile(task, phase / "task.md")
+        local_spec = benchmark.load_task(phase / "task.md")
+        model = {"model": "Ridge", "parameters": {"alpha": 1.0}}
+        features = {"missing_indicators": False, "signed_log": False, "rare_min_count": 0,
+                    "date_columns": [], "text_columns": []}
+        fitting, held = list(range(480)), list(range(480, 600))
+        config = {"id": "seed", "phase": "seed", "action": "linear", "model_config": model,
+                  "feature_config": features, "candidate_dir": str(phase), "task_spec": local_spec.to_dict(),
+                  "fit_rows": fitting, "validation_rows": held}
+        night._write(phase / "config.json", config)
+        prediction = [1.25] * len(case.test)
+        spec.prediction_frame(case.test["row_key"], prediction).to_csv(phase / "submission.csv", index=False)
+        spec.holdout_frame(case.train["row_key"].iloc[held], case.train["outcome"].iloc[held],
+                           [1.25] * len(held)).to_csv(phase / "holdout_predictions.csv", index=False)
+        durations = {"fit_seconds": .1, "predict_seconds": .1, "total_seconds": .3}
+        night._write(phase / "durations.json", durations)
+        execution_dir = phase / "execution"
+        execution_dir.mkdir()
+        solver_root = Path(self.manifest["sources"][arm]["root"])
+        launcher = ("import sys\n" f"sys.path.insert(0, {str(solver_root)!r})\n"
+                    "from pathlib import Path\nfrom agent.automl_worker import run_candidate\n"
+                    f"run_candidate(Path({str(phase / 'config.json')!r}))\n")
+        (execution_dir / "experiment_001.py").write_text(launcher, encoding="utf-8")
+        (execution_dir / "experiment_001.stdout.txt").write_text("", encoding="utf-8")
+        output = task.parent / "solver_output"
+        checkpoint = output / "checkpoints" / ("a" * 32)
+        checkpoint.mkdir(parents=True)
+        for filename in ("submission.csv", "holdout_predictions.csv"):
+            shutil.copyfile(phase / filename, checkpoint / filename)
+        shutil.copyfile(phase / "submission.csv", task.parent / "submission.csv")
+        pointer = {"version": 1, "directory": "checkpoints/" + "a" * 32,
+                   "submission_sha256": night._hash((checkpoint / "submission.csv").read_bytes()),
+                   "holdout_sha256": night._hash((checkpoint / "holdout_predictions.csv").read_bytes())}
+        night._write(output / "checkpoint.json", pointer)
+        selected = {"id": "seed", "selected": True, "status": "completed", "phase": "seed",
+                    "model_config": model, "feature_config": features, "durations": durations,
+                    "resources": {"exit_code": 0, "timed_out": False, "memory_exceeded": False}}
+        night._write(output / "automl_report.json", {"api": {"used": False, "calls": 0}, "output_valid": True,
+                                                     "search": {"best_candidate": "seed", "candidates": [selected]}})
+        row = {"case": case.name, "seed": case.seed, "mode": "automl", "arm": arm, "trial_index": index,
+               "pair": 0, "task": str(task), "input_sha256": benchmark.input_fingerprint(task),
+               "audit_sha256": night._hash(night._bytes(case.audit_actuals)), "metric": case.metric,
+               "validation": case.validation, "time_budget_seconds": 10.0,
+               "memory_limit_bytes": self.manifest["memory_mib"] * 1024 ** 2,
+               "solver_options": self.manifest["solver_options"][arm], "status": "completed",
+               "sources_unchanged": True, "inputs_unchanged": True, "elapsed_seconds": .5,
+               "execution": {"exit_code": 0, "timed_out": False, "memory_limit_exceeded": False},
+               "audit": benchmark.audit_submission(task, case.audit_actuals)}
+        row["refit_evidence"] = night.refit_evidence(row, 600)
+        self.assertFalse(row["refit_evidence"]["valid"])
+        return row
+
+    def phase(self):
+        return next(Path(self.rows[1]["task"]).parent.glob(".agent_runs/*/seed/seed"))
+
+    def test_missing_stdout_has_separate_v2_proof_without_changing_v1(self):
+        row = self.rows[1]
+        before = deepcopy(row["refit_evidence"])
+        evidence = night.refit_evidence_v2(row, 600, self.manifest["sources"]["candidate"])
+        self.assertTrue(evidence["valid"], evidence)
+        self.assertFalse(evidence["stdout_corroborated"])
+        self.assertEqual(evidence["kind"], "source_bound_worker_v2")
+        self.assertEqual(row["refit_evidence"], before)
+        self.assertFalse(night.refit_evidence(row, 600)["valid"])
+
+    def test_missing_duration_modified_inputs_untrusted_launcher_and_incomplete_phase_reject(self):
+        phase = self.phase()
+        selected_report = Path(self.rows[1]["task"]).parent / "solver_output/automl_report.json"
+        files = [phase / "durations.json", phase / "inputs/train.csv",
+                 phase / "execution/experiment_001.py", phase / "config.json", selected_report]
+        backups = {path: path.read_bytes() for path in files}
+        changes = [lambda: files[0].unlink(),
+                   lambda: files[1].write_text("changed", encoding="utf-8"),
+                   lambda: files[2].write_text("print('forged launcher')\n", encoding="utf-8"),
+                   lambda: files[3].write_text("{}", encoding="utf-8"),
+                   lambda: files[4].write_text(json.dumps({"api": {"used": False, "calls": 0}, "output_valid": True,
+                       "search": {"best_candidate": "seed", "candidates": [{"id": "seed", "selected": True,
+                       "status": "running", "phase": "seed"}]}}), encoding="utf-8")]
+        for change in changes:
+            with self.subTest(change=change):
+                change()
+                evidence = night.refit_evidence_v2(self.rows[1], 600, self.manifest["sources"]["candidate"])
+                self.assertFalse(evidence["valid"], evidence)
+                for path, content in backups.items():
+                    path.write_bytes(content)
+
+    def test_template_only_untrusted_worker_and_unsuccessful_trial_do_not_gain_proof(self):
+        row = deepcopy(self.rows[1])
+        for key, value in (("status", "timeout"), ("sources_unchanged", False), ("inputs_unchanged", False)):
+            invalid = {**row, key: value}
+            self.assertFalse(night.refit_evidence_v2(invalid, 600, self.manifest["sources"]["candidate"])["valid"])
+        worker = self.candidate / "agent/automl_worker.py"
+        original_worker = worker.read_bytes()
+        worker.write_text("# Untrusted version that could fabricate completion\n", encoding="utf-8")
+        changed_source = benchmark.source_provenance(self.candidate)
+        self.assertFalse(night.refit_evidence_v2(row, 600, changed_source)["valid"])
+        worker.write_bytes(original_worker)
+        # A schema-valid copied template has no completed worker artifacts.
+        shutil.rmtree(self.phase())
+        task = Path(row["task"])
+        shutil.copyfile(task.parent / "inputs/sample_submission.csv", task.parent / "submission.csv")
+        self.assertTrue(benchmark.audit_submission(task, make_case("linear_regression", 42).audit_actuals)["valid"])
+        self.assertFalse(night.refit_evidence_v2(row, 600, self.manifest["sources"]["candidate"])["valid"])
+
+    def test_reaudit_independently_scores_and_writes_new_bound_evidence_without_mutating_old_files(self):
+        old = {path: path.read_bytes() for path in self.output.rglob("*") if path.is_file()}
+        destination = self.output / "reaudit_v2.json"
+        with patch.object(benchmark, "run_trial", side_effect=AssertionError("Re-audit trained a model")):
+            result = night.reaudit_prepared(self.output, destination)
+        self.assertTrue(result["all_trials_verified"])
+        self.assertEqual(result["original_report_sha256"], night._hash(old[self.output / "report.json"]))
+        self.assertEqual(result["summary"]["candidate"]["verified_full_refits"], 1)
+        for row in result["trials"]:
+            self.assertTrue(row["valid"])
+            self.assertTrue(row["independent_audit_matches_original"])
+            self.assertTrue(row["full_refit"]["valid"])
+            self.assertFalse(row["v1_refit_evidence"]["valid"])
+        for path, content in old.items():
+            self.assertEqual(path.read_bytes(), content, str(path))
+        with self.assertRaisesRegex(ValueError, "new .json"):
+            night.reaudit_prepared(self.output, destination)
+        self.assertNotIn("OPENAI_API_KEY", destination.read_text(encoding="utf-8"))
+
+    def test_finished_report_audit_truth_and_row_plan_cannot_be_changed_silently(self):
+        report_path = self.output / "report.json"
+        report = deepcopy(self.report)
+        report["status"] = "running"
+        night._write(report_path, report)
+        with self.assertRaisesRegex(ValueError, "unfinished"):
+            night.reaudit_prepared(self.output, self.output / "audit1.json")
+        night._write(report_path, self.report)
+        report = deepcopy(self.report)
+        report["trials"][1]["time_budget_seconds"] = 20
+        night._write(report_path, report)
+        with self.assertRaisesRegex(ValueError, "differs from frozen"):
+            night.reaudit_prepared(self.output, self.output / "audit2.json")
+        night._write(report_path, self.report)
+        truth = next((self.output / "host_audit").glob("*.json"))
+        truth.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "audit answers changed"):
+            night.reaudit_prepared(self.output, self.output / "audit3.json")
+
+    def test_public_finished_report_uses_same_reaudit_and_immutable_v1_flags(self):
+        # Convert only the outer manifest/report envelope. Artifact proof and
+        # independent scorer are the same for public and synthetic case inputs.
+        manifest = deepcopy(self.manifest)
+        manifest["kind"] = "night_public_prepared"
+        manifest["budget_seconds"] = 10
+        original_fingerprint = next((self.output / "prepared_inputs").glob("*/task.md"))
+        manifest["datasets"] = {"regression": {"fingerprints": {
+            str(original_fingerprint): night._hash(original_fingerprint.read_bytes())}}}
+        manifest["script_sources"] = {str(night.ROOT / name): night._hash((night.ROOT / name).read_bytes())
+                                      for name in night.HARNESS_FILES}
+        for item in manifest["cases"]:
+            item["name"] = item.pop("case")
+            item["split"] = {"split_hash": "public-fixture-split"}
+        manifest["trial_plan"] = [{"index": item["index"], "pair": item["pair"], "arm": item["arm"]}
+                                   for item in manifest["trial_plan"]]
+        night._write(self.output / "manifest.json", manifest)
+        night._write(self.output / "seal.json", {"manifest_sha256": night._hash((self.output / "manifest.json").read_bytes())})
+        report = deepcopy(self.report)
+        report["kind"] = "night_public_comparison"
+        report["manifest_sha256"] = night._hash((self.output / "manifest.json").read_bytes())
+        for row in report["trials"]:
+            row["public_outer_split_hash"] = "public-fixture-split"
+        night._write(self.output / "report.json", report)
+        result = night.reaudit_prepared(self.output, self.output / "public_reaudit.json")
+        self.assertTrue(result["all_trials_verified"])
+        self.assertEqual(len(result["trials"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

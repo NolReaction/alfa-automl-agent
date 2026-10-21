@@ -30,6 +30,13 @@ VERSION = 1
 HARNESS_FILES = ("experiment_night_quality.py", "benchmark_agent.py", "benchmark_cases.py")
 POLICIES = ("legacy", "adaptive_v1")
 MODES = ("automl", "research_api_failure")
+# Versioned source proof: this worker writes durations.json only after its
+# seed/refit branch has fitted the complete train and saved predictions. Raw
+# source hashes are also checked; newline normalization supports native Git
+# checkouts on Windows without accepting any semantic source modification.
+TRUSTED_FULL_DATA_WORKERS_V2 = frozenset({
+    "ca3b2d782df5aa8f37b7c27c5d20b77bc0747af3f8e8bd8e72bf322931d4ae6d",
+})
 
 
 def _bytes(value) -> bytes:
@@ -267,6 +274,275 @@ def refit_evidence(row: dict, train_rows: int) -> dict:
                 "reason": f"{type(error).__name__}: {error}"[:500]}
 
 
+def refit_evidence_v2(row: dict, train_rows: int, expected_source: dict) -> dict:
+    """Recheck completion artifacts without requiring successfully captured stdout.
+
+    This is a separate versioned proof. It neither changes nor upgrades v1
+    evidence in an original report. The trusted source and exact launcher bind
+    the durations completion marker to the full-data training control flow.
+    Ordinary same-user filesystem access is not a security sandbox.
+    """
+    failure = {"version": 2, "valid": False, "kind": "source_bound_worker_v2", "train_rows": None}
+    try:
+        execution = row.get("execution") or {}
+        if (row.get("status") != "completed" or row.get("sources_unchanged") is not True
+                or row.get("inputs_unchanged") is not True
+                or type(execution.get("exit_code")) is not int or execution["exit_code"] != 0
+                or execution.get("timed_out") is not False
+                or execution.get("memory_limit_exceeded") is not False or execution.get("error")):
+            raise ValueError("Trial did not complete with unchanged inputs and sources")
+        actual_source = benchmark.source_provenance(Path(expected_source["root"]))
+        if any(actual_source[key] != expected_source[key]
+               for key in ("source_sha256", "commit", "worktree_dirty")):
+            raise ValueError("Frozen solver source changed")
+        task = Path(row["task"])
+        if benchmark.input_fingerprint(task) != row["input_sha256"]:
+            raise ValueError("Original trial inputs changed")
+        if row["mode"] == "research_api_failure":
+            current = benchmark._research_summary(task.parent)
+            errors = benchmark._research_contract(current, row["time_budget_seconds"],
+                                                   row["validation"], row["metric"])
+            if errors or current != row.get("solver_report"):
+                raise ValueError("Research receipts or original research contract changed")
+            return {"version": 2, "valid": True, "kind": "research_receipts_rechecked",
+                    "train_rows": train_rows, "stdout_corroborated": None,
+                    "source_sha256": actual_source["source_sha256"]}
+        if row["mode"] != "automl" or type(train_rows) is not int or train_rows <= 0:
+            raise ValueError("Unsupported full-data phase")
+        root = Path(expected_source["root"])
+        worker_path = root / "agent/automl_worker.py"
+        worker_raw = worker_path.read_bytes()
+        source_entries = {item["path"]: item for item in expected_source["files"]}
+        if _hash(worker_raw) != source_entries["agent/automl_worker.py"]["sha256"]:
+            raise ValueError("Worker differs from frozen source manifest")
+        worker_semantics = _hash(worker_raw.decode("utf-8-sig").replace("\r\n", "\n").encode("utf-8"))
+        if worker_semantics not in TRUSTED_FULL_DATA_WORKERS_V2:
+            raise ValueError("Worker has no trusted full-data completion proof version")
+        task_dir = task.parent
+        if len(benchmark.read_csv(task_dir / "inputs/train.csv")) != train_rows:
+            raise ValueError("Original full-train row count differs from prepared case")
+        output = task_dir / "solver_output"
+        report_path = output / "automl_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if report.get("api") != {"used": False, "calls": 0} or report.get("output_valid") is not True:
+            raise ValueError("Missing completed offline output contract")
+        selected = [item for item in report["search"]["candidates"] if item.get("selected") is True]
+        identifier = report["search"]["best_candidate"]
+        if (not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", identifier)
+                or len(selected) != 1 or selected[0].get("id") != identifier
+                or selected[0].get("status") != "completed" or selected[0].get("phase") not in {"seed", "refit"}):
+            raise ValueError("No completed selected full-data phase")
+        selected = selected[0]
+        resources = selected.get("resources") or {}
+        if (type(resources.get("exit_code")) is not int or resources["exit_code"] != 0
+                or resources.get("timed_out") is not False or resources.get("memory_exceeded") is not False):
+            raise ValueError("Selected full-data worker did not complete successfully")
+        pointer_path = output / "checkpoint.json"
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        if (set(pointer) != {"version", "directory", "submission_sha256", "holdout_sha256"}
+                or type(pointer["version"]) is not int or pointer["version"] != 1
+                or not isinstance(pointer["directory"], str)
+                or not re.fullmatch(r"checkpoints/[0-9a-f]{32}", pointer["directory"])):
+            raise ValueError("Invalid accepted checkpoint pointer")
+        for filename, key in (("submission.csv", "submission_sha256"),
+                              ("holdout_predictions.csv", "holdout_sha256")):
+            if _hash((output / pointer["directory"] / filename).read_bytes()) != pointer[key]:
+                raise ValueError("Accepted checkpoint bytes changed")
+        if _hash((task_dir / "submission.csv").read_bytes()) != pointer["submission_sha256"]:
+            raise ValueError("Published CSV differs from accepted checkpoint")
+        phase = selected["phase"]
+        matches = []
+        for config_path in (task_dir / ".agent_runs").glob(f"*/{identifier}/{phase}/config.json"):
+            directory = config_path.parent
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            spec = TaskSpec.from_dict(config["task_spec"])
+            if (config.get("id") != identifier or config.get("phase") != phase
+                    or config.get("model_config") != selected.get("model_config")
+                    or config.get("feature_config") != selected.get("feature_config")
+                    or Path(config["candidate_dir"]).resolve() != directory.resolve()
+                    or spec.task_path.resolve() != (directory / "task.md").resolve()
+                    or spec.data_dir.resolve() != (directory / "inputs").resolve()
+                    or spec != benchmark.load_task(directory / "task.md")):
+                raise ValueError("Selected phase config, model or TaskSpec differs")
+            same_data = all((directory / "inputs" / name).read_bytes()
+                            == (task_dir / "inputs" / name).read_bytes() for name in benchmark.INPUT_NAMES)
+            if (not same_data or (directory / "task.md").read_text(encoding="utf-8-sig")
+                    != task.read_text(encoding="utf-8-sig")):
+                raise ValueError("Full-data phase inputs differ from original trial")
+            fitting, held = config["fit_rows"], config["validation_rows"]
+            if (not fitting or not held or any(type(i) is not int or not 0 <= i < train_rows for i in [*fitting, *held])
+                    or len(set(fitting)) != len(fitting) or len(set(held)) != len(held)
+                    or set(fitting) & set(held)):
+                raise ValueError("Invalid fixed worker validation rows")
+            expected_launcher = ("import sys\n" f"sys.path.insert(0, {str(root)!r})\n"
+                                 "from pathlib import Path\nfrom agent.automl_worker import run_candidate\n"
+                                 f"run_candidate(Path({str(config_path)!r}))\n")
+            launchers = list((directory / "execution").glob("*.py"))
+            if (len(launchers) != 1 or launchers[0].is_symlink()
+                    or launchers[0].read_text(encoding="utf-8-sig") != expected_launcher):
+                raise ValueError("Untrusted or ambiguous full-data launcher")
+            if _hash((directory / "submission.csv").read_bytes()) != pointer["submission_sha256"]:
+                raise ValueError("Completed phase CSV differs from accepted checkpoint")
+            duration_path = directory / "durations.json"
+            durations = json.loads(duration_path.read_text(encoding="utf-8"))
+            if (set(durations) != {"fit_seconds", "predict_seconds", "total_seconds"}
+                    or any(type(v) not in {int, float} or not math.isfinite(v) or v < 0 for v in durations.values())
+                    or durations["fit_seconds"] <= 0 or durations["total_seconds"] <= 0
+                    or durations["total_seconds"] + 1e-9 < durations["fit_seconds"] + durations["predict_seconds"]
+                    or any(type(selected.get("durations", {}).get(key)) not in {int, float}
+                           or not math.isfinite(selected["durations"][key])
+                           or selected["durations"][key] + 1e-9 < value for key, value in durations.items())):
+                raise ValueError("Missing or invalid source-bound completion durations")
+            logs = "\n".join(path.read_text(encoding="utf-8")
+                             for path in (directory / "execution").glob("*.stdout.txt"))
+            matches.append({"version": 2, "valid": True, "kind": "source_bound_worker_v2", "train_rows": train_rows,
+                            "phase": phase, "candidate": identifier, "phase_directory": str(directory),
+                            "stdout_corroborated": (f"refitting on all {train_rows} rows" in logs
+                                                    and f"{phase} completed in " in logs),
+                            "source_sha256": actual_source["source_sha256"],
+                            "worker_sha256": _hash(worker_raw), "worker_semantics_sha256": worker_semantics,
+                            "launcher_sha256": _hash(launchers[0].read_bytes()),
+                            "config_sha256": _hash(config_path.read_bytes()),
+                            "durations_sha256": _hash(duration_path.read_bytes()),
+                            "checkpoint_pointer_sha256": _hash(pointer_path.read_bytes()),
+                            "phase_input_sha256": benchmark.input_fingerprint(directory / "task.md"),
+                            "submission_sha256": pointer["submission_sha256"]})
+        if len(matches) != 1:
+            raise ValueError("Completed full-data phase is absent or ambiguous")
+        return matches[0]
+    except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
+        return {**failure, "reason": f"{type(error).__name__}: {error}"[:500]}
+
+
+def _finished_reaudit_inputs(output: Path):
+    """Verify old artifacts against their own frozen auditor, not this new one."""
+    raw_manifest = (output / "manifest.json").read_bytes()
+    raw_seal = (output / "seal.json").read_bytes()
+    manifest = json.loads(raw_manifest)
+    if json.loads(raw_seal) != {"manifest_sha256": _hash(raw_manifest)}:
+        raise ValueError("Original prepared manifest changed")
+    if manifest.get("version") != 1 or manifest.get("kind") not in {"night_quality_prepared", "night_public_prepared"}:
+        raise ValueError("Unsupported original prepared plan")
+    raw_report = (output / "report.json").read_bytes()
+    report = json.loads(raw_report)
+    expected_kind = "night_quality_comparison" if manifest["kind"] == "night_quality_prepared" else "night_public_comparison"
+    if (report.get("version") != 1 or report.get("kind") != expected_kind
+            or report.get("status") not in {"completed", "incomplete", "aborted"}
+            or not report.get("finished_at") or report.get("manifest_sha256") != _hash(raw_manifest)
+            or report.get("sources") != manifest.get("sources")):
+        raise ValueError("Original report is unfinished or inconsistent with prepared plan")
+    if manifest.get("environment") != _environment():
+        raise ValueError("Re-audit requires the recorded package environment")
+    _check_sources(manifest)
+    if manifest["kind"] == "night_quality_prepared":
+        frozen_host = Path(manifest["host_source"]["root"])
+        for name, digest in manifest["harness_sha256"].items():
+            if (_hash((frozen_host / name).read_bytes()) != digest
+                    or _hash((output / "host_source" / name).read_bytes()) != digest):
+                raise ValueError("Original frozen harness changed")
+    else:
+        for name, digest in manifest["script_sources"].items():
+            if _hash(Path(name).read_bytes()) != digest:
+                raise ValueError("Original public script or frozen harness changed")
+        for dataset in manifest["datasets"].values():
+            for name, digest in dataset["fingerprints"].items():
+                if _hash(Path(name).read_bytes()) != digest:
+                    raise ValueError("Original public source input changed")
+    cases = {}
+    for item in manifest["cases"]:
+        name = item["case"] if "case" in item else item["name"]
+        key = (name, item["seed"])
+        if key in cases:
+            raise ValueError("Duplicate original case")
+        stem = f"{name}_{item['seed']}"
+        if benchmark.input_fingerprint(output / "prepared_inputs" / stem / "task.md") != item["input_sha256"]:
+            raise ValueError("Original prepared solver inputs changed")
+        audit_path = output / "host_audit" / f"{stem}.json"
+        raw_audit = audit_path.read_bytes()
+        audit = json.loads(raw_audit)
+        if (_hash(raw_audit) != item["audit_file_sha256"] or audit.get("case") != name
+                or audit.get("seed") != item["seed"]
+                or _hash(_bytes(audit.get("actuals"))) != item["audit_sha256"]
+                or len(audit["actuals"]) != item["test_rows"]):
+            raise ValueError("Original prepared audit answers changed")
+        cases[key] = (item, tuple(audit["actuals"]))
+    return manifest, report, cases, {"manifest.json": _hash(raw_manifest), "seal.json": _hash(raw_seal),
+                                     "report.json": _hash(raw_report)}
+
+
+def reaudit_prepared(output: Path, destination: Path) -> dict:
+    """Write a new versioned audit while leaving every original artifact intact."""
+    output, destination = Path(output).resolve(), Path(destination).resolve()
+    if destination.suffix.lower() != ".json" or destination.exists():
+        raise ValueError("Choose a new .json re-audit output file")
+    if destination.is_relative_to(output) and destination.parent != output:
+        raise ValueError("Inside original results, place the new re-audit beside report.json")
+    manifest, original, cases, original_hashes = _finished_reaudit_inputs(output)
+    planned = {item["index"]: item for item in manifest["trial_plan"]}
+    if len(planned) != len(manifest["trial_plan"]):
+        raise ValueError("Duplicate original trial plan indices")
+    result = {"version": 2, "kind": "night_quality_reaudit", "status": "completed",
+              "original_report_path": str(output / "report.json"),
+              "original_report_sha256": original_hashes["report.json"],
+              "original_manifest_sha256": original_hashes["manifest.json"],
+              "original_seal_sha256": original_hashes["seal.json"], "original_status": original["status"],
+              "auditor": {"source": benchmark.source_provenance(ROOT), "environment": _environment(),
+                          "harness_sha256": {name: _hash((ROOT / name).read_bytes()) for name in HARNESS_FILES}},
+              "trials": [], "external_api_calls": 0,
+              "proof_scope": "Versioned trusted worker control flow, exact launcher/config/full inputs, completed phase, durations marker and accepted checkpoint; stdout is corroboration, not required proof. Not an OS sandbox."}
+    seen = set()
+    for row in original["trials"]:
+        index = row["trial_index"]
+        if type(index) is not int or index in seen or index not in planned:
+            raise ValueError("Duplicate or unplanned original trial")
+        seen.add(index)
+        declaration = planned[index]
+        expected = cases[(row["case"], row["seed"])][0]
+        actuals = cases[(row["case"], row["seed"])][1]
+        budget = declaration.get("budget", manifest.get("budget_seconds"))
+        expected_task = output / "runs" / f"trial_{index:04d}_{row['arm']}" / "task.md"
+        if (row["arm"] != declaration["arm"] or row["pair"] != declaration["pair"]
+                or row["mode"] != declaration.get("mode", "automl")
+                or row["time_budget_seconds"] != budget
+                or row["memory_limit_bytes"] != manifest["memory_mib"] * 1024 ** 2
+                or row["solver_options"] != manifest["solver_options"][row["arm"]]
+                or Path(row["task"]).resolve() != expected_task
+                or row["input_sha256"] != expected["input_sha256"]
+                or row["audit_sha256"] != expected["audit_sha256"]
+                or benchmark.input_fingerprint(expected_task) != expected["input_sha256"]):
+            raise ValueError("Original trial differs from frozen case, source or budget plan")
+        if "case" in declaration and (row["case"], row["seed"]) != (declaration["case"], declaration["seed"]):
+            raise ValueError("Original trial case differs from declaration")
+        if manifest["kind"] == "night_public_prepared":
+            frozen = manifest["cases"][declaration["pair"]]
+            if ((row["case"], row["seed"]) != (frozen["name"], frozen["seed"])
+                    or row.get("public_outer_split_hash") != frozen["split"]["split_hash"]):
+                raise ValueError("Original public trial differs from frozen outer split")
+        audit = benchmark.audit_submission(expected_task, actuals)
+        matches_original = audit == row.get("audit")
+        evidence = refit_evidence_v2(row, expected["train_rows"], manifest["sources"][row["arm"]])
+        result["trials"].append({"trial_index": index, "arm": row["arm"], "case": row["case"],
+                                 "seed": row["seed"], "mode": row["mode"],
+                                 "valid": audit["valid"] is True and matches_original and evidence["valid"] is True,
+                                 "independent_audit": audit, "independent_audit_matches_original": matches_original,
+                                 "v1_refit_evidence": row.get("refit_evidence"), "full_refit": evidence})
+    result["summary"] = {arm: {"trials": sum(row["arm"] == arm for row in result["trials"]),
+                               "valid": sum(row["arm"] == arm and row["valid"] for row in result["trials"]),
+                               "verified_full_refits": sum(row["arm"] == arm and row["full_refit"]["valid"]
+                                                            for row in result["trials"])}
+                         for arm in ("baseline", "candidate")}
+    result["all_trials_verified"] = (len(result["trials"]) == manifest["planned_trials"]
+                                      and all(row["valid"] for row in result["trials"]))
+    _, _, _, final_hashes = _finished_reaudit_inputs(output)
+    if final_hashes != original_hashes:
+        raise ValueError("Original artifacts changed during re-audit")
+    result["finished_at"] = datetime.now(timezone.utc).isoformat()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    return result
+
+
 def summarize(trials: list[dict], planned_trials: int) -> dict:
     comparisons = []
     groups = sorted({(row["time_budget_seconds"], row["mode"]) for row in trials})
@@ -376,6 +652,8 @@ def main(argv=None) -> int:
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--prepare-only", action="store_true", help="Default: freeze inputs and source hashes; no fits")
     action.add_argument("--run-prepared", type=Path, metavar="DIRECTORY", help="Execute a previously frozen fresh plan")
+    action.add_argument("--reaudit-prepared", type=Path, metavar="DIRECTORY", help="Independently audit a finished frozen series without fitting")
+    parser.add_argument("--reaudit-output", type=Path, help="New separate JSON file; original reports are never edited")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline-root", type=Path)
     parser.add_argument("--candidate-root", type=Path, default=ROOT)
@@ -389,6 +667,12 @@ def main(argv=None) -> int:
     parser.add_argument("--purpose", choices=("development", "confirmation", "integration"), default="development")
     parser.add_argument("--allow-dirty", action="store_true", help="Development only; source bytes still remain frozen")
     args = parser.parse_args(argv)
+    if args.reaudit_prepared is not None:
+        if args.reaudit_output is None:
+            parser.error("Re-audit requires --reaudit-output NEW_JSON_FILE")
+        report = reaudit_prepared(args.reaudit_prepared, args.reaudit_output)
+        print(f"Re-audit v2 completed; all trials verified: {report['all_trials_verified']}; fits/API calls: 0; output: {args.reaudit_output}")
+        return 0
     if args.run_prepared is not None:
         report = execute_prepared(args.run_prepared)
         print(f"Night quality: {report['status']}; external API calls: 0; report: {args.run_prepared / 'report.json'}")
