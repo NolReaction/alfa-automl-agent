@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "reviewed_at": "2026-10-21T15:31:35.785992+00:00",
+  "source_commit": "4ffafbba6f6ea9df8fe450fa9c2cf95827c5f159",
+  "method_sha256": "936c986064d7311f436ddd1615c6fc23de66cd41ab1308f92180e39920119ee4",
+  "sealed_sources_sha256": "3c800e495b8464c2c29411ab5a90c9b446fba951a82e27cd96b6e1aaaa9bfc39",
+  "scope": "independent library acceptance checks; not model quality evidence",
+  "quality_evidence": false,
+  "series_started": false,
+  "comparable_pairs": 0,
+  "control_arm": {
+    "status": "censored",
+    "reason": "nested_censored_cleanup_unverified",
+    "abort_series": true,
+    "launcher": {
+      "elapsed_seconds": 22.970872,
+      "error": null,
+      "exit_code": 0,
+      "memory_limit_exceeded": false,
+      "resources": {
+        "available": false,
+        "cleanup_complete": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 30064771072,
+        "peak_rss_bytes": null,
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "unavailable_reason": "RuntimeError: process inspection unavailable"
+      },
+      "timed_out": false
+    },
+    "uncertain_censor_paths": [
+      "host.baseline_search.search.candidates[3]",
+      "host.baseline_search.search.candidates[3].resources",
+      "host.baseline_search.search.candidates[4]",
+      "host.baseline_search.search.candidates[4].resources",
+      "host.baseline_search.search.candidates[5]",
+      "host.baseline_search.search.candidates[5].resources",
+      "host.baseline_search.search.candidates[6]",
+      "host.baseline_search.search.candidates[6].resources",
+      "host.baseline_search.search.candidates[7]",
+      "host.baseline_search.search.candidates[7].resources",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[3]",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[3].resources",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[4]",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[4].resources",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[5]",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[5].resources",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[6]",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[6].resources",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[7]",
+      "host_journal.5b4f956f8d3e4ce7a6fb32967d400ff3.baseline_search.search.candidates[7].resources"
+    ],
+    "host_observed": {
+      "status": "completed",
+      "stage": "result",
+      "reason": "local_only",
+      "publication": {
+        "new_result_published": true,
+        "recipe": "baseline",
+        "reason": "local_only"
+      },
+      "published_recipe": "baseline"
+    },
+    "original_arm_summary": "runs/category_prevalence_classification__701/control/arm_summary.json",
+    "original_arm_summary_sha256": "e59c1202e7f62f76884a5bb230386b09bdf2aec19f7b2b19dfea1a549db6be84",
+    "host_run_report": "runs/category_prevalence_classification__701/control/task/.agent_runs/5b4f956f8d3e4ce7a6fb32967d400ff3/run.json",
+    "host_run_report_sha256": "886e8504cd0c7e784a16c6a24950dd717a91e8472fc77b2611f8b13d72416ce9",
+    "nested_censored_trials": [
+      {
+        "index": 3,
+        "id": "candidate_3",
+        "label": "ExtraTrees · малые листья",
+        "model": "ExtraTreesClassifier",
+        "model_config": {
+          "model": "ExtraTreesClassifier",
+          "parameters": {
+            "n_estimators": 200,
+            "max_depth": null,
+            "min_samples_leaf": 1,
+            "max_features": "sqrt",
+            "class_weight": "balanced"
+          }
+        },
+        "status": "timed_out",
+        "phase": "selection",
+        "elapsed_seconds": 1.052,
+        "rejection_reason": "timeout",
+        "error": "Превышен лимит времени попытки.",
+        "resources": {
+          "available": false,
+          "unavailable_reason": "RuntimeError: process inspection unavailable",
+          "peak_rss_bytes": null,
+          "cpu_seconds": null,
+          "memory_limit_bytes": 30064771072,
+          "exit_code": -9,
+          "timed_out": true,
+          "memory_exceeded": false
+        },
+        "cleanup_complete_field_present": false,
+        "cleanup_complete": null
+      },
+      {
+        "index": 4,
+        "id": "candidate_4",
+        "label": "CatBoost · быстрый поиск",
+        "model": "CatBoostClassifier",
+        "model_config": {
+          "model": "CatBoostClassifier",
+          "parameters": {
+            "iterations": 100,
+            "depth": 6,
+            "learning_rate": 0.05,
+            "l2_leaf_reg": 3.0,
+            "auto_class_weights": null
+          }
+        },
+        "status": "timed_out",
+        "phase": "selection",
+        "elapsed_seconds": 1.051,
+        "rejection_reason": "timeout",
+        "error": "Превышен лимит времени попытки.",
+        "resources": {
+          "available": false,
+          "unavailable_reason": "RuntimeError: process inspection unavailable",
+          "peak_rss_bytes": null,
+          "cpu_seconds": null,
+          "memory_limit_bytes": 30064771072,
+          "exit_code": -9,
+          "timed_out": true,
+          "memory_exceeded": false
+        },
+        "cleanup_complete_field_present": false,
+        "cleanup_complete": null
+      },
+      {
+        "index": 5,
+        "id": "candidate_5",
+        "label": "CatBoost · глубина 8",
+        "model": "CatBoostClassifier",
+        "model_config": {
+          "model": "CatBoostClassifier",
+          "parameters": {
+            "iterations": 100,
+            "depth": 8,
+            "learning_rate": 0.05,
+            "l2_leaf_reg": 3.0,
+            "auto_class_weights": "SqrtBalanced"
+          }
+        },
+        "status": "timed_out",
+        "phase": "selection",
+        "elapsed_seconds": 1.058,
+        "rejection_reason": "timeout",
+        "error": "Превышен лимит времени попытки.",
+        "resources": {
+          "available": false,
+          "unavailable_reason": "RuntimeError: process inspection unavailable",
+          "peak_rss_bytes": null,
+          "cpu_seconds": null,
+          "memory_limit_bytes": 30064771072,
+          "exit_code": -9,
+          "timed_out": true,
+          "memory_exceeded": false
+        },
+        "cleanup_complete_field_present": false,
+        "cleanup_complete": null
+      },
+      {
+        "index": 6,
+        "id": "candidate_6",
+        "label": "LightGBM · быстрый поиск",
+        "model": "LGBMClassifier",
+        "model_config": {
+          "model": "LGBMClassifier",
+          "parameters": {
+            "n_estimators": 100,
+            "num_leaves": 31,
+            "max_depth": -1,
+            "min_child_samples": 20,
+            "learning_rate": 0.05,
+            "reg_lambda": 1.0,
+            "colsample_bytree": 1.0,
+            "class_weight": null
+          }
+        },
+        "status": "timed_out",
+        "phase": "selection",
+        "elapsed_seconds": 1.057,
+        "rejection_reason": "timeout",
+        "error": "Превышен лимит времени попытки.",
+        "resources": {
+          "available": false,
+          "unavailable_reason": "RuntimeError: process inspection unavailable",
+          "peak_rss_bytes": null,
+          "cpu_seconds": null,
+          "memory_limit_bytes": 30064771072,
+          "exit_code": -9,
+          "timed_out": true,
+          "memory_exceeded": false
+        },
+        "cleanup_complete_field_present": false,
+        "cleanup_complete": null
+      },
+      {
+        "index": 7,
+        "id": "candidate_7",
+        "label": "LightGBM · 63 листа",
+        "model": "LGBMClassifier",
+        "model_config": {
+          "model": "LGBMClassifier",
+          "parameters": {
+            "n_estimators": 100,
+            "num_leaves": 63,
+            "max_depth": -1,
+            "min_child_samples": 20,
+            "learning_rate": 0.05,
+            "reg_lambda": 1.0,
+            "colsample_bytree": 1.0,
+            "class_weight": "balanced"
+          }
+        },
+        "status": "timed_out",
+        "phase": "selection",
+        "elapsed_seconds": 1.054,
+        "rejection_reason": "timeout",
+        "error": "Превышен лимит времени попытки.",
+        "resources": {
+          "available": false,
+          "unavailable_reason": "RuntimeError: process inspection unavailable",
+          "peak_rss_bytes": null,
+          "cpu_seconds": null,
+          "memory_limit_bytes": 30064771072,
+          "exit_code": -9,
+          "timed_out": true,
+          "memory_exceeded": false
+        },
+        "cleanup_complete_field_present": false,
+        "cleanup_complete": null
+      }
+    ]
+  },
+  "frequency_arm": {
+    "started": false,
+    "measured": false,
+    "admitted": false,
+    "published": false
+  },
+  "tiny_native_contract_test": {
+    "command": "/workspace/scratch/271f408d330f/alfa-runtime/bin/python -m unittest tests.test_frequency_candidate.FrequencyNativeCandidateTests.test_real_baseline_components_pass_native_host_and_emit_bound_refit_trace -v",
+    "exit_code": 0,
+    "tests": 1,
+    "reported_elapsed_seconds": 1.453,
+    "fit_rows": 30,
+    "predict_rows": 2,
+    "baseline_components": 2,
+    "models": "LogisticRegression",
+    "quality_evidence": false,
+    "temporary_test_artifacts_retained": false,
+    "verified_by_test": [
+      "native full_refit return/output shape",
+      "exact class/ID order and probability normalization",
+      "native nonce/code/recipe identity",
+      "fresh fit-only frequency dictionary",
+      "actual BASELINE_SOURCE components and complete base recipe",
+      "unchanged caller inputs"
+    ],
+    "does_not_establish": [
+      "quality improvement",
+      "cleanup of earlier timed-out descendants",
+      "process-tree memory enforcement",
+      "acceptance of censored smoke",
+      "runtime integration recommendation"
+    ]
+  },
+  "decision": "library-only candidate remains off; retain censored smoke; no native series or runtime/default changes",
+  "original_evidence": {
+    "plan.json": "f72c7b8fa4aba4af021d90af6e317035a1e27fac71066381b9c8010f1095478a",
+    "preflight.json": "6d47a6fb532033f4fdc99c3560505591d5ff3f993bc0fa9f03ebc9a53fdbf091",
+    "smoke_report.json": "3eab8f27428a8e90897fd232d1cd1886a94f06426bb769d58c52311ac1b92d65"
+  }
+}

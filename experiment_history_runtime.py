@@ -31,6 +31,8 @@ ROOT = Path(__file__).resolve().parent
 ARMS = ("control", "history")
 DEVELOPMENT_SEEDS = (131,)
 CONFIRMATION_SEEDS = (2203, 4001)
+AUTO_DEVELOPMENT_SEEDS = (313,)
+AUTO_CONFIRMATION_SEEDS = (8117, 16417)
 CONFIRMATION_CASES = ("entity_signal", "colliding_keys")
 WEIGHT = 0.5
 HARNESSES = ("experiment_history_runtime.py", "history_runtime_cases.py", "benchmark_agent.py", "benchmark_cases.py")
@@ -73,18 +75,23 @@ def _within(base, value):
     return resolved
 
 
-def preflight(solver_root):
+def preflight(solver_root, *, history_mode="explicit"):
     """Read source/signature/dependency availability; never construct an API client."""
     solver_root = Path(solver_root).resolve()
+    if history_mode not in {"explicit", "auto"}:
+        raise ValueError("Unknown history mode")
     source = benchmark.source_provenance(solver_root)
     tree = ast.parse((solver_root / "agent/research_v3.py").read_text(encoding="utf-8"))
     function = next((node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_agent_v3"), None)
     arguments = set() if function is None else {a.arg for a in (*function.args.args, *function.args.kwonlyargs)}
-    missing = sorted({"local_only", "history_config", "history_weight", "time_budget"} - arguments)
+    required = {"local_only", "history_config", "history_weight", "time_budget"}
+    if history_mode == "auto":
+        required.add("history_auto")
+    missing = sorted(required - arguments)
     packages = {name: importlib.util.find_spec(name) is not None
                 for name in ("numpy", "pandas", "sklearn", "psutil", "openai", "catboost", "lightgbm")}
     return {"ready": not missing and source["worktree_dirty"] is False and all(packages.values()),
-            "source": source, "missing_interface": missing, "packages": packages,
+            "source": source, "history_mode": history_mode, "missing_interface": missing, "packages": packages,
             "api_calls": 0, "note": "Source readiness only; no training or API availability/quality test."}
 
 
@@ -139,7 +146,8 @@ def _public_case(task):
     return case, config, inputs
 
 
-def prepare(output, *, solver_root, budget=90, memory_mib=6144, total_seconds=1800, public_task=None, smoke=False):
+def prepare(output, *, solver_root, budget=90, memory_mib=6144, total_seconds=1800, public_task=None, smoke=False,
+            history_mode="explicit"):
     """Freeze cases/method/source before fitting. No audit scores are computed."""
     for value, limit in ((budget, 10500), (total_seconds, 24 * 3600)):
         if type(value) not in {int, float} or not math.isfinite(value) or not 0 < value <= limit:
@@ -148,7 +156,9 @@ def prepare(output, *, solver_root, budget=90, memory_mib=6144, total_seconds=18
         raise ValueError("Invalid configured memory cap")
     if type(smoke) is not bool or (smoke and public_task is not None):
         raise ValueError("Smoke is a separate synthetic-only plan")
-    check = preflight(solver_root)
+    if history_mode not in {"explicit", "auto"}:
+        raise ValueError("Unknown history mode")
+    check = preflight(solver_root, history_mode=history_mode)
     if not check["ready"]:
         raise ValueError("Preflight is not ready; publish a clean solver with the required native interface")
     output = Path(output).resolve()
@@ -157,11 +167,13 @@ def prepare(output, *, solver_root, budget=90, memory_mib=6144, total_seconds=18
         (output / name).mkdir()
     definitions = []
     originals = {}
+    development_seeds = AUTO_DEVELOPMENT_SEEDS if history_mode == "auto" else DEVELOPMENT_SEEDS
+    confirmation_seeds = AUTO_CONFIRMATION_SEEDS if history_mode == "auto" else CONFIRMATION_SEEDS
     if smoke:
-        definitions.append(("development", make_history_case("entity_signal", 131), explicit_history_config("entity_signal")))
+        definitions.append(("development", make_history_case("entity_signal", development_seeds[0]), explicit_history_config("entity_signal")))
     elif public_task is None:
-        for stage, names, seeds in (("development", CASE_NAMES, DEVELOPMENT_SEEDS),
-                                   ("confirmation", CONFIRMATION_CASES, CONFIRMATION_SEEDS)):
+        for stage, names, seeds in (("development", CASE_NAMES, development_seeds),
+                                   ("confirmation", CONFIRMATION_CASES, confirmation_seeds)):
             for name in names:
                 for seed in seeds:
                     definitions.append((stage, make_history_case(name, seed), explicit_history_config(name)))
@@ -187,13 +199,13 @@ def prepare(output, *, solver_root, budget=90, memory_mib=6144, total_seconds=18
     source = check["source"]
     method = {"version": 1, "source_sha256": source["source_sha256"],
         "harness_sha256": {name: _hash(ROOT / name) for name in HARNESSES},
-        "history_weight": WEIGHT, "local_only": True, "search_profile": "legacy", "smoke_only": smoke,
+        "history_weight": WEIGHT, "history_mode": history_mode, "local_only": True, "search_profile": "legacy", "smoke_only": smoke,
         "stability_splits": 1, "metric_recipes": False, "budget_seconds_per_trial": float(budget),
         "memory_mib": memory_mib, "total_seconds": float(total_seconds),
-        "development_seeds": list(DEVELOPMENT_SEEDS), "reserved_seed": 379,
-        "confirmation_cases": list(CONFIRMATION_CASES), "confirmation_seeds": list(CONFIRMATION_SEEDS),
+        "development_seeds": list(development_seeds), "reserved_seed": None if history_mode == "auto" else 379,
+        "confirmation_cases": list(CONFIRMATION_CASES), "confirmation_seeds": list(confirmation_seeds),
         "comparison": "Equal walltime native v3 local_only; baseline-match flag, not a pure-effect guarantee",
-        "history_configs": {case["key"]: case["history_config"] for case in cases}}
+        "history_configs": {case["key"]: case["history_config"] if history_mode == "explicit" else None for case in cases}}
     manifest = {"version": 1, "kind": "prepared_history_runtime", "prepared_at": _now(),
         "source": source, "host_source": benchmark.source_provenance(ROOT), "method": method,
         "method_sha256": benchmark._json_hash(method), "environment": benchmark._versions(),
@@ -258,7 +270,8 @@ def _check_confirmation_freeze(output, plan):
         raise ValueError("Confirmation method/development report changed after freeze")
 
 
-def _driver(solver_root, task):
+def _driver(solver_root, task, history_mode="explicit"):
+    auto_argument = ",history_auto=request['history_auto']" if history_mode == "auto" else ""
     return ("import time\nstarted=time.monotonic()\nimport sys,json,hashlib\nfrom pathlib import Path\n"
         f"sys.path.insert(0,{str(solver_root)!r})\nfrom agent.research_v3 import run_agent_v3\n"
         f"task=Path({str(task)!r})\nrequest=json.loads((task.parent/'driver_request.json').read_text(encoding='utf-8'))\n"
@@ -266,7 +279,7 @@ def _driver(solver_root, task):
         "    remaining=request['time_budget_seconds']-(time.monotonic()-started)\n"
         "    if remaining<=0: raise TimeoutError('Import preparation exhausted the original trial budget')\n"
         "    run_dir=run_agent_v3(task,None,time_budget=remaining,local_only=True,"
-        "history_config=request['history_config'],history_weight=request['history_weight'])\n"
+        "history_config=request['history_config'],history_weight=request['history_weight']" + auto_argument + ")\n"
         "    report=(run_dir/'run.json').resolve()\n"
         "    evidence.update(run_report=report.relative_to(task.parent.resolve()).as_posix(),"
         "run_report_sha256=hashlib.sha256(report.read_bytes()).hexdigest())\nfinally:\n"
@@ -301,7 +314,72 @@ def _receipt(invocation, frozen, *, spec, fitting, predicting, actuals, phase):
     return {"metric": metric, "artifacts": artifacts, "output_hash": receipt["output_hash"]}
 
 
-def inspect_trial(task, case, request, actuals):
+def _discovery_proof(run, report, split, *, requested, solver_root):
+    """Recheck the feature-only child boundary without fitting or candidate execution."""
+    discovery = report.get("history_discovery")
+    if not requested:
+        if discovery is not None and (not isinstance(discovery, dict) or discovery.get("requested") is not False
+                or discovery.get("selected_config") is not None or discovery.get("result") is not None):
+            raise ValueError("Control arm unexpectedly requested automatic discovery")
+        return None, discovery, False, {}
+    if (not isinstance(discovery, dict) or discovery.get("version") != 1
+            or discovery.get("policy") != "auto_schema_v1" or discovery.get("requested") is not True
+            or discovery.get("scope") != "inner_fit_features_only" or discovery.get("identity_verified") is not False
+            or discovery.get("blend_weight") != WEIGHT
+            or discovery.get("status") not in {"selected", "abstained", "limited", "skipped", "failed"}):
+        raise ValueError("Automatic discovery accounting is missing or invalid")
+    directory = run / "history_discovery"
+    names = ("fit_features.csv", "request.json", "discovery.json", "execution/experiment_000.py")
+    artifacts = {}
+    for name in names:
+        path = directory / name
+        if path.exists() or path.is_symlink():
+            artifacts[str(path)] = _hash(_within(directory, name))
+    if discovery.get("result") is None:
+        if discovery["status"] == "selected" or discovery.get("selected_config") is not None:
+            raise ValueError("Automatic selection has no complete feature-only discovery proof")
+        return None, discovery, False, artifacts
+
+    if len(artifacts) != len(names) or solver_root is None:
+        raise ValueError("Completed discovery requires all child artifacts and a frozen solver root")
+    from agent.history_discovery_host import _read_result, _source
+
+    spec, train = split["spec"], split["train"]
+    period, features, numeric = split["choice"].get("time_column"), list(spec.features), list(spec.numeric)
+    if (split["choice"].get("strategy") != "time" or split["inner_metadata"].get("strategy") != "time"
+            or split["inner_metadata"].get("time_column") != period):
+        raise ValueError("Discovery ran outside the native inner time policy")
+    fitting = train.iloc[split["inner_fit"]]
+    if (not read_csv(directory / "fit_features.csv").equals(fitting.loc[:, features].reset_index(drop=True))
+            or discovery.get("fit_rows") != len(fitting) or discovery.get("feature_columns") != features
+            or discovery.get("period_column") != period):
+        raise ValueError("Discovery did not receive exactly the raw INNER-fit features")
+    expected_request = {"feature_columns": features, "numeric_columns": numeric, "period_column": period}
+    if _read(directory / "request.json") != expected_request:
+        raise ValueError("Discovery request differs from the native feature/numeric/period allowance")
+    ids = fitting[spec.id_column].tolist()
+    ids_hash = hashlib.sha256(json.dumps(ids, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+    script = directory / "execution/experiment_000.py"
+    source = _source(Path(solver_root))
+    if (discovery.get("fit_input_sha256") != artifacts[str(directory / "fit_features.csv")]
+            or discovery.get("fit_ids_sha256") != ids_hash
+            or discovery.get("worker_source_sha256") != artifacts[str(script)]
+            or discovery.get("worker_source_text_sha256") != hashlib.sha256(source.encode("utf-8")).hexdigest()
+            or script.read_text(encoding="utf-8") != source):
+        raise ValueError("Discovery input IDs or frozen worker source hash changed")
+    execution = discovery.get("execution")
+    if (not isinstance(execution, dict) or execution.get("exit_code") != 0
+            or any(execution.get(key) for key in ("error", "timed_out", "memory_limit_exceeded"))):
+        raise ValueError("Discovery result did not come from a successful bounded child")
+    result, options = _read_result(directory, features, numeric, period)
+    expected_status = "selected" if options is not None else result["status"]
+    config = options["history_config"] if options is not None else None
+    if result != discovery["result"] or discovery["status"] != expected_status or discovery.get("selected_config") != config:
+        raise ValueError("Automatic discovery report differs from its complete top-one result")
+    return config, discovery, True, artifacts
+
+
+def inspect_trial(task, case, request, actuals, *, solver_root=None):
     """Audit a returned v3 run without executing any candidate or fitting models."""
     task = Path(task)
     if benchmark.input_fingerprint(task) != case["input_sha256"]:
@@ -346,10 +424,20 @@ def inspect_trial(task, case, request, actuals):
     if not audit["valid"]:
         raise ValueError("External audit CSV invalid: " + str(audit["error"]))
     history = report.get("history_research", {})
-    requested = request["history_config"] is not None
+    auto_mode = "history_auto" in request
+    discovery = None
+    discovery_verified = False
+    discovery_artifacts = {}
+    effective_config = request["history_config"]
+    if auto_mode:
+        if type(request["history_auto"]) is not bool or request["history_config"] is not None:
+            raise ValueError("Automatic history must not receive a manual key configuration")
+        effective_config, discovery, discovery_verified, discovery_artifacts = _discovery_proof(
+            run, report, split, requested=request["history_auto"], solver_root=solver_root)
+    requested = effective_config is not None
     if history.get("version") != 1 or history.get("policy") != "explicit_v1" or history.get("scope") != "inner_selection" or history.get("origin") != "host_history" or history.get("requested") is not requested:
         raise ValueError("History request/origin accounting is missing or incorrect")
-    if history.get("blend_weight") != WEIGHT or history.get("history_config") != request["history_config"]:
+    if history.get("blend_weight") != WEIGHT or history.get("history_config") != effective_config:
         raise ValueError("History controls changed")
     eligible = split["choice"]["strategy"] == "time"
     if not requested and (history.get("status") != "disabled" or history.get("attempted") != 0):
@@ -359,7 +447,7 @@ def inspect_trial(task, case, request, actuals):
     artifacts = {str(report_path): _hash(report_path), str(task.parent / "driver_request.json"): _hash(task.parent / "driver_request.json"),
         str(task.parent / "driver_evidence.json"): _hash(task.parent / "driver_evidence.json"),
         str(task.parent / "submission.csv"): published, str(run / "last_valid_submission.csv"): published,
-        **outer["artifacts"], **refit["artifacts"]}
+        **outer["artifacts"], **refit["artifacts"], **discovery_artifacts}
     history_verified = False
     if requested and history.get("status") == "completed":
         if history.get("attempted") != 1 or not history.get("feedback", {}).get("verified") or history.get("baseline") != report["frozen_baseline"]:
@@ -382,24 +470,31 @@ def inspect_trial(task, case, request, actuals):
         artifacts[str(path)] = _hash(path)
     if _hash(run / "baseline_frozen/research_candidate.py") != report["frozen_baseline"]["code_hash"] or _hash(run / "baseline_frozen/research_recipe.json") != report["frozen_baseline"]["recipe_hash"]:
         raise ValueError("Recovery baseline changed")
-    return {"audit": audit, "run_report": report_path.relative_to(task.parent).as_posix(),
+    checked = {"audit": audit, "run_report": report_path.relative_to(task.parent).as_posix(),
         "baseline": report["frozen_baseline"], "history": history, "history_verified": history_verified,
         "history_expected_eligible": eligible, "full_refit_verified": True,
         "local_research": report.get("local_research"), "final_reason": report.get("reason"),
         "artifacts": {str(Path(name).relative_to(task.parent)): digest for name, digest in artifacts.items()}}
+    if auto_mode:
+        checked.update(discovery=discovery, discovery_verified=discovery_verified)
+    return checked
 
 
 def _trial(output, plan, case, arm):
     directory = output / "runs" / (case["key"] + "_" + arm)
     shutil.copytree(output / Path(case["task"]).parent, directory)
     task = directory / "task.md"
+    history_mode = plan["method"].get("history_mode", "explicit")
     request = {"time_budget_seconds": plan["method"]["budget_seconds_per_trial"], "local_only": True,
-        "history_config": case["history_config"] if arm == "history" else None, "history_weight": WEIGHT}
+        "history_config": case["history_config"] if arm == "history" and history_mode == "explicit" else None,
+        "history_weight": WEIGHT}
+    if history_mode == "auto":
+        request["history_auto"] = arm == "history"
     _write(directory / "driver_request.json", request)
     row = {"case": case["key"], "arm": arm, "task": task.relative_to(output).as_posix(), "request": request,
         "input_sha256": case["input_sha256"], "split_sha256": case["split_sha256"], "status": "running"}
     started = time.monotonic()
-    execution = benchmark.run_python(_driver(Path(plan["source"]["root"]), task), directory, directory / "execution", 0,
+    execution = benchmark.run_python(_driver(Path(plan["source"]["root"]), task, history_mode), directory, directory / "execution", 0,
         timeout=request["time_budget_seconds"], max_memory_bytes=plan["method"]["memory_mib"] * 1024**2)
     row.update(execution=execution, elapsed_seconds=time.monotonic() - started, status="failed")
     if execution.get("exit_code") == 0 and not any(execution.get(k) for k in ("error", "timed_out", "memory_limit_exceeded")):
@@ -407,7 +502,7 @@ def _trial(output, plan, case, arm):
             audit = _read(output / case["audit"])
             if audit["sha256"] != case["audit_sha256"] or benchmark._json_hash(audit["actuals"]) != case["audit_sha256"]:
                 raise ValueError("Host audit answers changed")
-            row["verified"] = inspect_trial(task, case, request, audit["actuals"])
+            row["verified"] = inspect_trial(task, case, request, audit["actuals"], solver_root=Path(plan["source"]["root"]))
             row["status"] = "completed"
         except (OSError, ValueError, TypeError, KeyError) as error:
             row["verification_error"] = f"{type(error).__name__}: {error}"
@@ -477,13 +572,17 @@ def reaudit(output, stage="development"):
             case = next(c for c in plan["cases"] if c["key"] == row["case"])
             try:
                 task = _within(output, row["task"])
-                current = inspect_trial(task, case, row["request"], _read(output / case["audit"])["actuals"])
+                current = inspect_trial(task, case, row["request"], _read(output / case["audit"])["actuals"],
+                    solver_root=Path(plan["source"]["root"]))
                 if current != row["verified"]:
                     raise ValueError("Current proof differs from the committed trial evidence")
                 item.update(verified=True, metric=current["audit"]["metric"], baseline=current["baseline"],
                     history_status=current["history"].get("status"), history_verified=current["history_verified"],
                     history_expected_eligible=current["history_expected_eligible"], final_reason=current["final_reason"],
                     seconds=row["elapsed_seconds"])
+                if "discovery" in current:
+                    item.update(discovery_status=(current["discovery"] or {}).get("status"),
+                        discovery_verified=current["discovery_verified"])
             except (OSError, ValueError, KeyError, TypeError) as error:
                 item["error"] = f"{type(error).__name__}: {error}"
         rows.append(item)
@@ -507,19 +606,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("preflight"); check.add_argument("--solver-root", type=Path, required=True)
+    check.add_argument("--history-mode", choices=("explicit", "auto"), default="explicit")
     preparation = sub.add_parser("prepare")
     preparation.add_argument("--solver-root", type=Path, required=True); preparation.add_argument("--out-dir", type=Path, required=True)
     preparation.add_argument("--time-budget", type=float, default=90); preparation.add_argument("--memory-mib", type=int, default=6144)
     preparation.add_argument("--total-seconds", type=float, default=1800); preparation.add_argument("--public-task", type=Path)
     preparation.add_argument("--smoke", action="store_true", help="One synthetic pair for protocol execution only")
+    preparation.add_argument("--history-mode", choices=("explicit", "auto"), default="explicit")
     freeze = sub.add_parser("freeze-confirmation"); freeze.add_argument("--out-dir", type=Path, required=True)
     for name in ("run", "audit"):
         command = sub.add_parser(name); command.add_argument("--out-dir", type=Path, required=True)
         command.add_argument("--stage", choices=("development", "confirmation", "public_sanity"), default="development")
     args = parser.parse_args(argv)
-    if args.command == "preflight": result = preflight(args.solver_root)
+    if args.command == "preflight": result = preflight(args.solver_root, history_mode=args.history_mode)
     elif args.command == "prepare": result = prepare(args.out_dir, solver_root=args.solver_root, budget=args.time_budget,
-        memory_mib=args.memory_mib, total_seconds=args.total_seconds, public_task=args.public_task, smoke=args.smoke)
+        memory_mib=args.memory_mib, total_seconds=args.total_seconds, public_task=args.public_task, smoke=args.smoke,
+        history_mode=args.history_mode)
     elif args.command == "freeze-confirmation": result = freeze_confirmation(args.out_dir)
     elif args.command == "run": result = run_stage(args.out_dir, args.stage)
     else: result = reaudit(args.out_dir, args.stage)
