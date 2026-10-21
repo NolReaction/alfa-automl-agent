@@ -57,8 +57,13 @@ class HistoryAutoExperimentTests(unittest.TestCase):
             experiment._write(discovery / "request.json", {
                 "feature_columns": features, "numeric_columns": numeric, "period_column": period})
             # The canonical worker source is an artifact only: it is not run.
-            source = _source(self.solver)
-            (discovery / "execution/experiment_000.py").write_text(source, encoding="utf-8")
+            # Mirror the real driver: its import root comes from the sealed
+            # provenance, not a Windows short/long alias passed to prepare.
+            plan = experiment._read(Path(task_dir).parents[1] / "manifest.json")
+            source = _source(Path(plan["source"]["root"]))
+            with (discovery / "execution/experiment_000.py").open(
+                    "w", encoding="utf-8", newline=getattr(self, "worker_source_newline", None)) as stream:
+                stream.write(source)
             frame = pd.read_csv(discovery / "fit_features.csv", dtype=object, keep_default_na=False, na_filter=False)
             result = discover_history_schema(frame, feature_columns=features,
                                              numeric_columns=numeric, period_column=period)
@@ -233,6 +238,35 @@ class HistoryAutoExperimentTests(unittest.TestCase):
         self.assertTrue(explicit["ready"])
         self.assertFalse(auto["ready"])
         self.assertIn("history_auto", auto["missing_interface"])
+
+    def test_canonical_solver_root_and_crlf_worker_keep_distinct_byte_and_text_hashes(self):
+        # A noncanonical spelling reproduces Windows short/long temp aliases
+        # on every OS without requiring platform-specific symlink privileges.
+        alias_step = self.solver.parent / "existing_alias_step"
+        alias_step.mkdir()
+        self.solver = alias_step / ".." / self.solver.name
+        self.worker_source_newline = "\r\n"
+        output = self.prepare(name="crlf_alias", smoke=True, history_mode="auto")
+        plan = experiment.read_plan(output)
+        self.assertNotEqual(str(self.solver), plan["source"]["root"])
+        report = experiment.run_stage(output)
+        self.assertEqual(report["status"], "completed", [row.get("verification_error") for row in report["trials"]])
+        row = next(row for row in report["trials"] if row["arm"] == "history")
+        task = output / row["task"]
+        script = task.parent / ".agent_runs" / ("a" * 32) / "history_discovery/execution/experiment_000.py"
+        raw = script.read_bytes()
+        source = _source(Path(plan["source"]["root"]))
+        discovery = row["verified"]["discovery"]
+        self.assertIn(b"\r\n", raw)
+        self.assertEqual(script.read_text(encoding="utf-8"), source)
+        self.assertEqual(discovery["worker_source_sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(discovery["worker_source_text_sha256"], hashlib.sha256(source.encode("utf-8")).hexdigest())
+        self.assertNotEqual(discovery["worker_source_sha256"], discovery["worker_source_text_sha256"])
+        self.assertEqual(experiment.reaudit(output)["status"], "completed")
+        # A newline-only edit preserves text semantics but invalidates physical
+        # source evidence. Keep the auditor's byte-integrity requirement.
+        script.write_bytes(source.encode("utf-8"))
+        self.assertEqual(experiment.reaudit(output)["status"], "incomplete")
 
 
 if __name__ == "__main__":
