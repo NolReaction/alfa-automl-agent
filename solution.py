@@ -75,6 +75,15 @@ def _remaining(deadline: float) -> float:
 
 
 def _offline_solution(task_path, *, deadline, validation, quality_options):
+    if quality_options.get("history_config") is not None:
+        # Explicit history uses the same v3 INNER/outer/refit protocol as LLM
+        # research, with no client construction or paid requests.
+        if validation != {"strategy": "auto"}:
+            raise ValueError("Explicit history uses v3 auto validation; validation overrides are unavailable.")
+        directory = run_agent(task_path, None, time_budget=_remaining(deadline),
+                              local_only=True, **quality_options)
+        print(f"Host-local research report: {directory / 'run.json'}. API calls: 0.")
+        return
     from agent.automl import run_automl
 
     result = run_automl(task_path, time_budget=_remaining(deadline),
@@ -138,6 +147,9 @@ def main() -> int:
                         help="Experimental paired inner checks of finalists; default 1 (disabled)")
     parser.add_argument("--metric-recipes", action="store_true",
                         help="Experimentally add metric-aware regression recipes to startup AutoML")
+    parser.add_argument("--history-config", help="Experimental inline JSON or @JSON-file key/period configuration; time regression only")
+    parser.add_argument("--history-weight", type=float, default=None,
+                        help="Fixed history blend weight in [0,1], default 0.5; requires --history-config")
     args = parser.parse_args()
     try:
         if args.check:
@@ -155,6 +167,23 @@ def main() -> int:
             quality_options["metric_recipes"] = True
         if args.search_profile != "legacy":
             quality_options["search_profile"] = args.search_profile
+        if args.history_config is not None:
+            from agent.history_runtime import normalize_history_options
+            raw_config = args.history_config
+            if raw_config.startswith("@"):
+                config_path = Path(raw_config[1:])
+                if config_path.is_symlink() or not config_path.is_file() or config_path.stat().st_size > 64 * 1024:
+                    raise ValueError("History config must be a regular JSON file under 64 KiB")
+                raw_config = config_path.read_text(encoding="utf-8-sig")
+            history = normalize_history_options(json.loads(raw_config),
+                args.history_weight if args.history_weight is not None else 0.5)
+            if history is None:
+                raise ValueError("--history-config requires a JSON object, not null")
+            quality_options.update(history_config=history["history_config"], history_weight=history["blend_weight"])
+            if args.validation is not None or args.time_column is not None:
+                raise ValueError("Explicit history uses v3 auto validation; omit --validation and --time-column.")
+        elif args.history_weight is not None:
+            raise ValueError("--history-weight requires --history-config")
         time_budget = args.time_budget if args.time_budget is not None else DEFAULT_TIME_BUDGET
         if args.max_steps < 1 or not 0 < time_budget <= 10500:
             raise ValueError("max-steps must be positive; time-budget must be in (0, 10500].")

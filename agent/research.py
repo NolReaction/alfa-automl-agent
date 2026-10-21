@@ -518,16 +518,20 @@ def run_agent_v2(task_path: Path, client, *, max_steps: int = 12,
 
 def run_agent(task_path: Path, client, *, max_steps: int = 12,
               time_budget: float = 10500, stability_splits=1, metric_recipes=False,
-              search_profile="legacy") -> Path:
+              search_profile="legacy", history_config=None, history_weight=0.5,
+              local_only=False) -> Path:
     """Default to v3; retain the explicitly unverified legacy unknown-metric route."""
     from agent.task_contract import parse_task_metric
 
+    if type(local_only) is not bool:
+        raise ValueError("local_only must be a boolean")
     try:
         parse_task_metric(Path(task_path).read_text(encoding="utf-8-sig"))
     except ValueError as error:
         if "Unsupported or unrecognized primary metric" not in str(error):
             raise
-        if stability_splits != 1 or metric_recipes or search_profile != "legacy":
+        if (stability_splits != 1 or metric_recipes or search_profile != "legacy"
+                or history_config is not None or history_weight != 0.5 or local_only):
             raise ValueError("Quality experiment options require a supported task metric") from error
         return run_agent_v2(task_path, client, max_steps=max_steps, time_budget=time_budget)
     from agent.research_v3 import run_agent_v3
@@ -535,4 +539,8 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
     options = {"stability_splits": stability_splits, "metric_recipes": metric_recipes}
     if search_profile != "legacy":
         options["search_profile"] = search_profile
+    if history_config is not None or history_weight != 0.5:
+        options.update(history_config=history_config, history_weight=history_weight)
+    if local_only:
+        options["local_only"] = local_only
     return run_agent_v3(task_path, client, max_steps=max_steps, time_budget=time_budget, **options)
