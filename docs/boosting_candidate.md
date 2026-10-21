@@ -49,6 +49,14 @@ Native CatBoost Macro F1 и Weighted F1 считаются через TotalF1 с
 по RMSE. LightGBM callback непосредственно считает требуемую host-метрику.
 Окончательный допуск всегда основан на отдельном пересчёте host.
 
+В CatBoost 1.2.8 параметр `use_weights` нельзя явно указывать, если object
+weights не настроены. Поэтому у обычной невзвешенной модели он опускается:
+метрика уже невзвешенная. При `auto_class_weights`, явных `class_weights` или
+`scale_pos_weight` задаётся `use_weights=false`, чтобы веса обучения не
+изменяли validation-метрику. Три маленьких native regression tests проверяют
+реальный fit и совпадение validation Macro F1 с независимым невзвешенным
+пересчётом для обычной модели, automatic weights и explicit class weights.
+
 Для CatBoost до внутреннего обучения проверяются native budgets по разрешённым
 fit-признакам: суммарно не более 4096 категорий и 5 млн category cells. Проверка
 по исходной cardinality консервативна даже при rare-category grouping.

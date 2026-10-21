@@ -314,7 +314,21 @@ class BoostingExecutionTests(unittest.TestCase):
 
     def test_catboost_macro_f1_early_metric_is_explicit_and_unweighted(self):
         _, _, calls, *_ = self.invoke("catboost", classification=True, metric="Macro F1")
-        self.assertEqual(calls["early"][0]["early_metric"], "TotalF1:average=Macro;use_weights=false")
+        self.assertEqual(calls["early"][0]["early_metric"], "TotalF1:average=Macro")
+
+    def test_catboost_uses_weight_control_only_when_object_weights_are_configured(self):
+        for metric, ordinary in (("Macro F1", "TotalF1:average=Macro"),
+                                 ("Weighted F1", "TotalF1:average=Weighted"),
+                                 ("Accuracy", "Accuracy")):
+            for parameters in ({}, {"auto_class_weights": None}, {"auto_class_weights": "None"}):
+                with self.subTest(metric=metric, parameters=parameters):
+                    self.assertEqual(boosting._catboost_metric(get_metric(metric), 3, parameters), ordinary)
+            for parameters in ({"auto_class_weights": "Balanced"}, {"auto_class_weights": "SqrtBalanced"},
+                               {"class_weights": [1, 2, 3]}, {"class_weights": [1, 1, 1]}):
+                with self.subTest(metric=metric, parameters=parameters):
+                    separator = ";" if ":" in ordinary else ":"
+                    self.assertEqual(boosting._catboost_metric(get_metric(metric), 3, parameters),
+                                     ordinary + separator + "use_weights=false")
 
     def test_native_category_budget_uses_full_fit_rows_and_never_ordinal_fallback(self):
         training, target, prediction = data()

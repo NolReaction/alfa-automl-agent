@@ -147,13 +147,22 @@ def _inputs(X_fit, y_fit, X_predict, context, recipe):
     return X, y, predict, features, numeric, categorical, classes, metric
 
 
-def _catboost_metric(metric, class_count):
+def _catboost_metric(metric, class_count, parameters=None):
+    parameters = parameters or {}
+    # CatBoost 1.2.8 rejects an explicit use_weights setting when no object
+    # weights were configured. In that case its ordinary metric is already
+    # unweighted. Class/automatic class weights do configure object weights,
+    # so explicitly disable their use in validation scoring only then.
+    weighted = (parameters.get("auto_class_weights") not in {None, "None"}
+                or any(parameters.get(name) is not None
+                       for name in ("class_weights", "scale_pos_weight")))
+    unweighted = ";use_weights=false" if weighted else ""
     if metric.name == "Macro F1":
-        return "TotalF1:average=Macro;use_weights=false"
+        return "TotalF1:average=Macro" + unweighted
     if metric.name == "Weighted F1":
-        return "TotalF1:average=Weighted;use_weights=false"
+        return "TotalF1:average=Weighted" + unweighted
     if metric.name == "Accuracy":
-        return "Accuracy:use_weights=false"
+        return "Accuracy:use_weights=false" if weighted else "Accuracy"
     if metric.classification:
         # CatBoost's multiclass AUC variants differ from the host's OVR AUC.
         # Use an explicit proper-loss proxy rather than mislabel it exact AUC.
@@ -287,7 +296,7 @@ def execute_boosting_candidate(X_fit, y_fit, X_predict, context, *, return_evide
         seen_iterations = getattr(callbacks[-1], "seen_iterations", 0) if callbacks else 0
         early_metric_name = "host_" + metric.name.replace(" ", "_")
     else:
-        early_metric = _catboost_metric(metric, len(classes))
+        early_metric = _catboost_metric(metric, len(classes), parameters)
         model = _make_estimator(action, metric.task_type, parameters, output_categorical, early_metric)
         callback = _CatBoostDeadline(internal_deadline)
         _check_deadline(internal_deadline)
