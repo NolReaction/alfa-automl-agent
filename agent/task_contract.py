@@ -31,9 +31,9 @@ _ALIASES = (
     ("R2", r"(?:r[\s_-]*(?:2|²|\^2)(?:[\s_-]*score)?|coefficient\s+of\s+determination)"),
 )
 _METRIC_TOKEN = re.compile(
-    r"\b(?:rmse|rmsle|mse|mae|mape|smape|msle|r2|auc|roc[\s_-]*auc|"
-    r"accuracy|precision|recall|log[\s_-]*loss|(?:macro|micro|weighted)[\s_-]*f[\s_-]*1|"
-    r"f[\s_-]*1|root\s+mean\s+squared\s+error)\b", re.IGNORECASE,
+    r"\b(?:" + "|".join(alias for _, alias in _ALIASES)
+    + r"|rmsle|mape|smape|msle|auc|precision|recall|micro[\s_-]*f[\s_-]*1|f[\s_-]*1)\b",
+    re.IGNORECASE,
 )
 _FORMAT = (
     "Use an explicit declaration in task.md: 'Primary metric: Macro F1' "
@@ -42,7 +42,7 @@ _FORMAT = (
 )
 
 
-def _description_lines(text: str) -> list[str]:
+def _description_lines(text: str, *, preserve_values=False) -> list[str]:
     """Remove Markdown decorations and code examples, keeping line boundaries."""
     lines = []
     fence = None
@@ -61,8 +61,9 @@ def _description_lines(text: str) -> list[str]:
         if fence is not None or raw.startswith("    ") or raw.startswith("\t"):
             continue
         line = re.sub(r"^\s*(?:#{1,6}\s+|[-+*]\s+)", "", raw)
-        line = line.replace("**", "").replace("__", "").replace("`", "").strip()
-        lines.append(line)
+        if not preserve_values:
+            line = line.replace("**", "").replace("__", "").replace("`", "")
+        lines.append(line.strip())
     return lines
 
 
@@ -78,9 +79,12 @@ def _metric_value(value: str, *, expanded=False) -> str:
         if not expanded and name not in {"RMSE", "Macro F1"}:
             raise ValueError("Unsupported primary metric for the legacy baseline. " + _FORMAT)
         remainder = declaration[matched.end():]
-        # Permit the standard expanded name with its acronym in parentheses.
-        if name == "RMSE":
-            remainder = re.sub(r"^\s*\(rmse\)", "", remainder, flags=re.IGNORECASE)
+        # An acronym or full expansion of this same metric is not a second
+        # metric. Other aliases anywhere in the declaration remain ambiguous.
+        parenthetical = re.match(r"^\s*\(([^()]*)\)", remainder)
+        if (parenthetical is not None
+                and re.fullmatch(alias, parenthetical[1].strip(), flags=re.IGNORECASE)):
+            remainder = remainder[parenthetical.end():]
         if (_METRIC_TOKEN.search(remainder)
                 or re.search(r"[/|]|\b(?:or|либо|или)\b", remainder, flags=re.IGNORECASE)):
             raise ValueError("Ambiguous primary metric declaration in task.md. " + _FORMAT)

@@ -3,6 +3,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import math
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -13,7 +14,8 @@ import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from agent.research_v3 import (
-    V3State, _request_completion, _retryable_api_error, prepare_research, run_agent_v3,
+    MAX_COMPLETION_TOKENS, V3State, _request_completion, _retryable_api_error,
+    prepare_research, run_agent_v3,
 )
 from tests.test_research import FakeClient, existing_output, make_regression, response
 from tests.test_team_integration import fixture_baseline
@@ -35,6 +37,7 @@ class ObservedClient(FakeClient):
     def __init__(self, replies, *, after_call=None):
         super().__init__(replies)
         self.timeouts = []
+        self.max_tokens = []
         self.after_call = after_call
 
     def with_options(self, **kwargs):
@@ -42,6 +45,7 @@ class ObservedClient(FakeClient):
         return self
 
     def create(self, **kwargs):
+        self.max_tokens.append(kwargs["max_tokens"])
         try:
             return super().create(**kwargs)
         finally:
@@ -59,6 +63,20 @@ class ApiRetryTests(unittest.TestCase):
         fixture_baseline(self.state)
         self.state.transition("inner_research")
         self.messages = [{"role": "user", "content": "Use only the inner research view."}]
+
+    def test_output_allowance_is_charged_by_guard_and_matches_actual_request(self):
+        payload = json.dumps(self.state.clean(self.messages), ensure_ascii=False,
+                             separators=(",", ":")).encode("utf-8")
+        self.assertIsNone(self.state.request_allowed(self.messages))
+        guard = self.state.report["request_guard"]
+        self.assertEqual(guard["estimated_tokens_reserved"],
+                         math.ceil(len(payload) / 3) + MAX_COMPLETION_TOKENS)
+        self.assertIn(str(MAX_COMPLETION_TOKENS), guard["estimation"])
+        guard["estimated_tokens_reserved"] = 0
+        client = ObservedClient([response()])
+        self.assertIsNone(_request_completion(self.state, client, self.messages)[1])
+        self.assertEqual(client.max_tokens, [MAX_COMPLETION_TOKENS])
+        self.assertGreaterEqual(guard["estimated_tokens_reserved"], MAX_COMPLETION_TOKENS)
 
     def test_transport_failure_then_success_counts_both_requests_under_one_deadline(self):
         client = ObservedClient([connection_error(), response(content="Recovered")])

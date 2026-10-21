@@ -468,6 +468,10 @@ def run_agent_v2(task_path: Path, client, *, max_steps: int = 12,
                     else:
                         result["selection"] = {"accepted": False, "verified": False,
                                                "reason": "execution_failed"}
+                    # Reject changes to the original task outside candidate-error
+                    # handling: a corrupted source cannot be recovered as a
+                    # merely unsuccessful experiment.
+                    state.check_source()
                     # The task-level file always contains accepted bytes, even if
                     # generated code attempted to write through an absolute path.
                     if state.backup.is_file():

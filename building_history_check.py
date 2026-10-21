@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from decimal import Decimal
 import json
 import math
 import os
@@ -26,7 +27,7 @@ import tempfile
 import numpy as np
 import pandas as pd
 
-from agent.building_history import history_keys, numeric_value
+from agent.building_history import history_keys, numeric_value, period_json
 
 
 ROOT = Path(__file__).resolve().parent
@@ -43,12 +44,20 @@ BOOTSTRAP = 2000
 # ---------------------------------------------------------------- loading and keys
 
 def typed(frame: pd.DataFrame) -> pd.DataFrame:
-    """Text columns as read from CSV to the types used below: integer year, float target."""
+    """Text columns as read from CSV to the types used below: exact year, float target.
+
+    The year stays the exact decimal number written in the file (Decimal objects, compared as numbers): no rounding
+    through float and no truncation of a fractional period to an integer. JSON reports write it with period_json.
+    """
     missing = [name for name in (*KEY_COLUMNS, YEAR) if name not in frame]
     if missing:
         raise ValueError(f"Missing columns: {missing}")
     frame = frame.copy()
-    frame[YEAR] = pd.to_numeric(frame[YEAR], errors="raise").astype(int)
+    periods = [numeric_value(value) for value in frame[YEAR]]
+    bad = sum(value is None for value in periods)
+    if bad:
+        raise ValueError(f"Column {YEAR!r} has {bad} missing or non-numeric values; every row needs a period")
+    frame[YEAR] = pd.Series(periods, index=frame.index, dtype=object)
     if TARGET in frame:
         frame[TARGET] = pd.to_numeric(frame[TARGET], errors="raise").astype(float)
     return frame
@@ -96,7 +105,7 @@ def year_table(frame: pd.DataFrame, key: pd.Series) -> list[dict]:
         sizes = keyed.groupby("_key").size()
         repeated = sizes[sizes > 1].index
         in_repeated = keyed["_key"].isin(repeated)
-        row = {"year": int(year), "rows": len(part), "without_key": len(part) - len(keyed),
+        row = {"year": year, "rows": len(part), "without_key": len(part) - len(keyed),
                "unknown_year_built": int(part["_unknown"].sum()), "distinct_keys": int(sizes.size),
                "keys_repeated": int(len(repeated)), "rows_in_repeated_keys": int(in_repeated.sum()),
                "share_in_repeated_keys": float(in_repeated.mean()) if len(keyed) else math.nan}
@@ -133,7 +142,7 @@ class History:
         self.max_rows_per_year = per_year.groupby(level=0).max()
         self.years = per_year.groupby(level=0).size()
         self.mean = rows.groupby("key")["y"].mean() if target is not None else None
-        self.keys_by_year = {int(y): set(part["key"]) for y, part in rows.groupby("year")}
+        self.keys_by_year = {y: set(part["key"]) for y, part in rows.groupby("year")}
 
     def lookup(self, key: pd.Series) -> dict:
         """For rows of one later year (validation or test): history flag and 'clean' flag.
@@ -165,7 +174,7 @@ def validation_coverage(train: pd.DataFrame, key: pd.Series, val_year: int) -> d
 def test_coverage(train: pd.DataFrame, test: pd.DataFrame, train_key: pd.Series, test_key: pd.Series) -> dict:
     history = History(train_key, train[YEAR])
     found = history.lookup(test_key)
-    by_year = {int(y): float(test_key.isin(keys).mean()) for y, keys in sorted(history.keys_by_year.items())}
+    by_year = {y: float(test_key.isin(keys).mean()) for y, keys in sorted(history.keys_by_year.items())}
     years = pd.Series(found["years"]).value_counts(normalize=True).sort_index()
     return {"rows": len(test), "share_with_history": float(found["has"].mean()), "share_clean": float(found["clean"].mean()),
             "share_ambiguous": float((found["has"] & ~found["clean"]).mean()),
@@ -261,8 +270,9 @@ def consecutive_year_correlation(train: pd.DataFrame, key: pd.Series) -> dict:
     rows = rows[rows.groupby(["key", "year"])["y"].transform("size") == 1]
     rng = np.random.default_rng(SEED)
     pairs = []
-    for year in sorted(rows["year"].unique()):
-        now, later = rows[rows["year"] == year], rows[rows["year"] == year + 1]
+    periods = sorted(rows["year"].unique())
+    for year, following in zip(periods, periods[1:]):  # next period present in the data, not year + 1
+        now, later = rows[rows["year"] == year], rows[rows["year"] == following]
         both = now.merge(later, on="key", suffixes=("", "_next"))
         if both.empty:
             continue
@@ -286,7 +296,7 @@ def consecutive_year_correlation(train: pd.DataFrame, key: pd.Series) -> dict:
 
 def analyze(train: pd.DataFrame, test: pd.DataFrame, bootstrap: int = BOOTSTRAP) -> dict:
     report = {"rows": {"train": len(train), "test": len(test)},
-              "years": {"train": sorted(int(y) for y in train[YEAR].unique()), "test": sorted(int(y) for y in test[YEAR].unique())},
+              "years": {"train": sorted(train[YEAR].unique()), "test": sorted(test[YEAR].unique())},
               "key_columns": KEY_COLUMNS, "variants": {}}
     for variant in VARIANTS:
         train_key, test_key = make_keys(train, variant), make_keys(test, variant)
@@ -310,9 +320,10 @@ def num(value, digits: int = 2) -> str:
 
 
 def render(report: dict) -> str:
+    years = {part: [period_json(y) for y in values] for part, values in report["years"].items()}
     lines = [f"Key: {', '.join(report['key_columns'])}",
-             f"Rows: train {report['rows']['train']} (years {report['years']['train']}), "
-             f"test {report['rows']['test']} (years {report['years']['test']})",
+             f"Rows: train {report['rows']['train']} (years {years['train']}), "
+             f"test {report['rows']['test']} (years {years['test']})",
              "strict  = rows with any unknown key part get no key; lenient = missing parts match each other"]
     for variant, data in report["variants"].items():
         summary = data["key_summary"]
@@ -322,7 +333,7 @@ def render(report: dict) -> str:
                   "", "1. Repeats of a key inside ONE year (cannot all be one building)",
                   "year   rows  no_key  unk_yb  keys_repeated  rows_in_repeated  share  share(known yb)  share(unknown yb)  same_target"]
         for row in [*data["train_years"], *data["test_years"]]:
-            lines.append(f"{row['year']:>4} {row['rows']:>6} {row['without_key']:>7} {row['unknown_year_built']:>7} "
+            lines.append(f"{period_json(row['year'])!s:>4} {row['rows']:>6} {row['without_key']:>7} {row['unknown_year_built']:>7} "
                          f"{row['keys_repeated']:>14} {row['rows_in_repeated_keys']:>17} {pct(row['share_in_repeated_keys']):>6} "
                          f"{pct(row['share_in_repeated_keys_known_year_built']):>15} {pct(row['share_in_repeated_keys_unknown_year_built']):>18} "
                          f"{row.get('repeated_keys_with_identical_target', '-'):>11}")
@@ -335,7 +346,7 @@ def render(report: dict) -> str:
         lines.append(f"test (history = train years 1-5): {cov['rows']} rows, {pct(cov['share_with_history'])} with history "
                      f"(clean {pct(cov['share_clean'])}, ambiguous {pct(cov['share_ambiguous'])})")
         lines.append("  test rows whose key occurs in train year: " + ", ".join(
-            f"{y}: {pct(v)}" for y, v in cov["share_with_key_in_year"].items()))
+            f"{period_json(y)}: {pct(v)}" for y, v in cov["share_with_key_in_year"].items()))
         lines.append("  test rows by number of train years with the key: " + ", ".join(
             f"{k}: {pct(v)}" for k, v in cov["share_by_number_of_years_with_history"].items()))
         lines += ["", "3. Mean of the key's past target vs constant (constant = mean target of the fitting years; no history -> constant)"]
@@ -372,10 +383,13 @@ def render(report: dict) -> str:
 
 
 def jsonable(value):
+    """Strict JSON values; exact periods (Decimal) as period_json gives them, also when they are dictionary keys."""
     if isinstance(value, dict):
-        return {str(key): jsonable(item) for key, item in value.items()}
+        return {str(period_json(key) if isinstance(key, Decimal) else key): jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [jsonable(item) for item in value]
+    if isinstance(value, Decimal):
+        return period_json(value)
     if isinstance(value, np.bool_):
         return bool(value)
     if isinstance(value, np.integer):

@@ -22,6 +22,7 @@ from validation import validate_predictions
 
 REQUIRED_PACKAGES = ("openai", "dotenv", "numpy", "pandas", "sklearn", "catboost",
                      "lightgbm", "optuna", "psutil")
+DEFAULT_TIME_BUDGET = 10500
 
 
 def select_mode(requested: str) -> str:
@@ -127,7 +128,9 @@ def main() -> int:
     mode.add_argument("--check-api", action="store_true", help="Make one short request to the configured API")
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--time-budget", type=float, default=None,
-                        help="Seconds; default 600 offline / 10500 llm; maximum 10500")
+                        help="Seconds; default 10500 in every mode; maximum 10500")
+    parser.add_argument("--search-profile", choices=("legacy", "strong_v1"), default="legacy",
+                        help="CPU search plan; strong_v1 is an experimental deeper boosting plan")
     parser.add_argument("--validation", choices=("auto", "random", "grouped", "time"), default=None,
                         help="Offline holdout strategy; defaults to auto")
     parser.add_argument("--time-column", help="Numeric period feature for --validation time")

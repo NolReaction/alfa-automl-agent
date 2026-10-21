@@ -1,5 +1,6 @@
 import copy
-from decimal import Decimal
+from decimal import Decimal, Inexact, ROUND_FLOOR, ROUND_UP, Rounded, localcontext
+import json
 import math
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import numpy as np
 import pandas as pd
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from agent.building_history import FEATURES, HistoryEncoder
+from agent.building_history import FEATURES, HistoryEncoder, period_json
 import experiment_regression_history as experiment
 
 HISTORY = list(FEATURES)
@@ -39,6 +40,62 @@ def rows(*items) -> pd.DataFrame:
 
 def one(frame: pd.DataFrame, position: int) -> dict:
     return frame.iloc[position].to_dict()
+
+
+class PeriodJsonTests(unittest.TestCase):
+    def test_long_fractional_periods_keep_exact_plain_decimal_text(self):
+        cases = (
+            ("1.123456789012345678901234567890123000", "1.123456789012345678901234567890123"),
+            ("-1.123456789012345678901234567890123000", "-1.123456789012345678901234567890123"),
+            ("123456789012345678901234567890.000000000000000000000000000123000",
+             "123456789012345678901234567890.000000000000000000000000000123"),
+            ("-123456789012345678901234567890.000000000000000000000000000123000",
+             "-123456789012345678901234567890.000000000000000000000000000123"),
+            ("1E-40", "0." + "0" * 39 + "1"),
+            ("-1E-40", "-0." + "0" * 39 + "1"),
+        )
+        for original, expected in cases:
+            with self.subTest(period=original):
+                encoded = period_json(Decimal(original))
+                self.assertIs(type(encoded), str)
+                self.assertEqual(encoded, expected)
+                self.assertEqual(Decimal(json.loads(json.dumps(encoded))), Decimal(original))
+
+    def test_integral_periods_remain_json_integers_without_size_loss(self):
+        cases = ((Decimal("5.000"), 5), (Decimal("5E60"), 5 * 10 ** 60),
+                 (Decimal("-5E60"), -5 * 10 ** 60), (Decimal("-0.000"), 0),
+                 (10 ** 80 + 1, 10 ** 80 + 1))
+        for original, expected in cases:
+            with self.subTest(period=original):
+                encoded = period_json(original)
+                self.assertIs(type(encoded), int)
+                self.assertEqual(encoded, expected)
+                self.assertEqual(json.loads(json.dumps(encoded)), expected)
+
+    def test_serialization_ignores_decimal_precision_rounding_and_exponent_limits(self):
+        cases = (
+            (Decimal("123456789012345678901234567890.12500"), "123456789012345678901234567890.125"),
+            (Decimal("-123456789012345678901234567890.12500"), "-123456789012345678901234567890.125"),
+            (Decimal("1E-40"), "0." + "0" * 39 + "1"),
+            (Decimal("5E60"), 5 * 10 ** 60),
+        )
+        for precision in (1, 2, 5):
+            for rounding in (ROUND_FLOOR, ROUND_UP):
+                with self.subTest(precision=precision, rounding=rounding), localcontext() as context:
+                    context.prec, context.rounding = precision, rounding
+                    context.Emin, context.Emax = -9, 9
+                    context.traps[Inexact] = context.traps[Rounded] = True
+                    context.clear_flags()
+                    for value, expected in cases:
+                        self.assertEqual(period_json(value), expected)
+                    self.assertFalse(any(context.flags.values()), "Serialization must not signal rounding")
+
+    def test_nearby_fractional_periods_stay_distinct_after_json_round_trip(self):
+        values = [Decimal("1.123456789012345678901234567890001"),
+                  Decimal("1.123456789012345678901234567890002")]
+        encoded = json.loads(json.dumps([period_json(value) for value in values]))
+        self.assertNotEqual(encoded[0], encoded[1])
+        self.assertEqual([Decimal(value) for value in encoded], values)
 
 
 class FeatureValueTests(unittest.TestCase):
@@ -287,6 +344,49 @@ class ContractTests(unittest.TestCase):
                        dict(key_columns=["a"], period_column="year", numeric_columns=["a"], positive_columns=["b"])):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 HistoryEncoder(**kwargs)
+
+
+class RunningSumTests(unittest.TestCase):
+    @staticmethod
+    def long_history(periods: int, values) -> tuple[pd.DataFrame, list]:
+        return rows(*[(period, 100.0) for period in range(1, periods + 1)]), list(values)
+
+    def test_long_history_of_one_key_needs_linear_summation_work(self):
+        periods = 2000
+        X, y = self.long_history(periods, np.linspace(1.0, 2.0, periods))
+        summed = []
+        real_fsum = math.fsum
+
+        def counting_fsum(values):
+            values = list(values)
+            summed.append(len(values))
+            return real_fsum(values)
+
+        with mock.patch("agent.building_history.math.fsum", counting_fsum):
+            encoder().fit(X, y)
+
+        self.assertLess(sum(summed), 10 * periods)  # the old prefix fsum added periods * (periods + 1) / 2 numbers
+
+    def test_running_sum_equals_fsum_of_all_earlier_period_totals_bit_for_bit(self):
+        rng = np.random.default_rng(3)
+        values = rng.choice([1e16, -1e16, 1.0, 1e-8, 3.3, -7.25e15], size=400) * rng.uniform(0.5, 1.5, 400)
+        X, y = self.long_history(400, values)
+
+        result = encoder().fit_transform(X, y)
+
+        expected = [math.nan] + [math.fsum(values[:i]) / i for i in range(1, 400)]
+        np.testing.assert_array_equal(result["history_mean"].to_numpy(), np.asarray(expected))
+        naive = np.cumsum(values)[:-1] / np.arange(1, 400)
+        self.assertGreater(np.max(np.abs(naive - np.asarray(expected[1:]))), 0)  # plain float summation drifts here
+
+    def test_sums_that_overflow_are_a_clear_error_and_never_infinite_features(self):
+        for y in ([1.5e308, 1.5e308], [-1.7e308, -1.7e308]):
+            with self.subTest(y=y), self.assertRaisesRegex(ValueError, "overflow"):
+                encoder().fit(rows((1, 100.0), (2, 100.0)), y)
+        with self.assertRaisesRegex(ValueError, "overflow"):  # two rows of one period overflow as well
+            encoder().fit(rows((1, 100.0), (1, 100.0)), [1.5e308, 1.5e308])
+        result = encoder().fit_transform(rows((1, 100.0), (2, 100.0), (3, 100.0)), [1.5e308, -1.5e308, 0.0])
+        self.assertTrue(np.isfinite(result["history_mean"].iloc[1:]).all())  # large finite values that cancel are fine
 
 
 class SyntheticCycleTests(unittest.TestCase):
@@ -603,6 +703,167 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "old")
         self.assertEqual([item.name for item in Path(self.directory.name).iterdir() if item.name.startswith("metrics")],
                          ["metrics.json"])
+
+
+class NestedTests(unittest.TestCase):
+    def setUp(self):
+        self.x, self.y, self.ids, features, numeric, categorical = experiment.synthetic_task(7, True, objects=120)
+        self.features, self.numeric, self.categorical = features, numeric, categorical
+        self.period = experiment.exact_periods(self.x)
+
+    def fit_base(self, calls=None, fail_on=None):
+        inner = experiment.in_process_fits(self.x, self.y, self.features, self.numeric, self.categorical,
+                                           deadline=math.inf)
+
+        def fit_base(model, fit_rows, predict_rows, label):
+            if calls is not None:
+                calls.append((model, fit_rows.copy(), predict_rows.copy()))
+            return None if label == fail_on else inner(model, fit_rows, predict_rows, label)
+
+        return fit_base
+
+    def test_select_weight_direction_and_ties(self):
+        self.assertEqual(experiment.select_weight({0.0: 1.0, 0.5: 1.0, 1.0: 2.0}, False), 0.0)
+        self.assertEqual(experiment.select_weight({0.0: 2.0, 0.25: 1.0 + 1e-15, 0.5: 1.0}, False), 0.25)
+        self.assertEqual(experiment.select_weight({0.0: 0.1, 0.5: 0.9, 1.0: 0.2}, True), 0.5)
+
+    def test_every_model_and_adapter_fit_sees_only_its_own_past(self):
+        calls, adapter_rows = [], []
+        real_fit_candidate = experiment.fit_candidate
+
+        def recording(x, y, rows, features, policy, weight):
+            adapter_rows.append(rows.copy())
+            return real_fit_candidate(x, y, rows, features, policy, weight)
+
+        with mock.patch.object(experiment, "fit_candidate", recording):
+            result, _ = experiment.nested_outer(5, self.x, self.y, self.period, self.ids, self.features,
+                                                self.fit_base(calls))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual([split["period"] for split in result["inner_splits"]], [2, 3, 4])
+        self.assertEqual(len(calls), 5)  # three inner fits, then the base and the reference model on years 1-4
+        for _, fit_rows, predict_rows in calls:
+            predicted = set(self.period[predict_rows])
+            self.assertEqual(len(predicted), 1)
+            self.assertLess(max(self.period[fit_rows]), min(predicted))
+            self.assertFalse((fit_rows & (self.period == 5)).any())
+        self.assertTrue(adapter_rows)
+        self.assertTrue(all(not (rows & (self.period == 5)).any() for rows in adapter_rows))
+
+    def test_outer_answers_change_no_weight_history_or_prediction(self):
+        first, table = experiment.nested_outer(5, self.x, self.y, self.period, self.ids, self.features, self.fit_base())
+        changed = self.y.copy()
+        late = self.period == 5
+        changed[late] = changed[late] * 3 + 777
+        second, other = experiment.nested_outer(5, self.x, changed, self.period, self.ids, self.features,
+                                                self.fit_base())
+
+        # ExtraTrees with n_jobs=8 adds its trees' predictions in thread completion order: identical inputs may differ
+        # in the last bits (about 1e-13), so scores and predictions are compared with a tolerance, weights exactly.
+        for policy, chosen in first["selection"].items():
+            self.assertEqual(chosen["weight"], second["selection"][policy]["weight"])
+            for weight, score in chosen["scores"].items():
+                self.assertAlmostEqual(score, second["selection"][policy]["scores"][weight], delta=1e-9)
+        self.assertFalse(np.allclose(table["y_true"], other["y_true"]))
+        pd.testing.assert_frame_equal(table.drop(columns="y_true"), other.drop(columns="y_true"), check_exact=False,
+                                      rtol=1e-12, atol=1e-9)
+
+    def test_a_failed_fit_leaves_the_year_incomplete_and_unscored(self):
+        for fail_on in ("outer 4, inner 3", "outer 4"):
+            with self.subTest(fail_on=fail_on):
+                result, table = experiment.nested_outer(4, self.x, self.y, self.period, self.ids, self.features,
+                                                        self.fit_base(fail_on=fail_on))
+                self.assertTrue(result["status"].startswith("incomplete"))
+                self.assertIsNone(table)
+                self.assertNotIn("records", result)
+        summary = experiment.summarize_recipes([result], {}, {}, 10)
+        self.assertEqual((summary["complete_years"], summary["combined"]), ([], []))
+
+    def test_too_few_earlier_periods_switch_history_off(self):
+        result, table = experiment.nested_outer(2, self.x, self.y, self.period, self.ids, self.features, self.fit_base())
+        self.assertEqual(result["inner_splits"], [])
+        self.assertEqual({policy: item["weight"] for policy, item in result["selection"].items()},
+                         {"allow": 0.0, "past_unique_only": 0.0})
+        np.testing.assert_array_equal(table["nested_allow"], table["et_no_period"])
+
+    def test_shuffled_control_permutes_answers_only_inside_each_period_of_the_given_rows(self):
+        rows = self.period < 4
+        shuffled = experiment.shuffled_within_periods(self.y, self.period, rows)
+        np.testing.assert_array_equal(shuffled[~rows], self.y[~rows])
+        for value in (1, 2, 3):
+            part = self.period == value
+            np.testing.assert_array_equal(np.sort(shuffled[part]), np.sort(self.y[part]))
+        self.assertFalse(np.array_equal(shuffled[rows], self.y[rows]))
+
+
+class BootstrapTests(unittest.TestCase):
+    def test_cluster_ids_keep_a_key_together_and_rows_without_key_alone(self):
+        ids = experiment.cluster_ids([("a",), None, ("b",), ("a",), None])
+        self.assertEqual(ids[0], ids[3])
+        self.assertEqual(len(set(ids.tolist())), 4)
+
+    def test_paired_intervals(self):
+        rng = np.random.default_rng(0)
+        actual = rng.normal(size=300)
+        base = actual + rng.normal(scale=2.0, size=300)
+        result = experiment.paired_bootstrap(actual, {"base": base, "same": base.copy(), "better": actual + 0.1 * (base - actual)},
+                                             "base", np.arange(300) // 3, 200)
+        self.assertEqual((result["clusters"], result["rows"]), (100, 300))
+        self.assertEqual(result["recipes"]["same"]["interval_95"], [0.0, 0.0])
+        low, high = result["recipes"]["better"]["interval_95"]
+        self.assertTrue(low < high < 0)
+        self.assertEqual(result["recipes"]["better"]["share_of_resamples_better"], 1.0)
+        single = experiment.paired_bootstrap(actual, {"base": base, "better": actual}, "base", np.zeros(300), 50)
+        low, high = single["recipes"]["better"]["interval_95"]
+        self.assertAlmostEqual(low, high)  # one cluster: every resample is the whole data
+
+
+class BoundedRunTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.inputs = make_task(Path(self.directory.name))
+
+    def test_nested_run_with_bounded_fits_files_and_recomputation(self):
+        out = Path(self.directory.name) / "nested"
+        summary = experiment.run_nested(self.inputs, out, years=(3,), resamples=50)
+
+        self.assertEqual(sorted(path.name for path in out.iterdir() if path.is_file()),
+                         ["input_hashes.json", "nested_metrics.csv", "nested_metrics.json", "nested_predictions_year3.csv"])
+        self.assertEqual(len(summary["fits"]), 3)  # one inner fit (years 1 -> 2), base and reference on years 1-2
+        for fit in summary["fits"]:
+            self.assertEqual(fit["status"], "complete")
+            self.assertGreater(fit["fit_seconds"], 0)
+        table = pd.read_csv(out / "nested_predictions_year3.csv", dtype={"id": str})
+        self.assertTrue(table["id"].str.startswith("0").all())
+        combined = {row["variant"]: row["all"]["rmse"] for row in summary["combined"]}
+        for name in experiment.RECIPES:
+            self.assertAlmostEqual(combined[name], math.sqrt(((table["y_true"] - table[name]) ** 2).mean()), places=9)
+        self.assertEqual(json.loads((out / "nested_metrics.json").read_text(encoding="utf-8"))["complete_years"], [3])
+        self.assertTrue(summary["input_hashes"]["unchanged"])
+
+    def test_timeouts_and_the_deadline_are_reported_not_hidden(self):
+        timed_out = experiment.run_nested(self.inputs, Path(self.directory.name) / "a", years=(3,), fit_timeout=0.01,
+                                          resamples=10)
+        self.assertTrue(timed_out["fits"][0]["status"].startswith("failed: timeout"))
+        self.assertTrue(timed_out["outer"][0]["status"].startswith("incomplete"))
+        self.assertEqual(timed_out["combined"], [])
+        late = experiment.run_nested(self.inputs, Path(self.directory.name) / "b", years=(3,), deadline_seconds=0,
+                                     resamples=10)
+        self.assertEqual(late["fits"][0]["status"], "skipped: run deadline reached")
+
+    def test_scaling_worker_matches_the_former_sums_exactly(self):
+        output = Path(self.directory.name) / "scaling.json"
+        spec = Path(self.directory.name) / "spec.json"
+        spec.write_text(json.dumps({"seed": 1, "seconds": 60, "start": 100, "largest": 400, "former_limit_seconds": 10,
+                                    "output": str(output)}), encoding="utf-8")
+
+        experiment.scaling_worker(str(spec))
+
+        rows = json.loads(output.read_text(encoding="utf-8"))["synthetic_one_key"]
+        self.assertEqual([row["periods_of_one_key"] for row in rows], [100, 200, 400])
+        self.assertTrue(all(row["max_abs_difference_to_former"] == 0.0 for row in rows))
+        self.assertTrue(all(row["traced_peak_bytes"] > 0 for row in rows))
 
 
 if __name__ == "__main__":

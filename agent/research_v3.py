@@ -35,6 +35,13 @@ from validation import validate_predictions
 
 STAGES = ("preparation", "inner_research", "candidate_frozen", "outer_validation", "full_refit", "result")
 MAX_API_RETRIES = 1
+MAX_COMPLETION_TOKENS = 8192
+# These stops end the paid dialogue, not the original CPU/time budget. The
+# local coordinator still checks input integrity, inner eligibility and the
+# measured finalization reserve before admitting a bounded new trial.
+LOCAL_CONTINUATION_REASONS = frozenset({
+    "api_error", "truncated_response", "context_budget", "step_limit", "repeated_failures",
+})
 SYSTEM_V3 = """You are an autonomous ML researcher using run_python.
 Read task.md and research_validation.json in the working directory. Only the
 approved outer-fit training view is available for research. All validation
@@ -240,10 +247,10 @@ class V3State(RunState):
             return "time_limit"
         payload = json.dumps(self.clean(messages), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         # A host-side estimate, explicitly not provider usage or currency.
-        estimate = math.ceil(len(payload) / 3) + 4096
+        estimate = math.ceil(len(payload) / 3) + MAX_COMPLETION_TOKENS
         budget = self.report.setdefault("request_guard", {
             "estimated_tokens_reserved": 0, "estimated_token_limit": 100000,
-            "estimation": "ceil(UTF-8 bytes / 3) + 4096 output reserve per request"})
+            "estimation": f"ceil(UTF-8 bytes / 3) + {MAX_COMPLETION_TOKENS} output reserve per request"})
         if len(payload) > 64 * 1024 or budget["estimated_tokens_reserved"] + estimate > budget["estimated_token_limit"]:
             return "context_budget"
         budget["estimated_tokens_reserved"] += estimate
@@ -270,7 +277,9 @@ def prepare_baseline(state):
     gate = state.gate
     recipe = seed_candidate(gate.spec.classification)
     state.report["baseline_search"] = {"scope": "outer_fit_only", "status": "seed_only"}
-    timeout = min(600.0, max(0, state.remaining() - state.final_reserve) * .40)
+    profile = state.report.get("quality_options", {}).get("search_profile", "legacy")
+    startup_cap = 1800.0 if profile == "strong_v1" else 600.0
+    timeout = min(startup_cap, max(0, state.remaining() - state.final_reserve) * .40)
     semantics_allowed = gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed", True)
     if not semantics_allowed:
         state.report["baseline_search"]["reason"] = "task_semantics_too_large"
@@ -381,7 +390,7 @@ def _assess_candidate(state, candidate, hypothesis, *, origin, maximum=None):
 
 
 def continue_locally(state):
-    """Use spare CPU after an API error without reopening the frozen baseline."""
+    """Use spare CPU after dialogue stops without reopening its frozen baseline."""
     from agent.offline_research import run_local_continuation, startup_seen
     if state.dialogue_closed or state.report.get("stage") != "inner_research":
         raise RuntimeError("Local research is terminal after candidate freeze")
@@ -400,6 +409,10 @@ def continue_locally(state):
     recipes = local_candidate_plan(gate.spec.classification, gate.spec.metric.name,
                                   gate.research_train.iloc[gate.fit_rows][gate.spec.target_column], ranked,
                                   metric_recipes=state.report.get("quality_options", {}).get("metric_recipes", False))
+    if state.report.get("quality_options", {}).get("search_profile", "legacy") == "strong_v1":
+        from agent.tabular_backend import strong_candidate_plan
+        recipes = [*strong_candidate_plan(gate.spec.classification, gate.spec.metric.name,
+                    gate.research_train.iloc[gate.fit_rows][gate.spec.target_column]), *recipes]
     source = state.run_dir / "local_source.py"
     source.write_text(BASELINE_SOURCE, encoding="utf-8")
     import hashlib
@@ -678,7 +691,7 @@ def _request_completion(state, client, messages):
         try:
             response = client.with_options(timeout=timeout).chat.completions.create(
                 model=get_model(), messages=state.clean(request_messages), tools=[TOOL],
-                parallel_tool_calls=False, max_tokens=4096)
+                parallel_tool_calls=False, max_tokens=MAX_COMPLETION_TOKENS)
         except Exception as error:
             state.event("api_error", error=safe_error_message(error), details=safe_error_details(error))
             if not pending_retry and recovery["retries"] < MAX_API_RETRIES and _retryable_api_error(error):
@@ -831,7 +844,11 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
             if state.ledger.failure_streak >= 3:
                 reason = "repeated_failures"
                 break
-        if reason == "api_error":
+        state.report["research_stop"] = {
+            "reason": reason, "local_continuation_requested": reason in LOCAL_CONTINUATION_REASONS,
+        }
+        state.save()
+        if reason in LOCAL_CONTINUATION_REASONS:
             continue_locally(state)
         if stability_splits > 1:
             from agent.research_stability import verify_research_finalists

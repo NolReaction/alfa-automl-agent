@@ -41,7 +41,7 @@ def candidate_tool(code=LINEAR_CODE, recipe=None):
     recipe = recipe if recipe is not None else {"family": "linear", "degree": 1}
     return (
         "import json\nfrom pathlib import Path\n"
-        f"Path('research_candidate.py').write_text({code!r}, encoding='utf-8')\n"
+        f"Path('research_candidate.py').write_text({code!r}, encoding='utf-8', newline='\\n')\n"
         f"Path('research_recipe.json').write_text({json.dumps(recipe)!r}, encoding='utf-8')\n"
         "Path('research_hypothesis.json').write_text(json.dumps("
         "{'hypothesis': 'Fit a linear relationship using only the inner fit rows.'}), encoding='utf-8')\n"
@@ -174,17 +174,23 @@ class TeamIntegrationTests(unittest.TestCase):
                 evidence.append((views, frozen, report["evaluations"]["selection"]))
         self.assertEqual(evidence[0], evidence[1])
 
-    def test_failed_candidate_keeps_baseline_and_does_not_publish_generated_csv(self):
+    def test_failed_candidate_does_not_publish_generated_csv_and_allows_local_recovery(self):
         code = candidate_tool("def fit_predict(*args):\n    raise ValueError('bad recipe')\n")
         code += "Path('submission.csv').write_text('row_key,outcome\\n0005,999\\nNA,999\\n')\n"
         with tempfile.TemporaryDirectory() as directory:
             task = make_regression(Path(directory))
-            _, report, _, _, _ = self.run_v3(task, [response(code=code), response()])
+            from agent.search import seed_candidate
+            with patch("agent.research_v3.local_candidate_plan", return_value=[seed_candidate(False)]):
+                _, report, _, _, _ = self.run_v3(task, [response(code=code), response()])
             self.assertTrue(validate_predictions(task.parent)["valid"])
             result = (task.parent / "submission.csv").read_text(encoding="utf-8")
             self.assertNotIn(",999", result)
             self.assertEqual(report["successful_experiments"], 0)
-            self.assertEqual(report["improvements"], 0)
+            self.assertEqual(report["local_successful_experiments"], 1)
+            llm_trials = [event["result"]["selection"] for event in report["events"]
+                          if event["kind"] == "experiment"]
+            self.assertTrue(llm_trials)
+            self.assertTrue(all(item["verified"] is False for item in llm_trials))
 
     def test_api_failure_stops_requests_and_keeps_real_host_fallback(self):
         from agent.search import seed_candidate
