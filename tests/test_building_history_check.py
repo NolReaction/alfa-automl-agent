@@ -1,4 +1,5 @@
 import contextlib
+from decimal import Decimal
 import io
 import json
 import math
@@ -111,6 +112,45 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(table[1]["repeated_keys_with_identical_target"], 0)
         self.assertEqual(table[2]["keys_repeated"], 0)
         self.assertEqual((table[2]["without_key"], table[2]["unknown_year_built"]), (1, 1))
+
+
+class ExactPeriodTests(unittest.TestCase):
+    def test_fractional_and_large_periods_are_kept_exact_by_loading_splitting_and_json(self):
+        data = frame([(1, "A", 10, 1, 1950), (2, "A", 20, 1, 1950), ("2.5", "A", 40, 1, 1950),
+                      ("9007199254740992", "B", 50, 2, 1950), ("9007199254740993.0", "B", 70, 2, 1950)])
+
+        self.assertEqual(data[bh.YEAR].tolist(), [Decimal("1"), Decimal("2"), Decimal("2.5"),
+                                                  Decimal("9007199254740992"), Decimal("9007199254740993.0")])
+        self.assertEqual(data[bh.YEAR].nunique(), 5)  # 2 and 2.5 differ, and so do the two large integers
+        key = bh.make_keys(data, "strict")
+        fold = bh.evaluate_fold(data.iloc[:3], key.iloc[:3], Decimal("2.5"), bootstrap=0)
+        self.assertEqual((fold["fit_rows"], fold["all_rows"]["rows"]), (2, 1))  # periods 1 and 2 fit, 2.5 is checked
+        self.assertEqual(fold["with_history"]["rmse_history_mean"], 25.0)  # |40 - mean(10, 20)|
+        large = bh.evaluate_fold(data, key, Decimal("9007199254740993"), bootstrap=0)
+        self.assertEqual((large["fit_rows"], large["with_history"]["rows"]), (4, 1))
+        self.assertEqual(large["with_history"]["rmse_history_mean"], 20.0)  # sees only period ...992
+
+        table = bh.year_table(data, key)
+        text = json.dumps(bh.jsonable({"years": [row["year"] for row in table], "by_year": {Decimal("2.50"): 1.0}}),
+                          allow_nan=False)
+        self.assertEqual(json.loads(text), {"years": [1, 2, "2.5", 9007199254740992, 9007199254740993],
+                                            "by_year": {"2.5": 1.0}})
+
+    def test_consecutive_periods_follow_the_data_not_year_plus_one(self):
+        rows = []
+        for i in range(40):
+            for period, factor in (("1", 1.0), ("1.5", 1.1)):
+                rows.append({"State_Factor": "State_1", "building_class": "Commercial", "facility_type": "Office",
+                             "floor_area": str(1000 + i), "year_built": "1950", "ELEVATION": "1",
+                             bh.YEAR: period, bh.TARGET: str((10 + i) * factor)})
+        data = bh.typed(pd.DataFrame(rows))
+
+        self.assertEqual(bh.consecutive_year_correlation(data, bh.make_keys(data, "strict"))["pairs"], 40)
+
+    def test_missing_or_text_period_is_a_clear_error(self):
+        for value in ("", "later", "nan", "inf"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Year_Factor"):
+                frame([(value, "A", 10, 1, 1950)])
 
 
 class HistoryMeanTests(unittest.TestCase):

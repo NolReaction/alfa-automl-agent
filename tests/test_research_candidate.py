@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -238,7 +239,13 @@ class ResearchCandidateTests(unittest.TestCase):
             root = Path(directory)
             fit, predict = data()
             candidate = frozen(root, "import time\ntime.sleep(10)\n" + LINEAR)
-            with self.assertRaises(CandidateExecutionError) as raised:
+            # This check exercises the real child timeout. Host preparation
+            # exhaustion has its own test; slow Windows CSV writes must not
+            # select that separate path before the child can be launched.
+            # Replace only this module's clock, leaving run_python's real
+            # monotonic clock and its 0.2-second process limit intact.
+            with patch("agent.research_candidate.time", SimpleNamespace(monotonic=lambda: 100.0)), \
+                    self.assertRaises(CandidateExecutionError) as raised:
                 run_candidate(candidate, spec=make_spec(root), fit_frame=fit, predict_frame=predict,
                               output_dir=root / "executions", phase="outer_validation", timeout=0.2)
             self.assertTrue(raised.exception.execution["timed_out"])
