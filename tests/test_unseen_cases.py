@@ -57,7 +57,7 @@ class UnseenCaseTests(unittest.TestCase):
             expected = {"task.md", "inputs/train.csv", "inputs/test.csv",
                         "inputs/data_dictionary.csv", "inputs/sample_submission.csv"}
             self.assertEqual(set(first["input_paths"]), expected)
-            self.assertEqual({str(path.relative_to(root / "a")) for path in (root / "a").rglob("*") if path.is_file()}, expected)
+            self.assertEqual({path.relative_to(root / "a").as_posix() for path in (root / "a").rglob("*") if path.is_file()}, expected)
             test = pd.read_csv(root / "a/inputs/test.csv", dtype=str, keep_default_na=False)
             template = pd.read_csv(root / "a/inputs/sample_submission.csv", dtype=str, keep_default_na=False)
             contract = first["contract"]

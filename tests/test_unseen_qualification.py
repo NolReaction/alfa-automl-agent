@@ -67,7 +67,7 @@ class QualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             metadata = self.materialize(temporary)
             path = self.write_submission(metadata)
-            original = path.read_text()
+            original = path.read_text(encoding="utf-8")
             header, rows = qualification.read_csv(path)
             mutations = []
             reordered = list(reversed(rows))
@@ -75,7 +75,7 @@ class QualificationTests(unittest.TestCase):
                 with path.open("w", encoding="utf-8", newline="") as stream:
                     writer = csv.DictWriter(stream, fieldnames=header)
                     writer.writeheader(); writer.writerows(body)
-                mutations.append(path.read_text())
+                mutations.append(path.read_text(encoding="utf-8"))
             mutations.extend((original.replace("\n", ",extra\n", 1),
                               original.replace(str(metadata["audit_actuals"][0]), "nan", 1)))
             for text in mutations:
@@ -229,18 +229,19 @@ class QualificationTests(unittest.TestCase):
                 else:
                     path = root / "run/manifest.json"
                 if which == "manifest":
-                    changed = json.loads(path.read_text())
+                    changed = json.loads(path.read_text(encoding="utf-8"))
                     changed["seed"] += 1
                     path.write_text(json.dumps(changed), encoding="utf-8")
                 else:
-                    path.write_text(path.read_text() + " ", encoding="utf-8")
+                    path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
                 with self.assertRaises(ValueError):
                     qualification.load_plan(root / "run")
 
     def test_default_argv_has_no_extra_flags_and_contract_probe_is_separate(self):
         plan = {"python": "python", "solver": {"root": "/solver"}, "budgets": {"solver_seconds": 30}}
         entry = {"mode": "default", "task_path": "/task/task.md"}
-        self.assertEqual(qualification._argv(plan, entry, {}), ["python", "/solver/solution.py", "/task/task.md"])
+        self.assertEqual(qualification._argv(plan, entry, {}),
+                         ["python", str(Path("/solver") / "solution.py"), "/task/task.md"])
         args = qualification._argv(plan, {**entry, "mode": "offline"}, {"validation": {"strategy": "time", "time_column": "period"}})
         self.assertEqual(args[-4:], ["--validation", "time", "--time-column", "period"])
         self.assertNotIn("audit", " ".join(args))
@@ -273,7 +274,7 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(reaudit["verified_predictions"], 1)
             self.assertEqual(reaudit["models_refitted"], 0)
             raw = output / result["results"][0]["raw_predictions"]["path"]
-            raw.write_text(raw.read_text()+"\n", encoding="utf-8")
+            raw.write_text(raw.read_text(encoding="utf-8")+"\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "raw predictions"):
                 qualification.re_audit(output)
 
