@@ -41,7 +41,7 @@ def candidate_tool(code=LINEAR_CODE, recipe=None):
     recipe = recipe if recipe is not None else {"family": "linear", "degree": 1}
     return (
         "import json\nfrom pathlib import Path\n"
-        f"Path('research_candidate.py').write_text({code!r}, encoding='utf-8')\n"
+        f"Path('research_candidate.py').write_text({code!r}, encoding='utf-8', newline='\\n')\n"
         f"Path('research_recipe.json').write_text({json.dumps(recipe)!r}, encoding='utf-8')\n"
         "Path('research_hypothesis.json').write_text(json.dumps("
         "{'hypothesis': 'Fit a linear relationship using only the inner fit rows.'}), encoding='utf-8')\n"
