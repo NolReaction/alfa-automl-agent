@@ -1,0 +1,963 @@
+{
+  "schema_version": 1,
+  "catalog_version": "public-uci-v1",
+  "max_download_bytes": 67108864,
+  "download_timeout_seconds": 45,
+  "catalog_note": "Ten independent source families, four development pilot cases; five procedural confirmation candidates and one known classic sanity case. Metadata/API URLs and CC BY 4.0 licenses verified before downloads. All actual bytes, times and source/adapter/split hashes remain null until their corresponding receipts are produced. No publisher checksums found. No evidence of model quality in this file.",
+  "datasets": [
+    {
+      "dataset_id": "bank_marketing",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 222,
+        "doi": "10.24432/C5K306"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/222/bank+marketing",
+      "download_url": "https://archive.ics.uci.edu/static/public/222/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Moro, S., Rita, P., & Cortez, P. (2014). Bank Marketing [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5K306. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "y",
+      "task_type": "classification",
+      "metric": "LogLoss",
+      "direction": "minimize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "literal_string",
+        "normalization": "none",
+        "class_order": "declared"
+      },
+      "classes": [
+        "no",
+        "yes"
+      ],
+      "positive_class": "yes",
+      "numeric": [
+        "age",
+        "balance",
+        "day_of_week",
+        "campaign",
+        "pdays",
+        "previous"
+      ],
+      "categorical": [
+        "job",
+        "marital",
+        "education",
+        "default",
+        "housing",
+        "loan",
+        "contact",
+        "month",
+        "poutcome"
+      ],
+      "feature_exclusions": [
+        "duration"
+      ],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": {
+        "kind": "source_row_order",
+        "note": "Publisher describes full bank-marketing table as date ordered. Source row ordinal is a split key only, never a feature; not a reconstructed calendar timestamp."
+      },
+      "split_rule": {
+        "kind": "source_order",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "development",
+      "pilot": true,
+      "known_public_sanity": false,
+      "prior_exposure": "Explicitly assigned to development pilot before any fits. Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Predict before the current call: duration excluded. campaign is planned attempt count including current call; unknown categories and pdays=-1 retain source meaning. Publisher ordered row holdout is only a chronology proxy: no full timestamp or client ID, and repeat clients cannot be identified.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Predict before the current call: duration excluded. campaign is planned attempt count including current call; unknown categories and pdays=-1 retain source meaning. Publisher ordered row holdout is only a chronology proxy: no full timestamp or client ID, and repeat clients cannot be identified."
+    },
+    {
+      "dataset_id": "wdbc",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 17,
+        "doi": "10.24432/C5DW2B"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/17/breast+cancer+wisconsin+diagnostic",
+      "download_url": "https://archive.ics.uci.edu/static/public/17/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Wolberg, W., Mangasarian, O., Street, N., & Street, W. (1993). Breast Cancer Wisconsin (Diagnostic) [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5DW2B. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "Diagnosis",
+      "task_type": "classification",
+      "metric": "ROC AUC",
+      "direction": "maximize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [
+          "ID"
+        ],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [
+        "ID"
+      ],
+      "label_rule": {
+        "kind": "literal_string",
+        "normalization": "none",
+        "class_order": "declared"
+      },
+      "classes": [
+        "B",
+        "M"
+      ],
+      "positive_class": "M",
+      "numeric": [
+        "radius1",
+        "texture1",
+        "perimeter1",
+        "area1",
+        "smoothness1",
+        "compactness1",
+        "concavity1",
+        "concave_points1",
+        "symmetry1",
+        "fractal_dimension1",
+        "radius2",
+        "texture2",
+        "perimeter2",
+        "area2",
+        "smoothness2",
+        "compactness2",
+        "concavity2",
+        "concave_points2",
+        "symmetry2",
+        "fractal_dimension2",
+        "radius3",
+        "texture3",
+        "perimeter3",
+        "area3",
+        "smoothness3",
+        "compactness3",
+        "concavity3",
+        "concave_points3",
+        "symmetry3",
+        "fractal_dimension3"
+      ],
+      "categorical": [],
+      "feature_exclusions": [
+        "ID"
+      ],
+      "group_rule": {
+        "columns": [
+          "ID"
+        ],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "stratified_group",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "development",
+      "pilot": true,
+      "known_public_sanity": false,
+      "prior_exposure": "Explicitly assigned to development pilot before any fits. Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Patient/sample ID is excluded from features; M is the literal malignant positive class.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Patient/sample ID is excluded from features; M is the literal malignant positive class."
+    },
+    {
+      "dataset_id": "wine_quality_red",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 186,
+        "doi": "10.24432/C56S3T"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/186/wine+quality",
+      "download_url": "https://archive.ics.uci.edu/static/public/186/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Cortez, P., Cerdeira, A., Almeida, F., Matos, T., & Reis, J. (2009). Wine Quality [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C56S3T. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "quality",
+      "task_type": "regression",
+      "metric": "RMSE",
+      "direction": "minimize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "finite_numeric",
+        "normalization": "none",
+        "class_order": null
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "fixed_acidity",
+        "volatile_acidity",
+        "citric_acid",
+        "residual_sugar",
+        "chlorides",
+        "free_sulfur_dioxide",
+        "total_sulfur_dioxide",
+        "density",
+        "pH",
+        "sulphates",
+        "alcohol"
+      ],
+      "categorical": [],
+      "feature_exclusions": [
+        "color"
+      ],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "group_random",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "development",
+      "pilot": true,
+      "known_public_sanity": false,
+      "prior_exposure": "Explicitly assigned to development pilot before any fits. Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Official API CSV contains red/white indicator: statically select color=red, then exclude color. White variant cannot count as an independent confirmation dataset.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {},
+        "filter": {
+          "column": "color",
+          "value": "red"
+        }
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Official API CSV contains red/white indicator: statically select color=red, then exclude color. White variant cannot count as an independent confirmation dataset."
+    },
+    {
+      "dataset_id": "auto_mpg",
+      "version": "uci-csv-time-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 9,
+        "doi": "10.24432/C5859H"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/9/auto+mpg",
+      "download_url": "https://archive.ics.uci.edu/static/public/9/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Quinlan, R. (1993). Auto MPG [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5859H. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "mpg",
+      "task_type": "regression",
+      "metric": "RMSE",
+      "direction": "minimize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [
+          "car_name"
+        ],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [
+        "car_name"
+      ],
+      "label_rule": {
+        "kind": "finite_numeric",
+        "normalization": "none",
+        "class_order": null
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "displacement",
+        "cylinders",
+        "horsepower",
+        "weight",
+        "acceleration",
+        "model_year"
+      ],
+      "categorical": [
+        "origin"
+      ],
+      "feature_exclusions": [
+        "car_name"
+      ],
+      "group_rule": {
+        "columns": [
+          "car_name"
+        ],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": {
+        "kind": "numeric_model_year",
+        "period_column": "model_year",
+        "note": "Distinct numeric model_year periods in publisher source; train years strictly precede the latest 20% of distinct years reserved for audit. Gap zero; car_name entities and feature duplicates remain grouped conservatively across periods."
+      },
+      "split_rule": {
+        "kind": "time",
+        "time_column": "model_year",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "development",
+      "pilot": true,
+      "known_public_sanity": false,
+      "prior_exposure": "Explicitly assigned to development pilot before any fits. Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. car_name excluded and grouped conservatively as repeated car identity. Horsepower has declared source missing values; origin remains a categorical code. Future model_year periods are held out chronologically, never randomly shuffled.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {
+          "horsepower": [
+            "",
+            "?",
+            "NaN"
+          ]
+        }
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "car_name excluded and grouped conservatively as repeated car identity. Horsepower has declared source missing values; origin remains a categorical code. Future model_year periods are held out chronologically, never randomly shuffled."
+    },
+    {
+      "dataset_id": "dry_bean",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 602,
+        "doi": "10.24432/C50S4B"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/602/dry+bean+dataset",
+      "download_url": "https://archive.ics.uci.edu/static/public/602/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "(2020). Dry Bean [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C50S4B. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "Class",
+      "task_type": "classification",
+      "metric": "Macro F1",
+      "direction": "maximize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "literal_string",
+        "normalization": "none",
+        "class_order": "lexical_literal_at_prepare"
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "Area",
+        "Perimeter",
+        "MajorAxisLength",
+        "MinorAxisLength",
+        "AspectRatio",
+        "Eccentricity",
+        "ConvexArea",
+        "EquivDiameter",
+        "Extent",
+        "Solidity",
+        "Roundness",
+        "Compactness",
+        "ShapeFactor1",
+        "ShapeFactor2",
+        "ShapeFactor3",
+        "ShapeFactor4"
+      ],
+      "categorical": [],
+      "feature_exclusions": [],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "stratified_group",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "confirmation",
+      "pilot": false,
+      "known_public_sanity": false,
+      "prior_exposure": "Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Source record has no listed dataset creators; title-based UCI citation used. Class case and spelling are preserved literally from the actual fetched CSV; no aliases guessed from prose.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Source record has no listed dataset creators; title-based UCI citation used. Class case and spelling are preserved literally from the actual fetched CSV; no aliases guessed from prose."
+    },
+    {
+      "dataset_id": "energy_efficiency",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 242,
+        "doi": "10.24432/C51307"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/242/energy+efficiency",
+      "download_url": "https://archive.ics.uci.edu/static/public/242/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Tsanas, A. & Xifara, A. (2012). Energy Efficiency [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C51307. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "Y1",
+      "task_type": "regression",
+      "metric": "RMSE",
+      "direction": "minimize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "finite_numeric",
+        "normalization": "none",
+        "class_order": null
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "X1",
+        "X2",
+        "X3",
+        "X4",
+        "X5",
+        "X6",
+        "X7",
+        "X8"
+      ],
+      "categorical": [],
+      "feature_exclusions": [
+        "Y2"
+      ],
+      "group_rule": {
+        "columns": [
+          "X1",
+          "X2",
+          "X3",
+          "X4",
+          "X5"
+        ],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "group_random",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "confirmation",
+      "pilot": false,
+      "known_public_sanity": false,
+      "prior_exposure": "Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Heating load Y1 only. Cooling-load target Y2 is excluded. Conservative geometry groups X1..X5 keep glazing/orientation variants together. Simulated buildings, not observed households.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Heating load Y1 only. Cooling-load target Y2 is excluded. Conservative geometry groups X1..X5 keep glazing/orientation variants together. Simulated buildings, not observed households."
+    },
+    {
+      "dataset_id": "bike_sharing",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 275,
+        "doi": "10.24432/C5W894"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/275/bike+sharing+dataset",
+      "download_url": "https://archive.ics.uci.edu/static/public/275/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Fanaee-T, H. (2013). Bike Sharing [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5W894. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "cnt",
+      "task_type": "regression",
+      "metric": "RMSE",
+      "direction": "minimize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [
+          "instant"
+        ],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [
+        "instant"
+      ],
+      "label_rule": {
+        "kind": "finite_numeric",
+        "normalization": "none",
+        "class_order": null
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "temp",
+        "atemp",
+        "hum",
+        "windspeed",
+        "period"
+      ],
+      "categorical": [
+        "season",
+        "yr",
+        "mnth",
+        "hr",
+        "holiday",
+        "weekday",
+        "workingday",
+        "weathersit"
+      ],
+      "feature_exclusions": [
+        "instant",
+        "dteday",
+        "casual",
+        "registered"
+      ],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": {
+        "kind": "calendar_month",
+        "period_column": "period",
+        "source_order_columns": [
+          "dteday",
+          "hr"
+        ],
+        "note": "Monotonic month from yr*12+mnth; train months strictly precede audit months. Exact date/hour chronology remains within publisher table. No random temporal shuffle."
+      },
+      "split_rule": {
+        "kind": "time",
+        "audit_fraction": 0.2,
+        "gap_periods": 0,
+        "time_column": "period"
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "confirmation",
+      "pilot": false,
+      "known_public_sanity": false,
+      "prior_exposure": "Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. cnt=casual+registered: both components excluded. instant is source row ID; raw dteday is split metadata, not a feature. Retrospective temporal generalization with contemporaneous observed weather, not a next-day forecast.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {},
+        "derived_period": {
+          "column": "period",
+          "kind": "calendar_month",
+          "year_column": "yr",
+          "month_column": "mnth"
+        }
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "cnt=casual+registered: both components excluded. instant is source row ID; raw dteday is split metadata, not a feature. Retrospective temporal generalization with contemporaneous observed weather, not a next-day forecast."
+    },
+    {
+      "dataset_id": "adult",
+      "version": "uci-csv-label-v2",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 2,
+        "doi": "10.24432/C5XW20"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/2/adult",
+      "download_url": "https://archive.ics.uci.edu/static/public/2/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Becker, B. & Kohavi, R. (1996). Adult [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5XW20. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits. Adult adaptation explicitly maps the two legacy test-file terminal-period label spellings to their declared income classes; all other label strings remain unchanged.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "income",
+      "task_type": "classification",
+      "metric": "ROC AUC",
+      "direction": "maximize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "literal_string",
+        "normalization": "Explicit static UCI legacy test-file terminal-period aliases only; <=50K and >50K pass through unchanged. No whitespace, numeric or other label coercion.",
+        "class_order": "declared",
+        "mapping": {
+          "<=50K.": "<=50K",
+          ">50K.": ">50K"
+        }
+      },
+      "classes": [
+        "<=50K",
+        ">50K"
+      ],
+      "positive_class": ">50K",
+      "numeric": [
+        "age",
+        "fnlwgt",
+        "education-num",
+        "capital-gain",
+        "capital-loss",
+        "hours-per-week"
+      ],
+      "categorical": [
+        "workclass",
+        "education",
+        "marital-status",
+        "occupation",
+        "relationship",
+        "race",
+        "sex",
+        "native-country"
+      ],
+      "feature_exclusions": [],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "stratified_group",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "confirmation",
+      "pilot": false,
+      "known_public_sanity": false,
+      "prior_exposure": "Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are resolved through immutable fetch receipt. UCI merged CSV retains legacy train/test label formatting: exact <=50K. maps to <=50K and >50K. maps to >50K by the declared static label_rule.mapping. Unsuffixed labels pass through unchanged. Source ?/empty category markers remain categorical strings.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "UCI merged CSV retains legacy train/test label formatting: exact <=50K. maps to <=50K and >50K. maps to >50K by the declared static label_rule.mapping. Unsuffixed labels pass through unchanged. Source ?/empty category markers remain categorical strings."
+    },
+    {
+      "dataset_id": "iris",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 53,
+        "doi": "10.24432/C56C76"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/53/iris",
+      "download_url": "https://archive.ics.uci.edu/static/public/53/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Fisher, R. (1936). Iris [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C56C76. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "class",
+      "task_type": "classification",
+      "metric": "Macro F1",
+      "direction": "maximize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "literal_string",
+        "normalization": "none",
+        "class_order": "lexical_literal_at_prepare"
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "sepal length",
+        "sepal width",
+        "petal length",
+        "petal width"
+      ],
+      "categorical": [],
+      "feature_exclusions": [],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "stratified_group",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "sanity",
+      "pilot": false,
+      "known_public_sanity": true,
+      "prior_exposure": "Known classic public sanity dataset. Any prior project use is unverified; foundation-model pretraining exposure unknown. Never presented as unseen confirmation.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Classic public sanity case; not independent unseen confirmation evidence. UCI source corrections pinned through actual bytes; do not substitute sklearn data.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Classic public sanity case; not independent unseen confirmation evidence. UCI source corrections pinned through actual bytes; do not substitute sklearn data."
+    },
+    {
+      "dataset_id": "abalone",
+      "version": "uci-csv-v1",
+      "source_record": {
+        "repository": "UCI Machine Learning Repository",
+        "dataset_id": 1,
+        "doi": "10.24432/C55C7W"
+      },
+      "source_url": "https://archive.ics.uci.edu/dataset/1/abalone",
+      "download_url": "https://archive.ics.uci.edu/static/public/1/data.csv",
+      "retrieved_at_utc": null,
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "Nash, W., Sellers, T., Talbot, S., Cawthorn, A., & Ford, W. (1994). Abalone [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C55C7W. License CC BY 4.0; source CSV adapted by static exclusions/filtering and declared train/audit splits.",
+      "source_sha256": null,
+      "source_bytes": null,
+      "member_sha256": null,
+      "publisher_sha256": null,
+      "adapter_version": null,
+      "adapter_sha256": null,
+      "target": "Rings",
+      "task_type": "regression",
+      "metric": "MAE",
+      "direction": "minimize",
+      "id_rule": {
+        "kind": "opaque_generated",
+        "column": "id",
+        "exclude_source_columns": [],
+        "note": "Generated exact string IDs identify rows; original row ordinal and source IDs are not model features."
+      },
+      "id_columns": [],
+      "label_rule": {
+        "kind": "finite_numeric",
+        "normalization": "none",
+        "class_order": null
+      },
+      "classes": null,
+      "positive_class": null,
+      "numeric": [
+        "Length",
+        "Diameter",
+        "Height",
+        "Whole_weight",
+        "Shucked_weight",
+        "Viscera_weight",
+        "Shell_weight"
+      ],
+      "categorical": [
+        "Sex"
+      ],
+      "feature_exclusions": [],
+      "group_rule": {
+        "columns": [],
+        "exact_features": true,
+        "near_duplicate_decimals": 8,
+        "note": "Entity keys and quantized feature duplicates are transitively grouped without target values."
+      },
+      "time_rule": null,
+      "split_rule": {
+        "kind": "group_random",
+        "audit_fraction": 0.2,
+        "gap_periods": 0
+      },
+      "seeds": [
+        1729
+      ],
+      "row_counts": null,
+      "split_hashes": null,
+      "role": "confirmation",
+      "pilot": false,
+      "known_public_sanity": false,
+      "prior_exposure": "Public UCI dataset; prior project use not established and foundation-model pretraining exposure unknown. Procedural confirmation only, never a claim of genuinely unseen data.",
+      "status": "ready",
+      "reason": "Official record, license and official API CSV endpoint verified; actual source bytes/hash/time are unset until immutable fetch receipt. Predict literal Rings. Derived age=Rings+1.5 is forbidden as a feature. Published input normalization is source provenance; adapter fits no global transformations.",
+      "adapter": {
+        "format": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "missing_numeric": {}
+      },
+      "source_version_note": "UCI mutable CSV endpoint, not a publisher content version. First fetched bytes are sealed by SHA-256; later differing bytes require a new version or cache.",
+      "eligibility_note": "Predict literal Rings. Derived age=Rings+1.5 is forbidden as a feature. Published input normalization is source provenance; adapter fits no global transformations."
+    }
+  ]
+}
