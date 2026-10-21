@@ -118,7 +118,8 @@ class ContractTests(unittest.TestCase):
                 imported |= {alias.name.split(".")[0] for alias in node.names}
             elif isinstance(node, ast.ImportFrom):
                 imported.add((node.module or "").split(".")[0])
-        self.assertLessEqual(imported, {"__future__", "collections", "decimal"})
+        # pure computation only: no files, environment, network, clock or third-party packages
+        self.assertLessEqual(imported, {"__future__", "collections", "decimal", "itertools", "operator"})
         for name in ("Year_Factor", "State_Factor", "building_class", "facility_type", "floor_area", "year_built",
                      "ELEVATION", "site_eui", "open("):
             self.assertNotIn(name, source)

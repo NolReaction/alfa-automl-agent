@@ -60,6 +60,8 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
+from itertools import accumulate, compress, filterfalse, repeat
+from operator import add, gt, mul
 
 
 VERSION = 1
@@ -130,11 +132,15 @@ def _subset(names, allowed, field: str, target: str) -> None:
 
 # ---------------------------------------------------------------- values
 
+MISSING = float("inf")  # code of a missing key part: inf * radix + code stays inf, so a key with a gap is inf
+NOT_STR = "raw_columns values must be str or None"
+
+
 def _text(value) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("raw_columns values must be str or None")
+        raise ValueError(NOT_STR)
     value = value.strip()
     return value or None
 
@@ -150,61 +156,110 @@ def _number(value) -> Decimal | None:
     return number if number.is_finite() else None
 
 
-def _positive(value) -> Decimal | None:
-    number = _number(value)
-    return number if number is not None and number > 0 else None
+def _unique(values) -> dict:
+    """The distinct values in order of first appearance, which keeps memory access close to the column order."""
+    try:
+        return dict.fromkeys(values)
+    except TypeError:  # an unhashable value is not str or None
+        raise ValueError(NOT_STR) from None
 
 
-def _codes(values: list) -> tuple[list, int]:
-    """Dense int codes of the values and their number; equal values (Decimal 61242 and 61242.0) share a code."""
-    index = {}
-    return [None if value is None else index.setdefault(value, len(index)) for value in values], len(index)
+def _text_codes(values) -> tuple[list, int]:
+    """Dense int codes of stripped text values and their number; None and blank text are MISSING.
+
+    The codes only group rows, so their numbering does not matter.
+    """
+    try:
+        stripped = list(map(str.strip, values))
+    except TypeError:  # None, or a value that is not str
+        try:
+            stripped = list(map(str.strip, ["" if value is None else value for value in values]))
+        except TypeError:
+            raise ValueError(NOT_STR) from None
+    unique = dict.fromkeys(stripped)
+    unique.pop("", None)
+    code = dict(zip(unique, range(len(unique))))
+    code[""] = MISSING
+    return list(map(code.__getitem__, stripped)), len(unique)
 
 
-def _ranks(values: list) -> tuple[list, int]:
-    """Order-preserving int ranks of exact Decimal periods; Decimals are only compared here, never computed with."""
-    rank = {value: position for position, value in enumerate(sorted({v for v in values if v is not None}))}
-    return [None if value is None else rank[value] for value in values], len(rank)
+def _number_codes(values, positive: bool) -> tuple[list, int]:
+    """Dense int codes of exact numbers and their number; a non-number, or a value <= 0 if positive, is MISSING.
+
+    Every distinct raw value is parsed once; equal numbers (Decimal 61242 and 61242.0) share a code.
+    """
+    index, code = {}, {}
+    for raw in _unique(values):
+        number = _number(raw)
+        if number is None or (positive and number <= 0):
+            code[raw] = MISSING
+        else:
+            code[raw] = index.setdefault(number, len(index))
+    return list(map(code.__getitem__, values)), len(index)
+
+
+def _ranks(values) -> tuple[list, int]:
+    """Order-preserving int ranks of the exact Decimal periods and their number; a missing period gets that number.
+
+    The Decimals are only compared (in sorted), never computed with, so the context precision cannot round them.
+    """
+    parsed = {raw: _number(raw) for raw in _unique(values)}
+    order = {value: position for position, value in enumerate(sorted(v for v in set(parsed.values()) if v is not None))}
+    missing = len(order)
+    rank = {raw: missing if value is None else order[value] for raw, value in parsed.items()}
+    return list(map(rank.__getitem__, values)), missing
+
+
+def _period_order(ranks: list, size: int) -> tuple[list, list]:
+    """Positions of the rows with a valid period sorted by period, and the end position of every period.
+
+    A missing period has the rank size, so those rows sort last and are cut off: they never have or give history.
+    """
+    order = sorted(range(len(ranks)), key=ranks.__getitem__)
+    sizes = Counter(ranks)
+    ends = list(accumulate(map(sizes.__getitem__, range(size))))
+    del order[ends[-1]:]
+    return order, ends
 
 
 # ---------------------------------------------------------------- evidence
 
-def _evidence(key_codes: list[tuple[list, int]], period_ranks: tuple[list, int], rows: int) -> dict:
-    """Structural evidence of one key (codes of its columns) and period (ranks) over the eligible rows.
+def _evidence(key_codes: list[tuple[list, int]], ends: list, rows: int) -> dict:
+    """Structural evidence of one key (codes of its columns) and period over the eligible rows.
 
-    The key codes and the period rank of a row are packed into one int (mixed radix), so the sorted distinct cells
-    are grouped by key with the periods ascending, and no tuple is built per row.
+    key_codes hold only the rows with a valid period, sorted by period; ends are the end positions of the periods.
+    The key parts are packed into one int per row (mixed radix; MISSING if a part is missing). The periods are visited
+    in ascending order with the keys seen in earlier periods and the keys repeated inside one earlier period, so a row
+    never takes history from its own period or a later one. The rows of the new keys of a period are the growth of
+    the seen keys plus the extra rows of new keys that repeat inside this period.
     """
     combined = key_codes[0][0]
     for codes, size in key_codes[1:]:
-        combined = [None if a is None or b is None else a * size + b for a, b in zip(combined, codes)]
-    ranks, period_count = period_ranks
-    cells = Counter(key * period_count + period for key, period in zip(combined, ranks)
-                    if key is not None and period is not None)
-    eligible = past = ambiguous = keys = 0
-    previous, repeated = None, False
-    for cell in sorted(cells):
-        key, size = cell // period_count, cells[cell]
-        if key != previous:
-            keys, previous, repeated = keys + 1, key, False
-        else:  # an earlier period of this key exists
-            past += size
-            ambiguous += size if repeated else 0
-        eligible += size
-        repeated = repeated or size > 1  # counts only for the later periods
+        combined = list(map(add, map(mul, combined, repeat(max(size, 1))), codes))
+    seen, repeated = set(), set()
+    eligible = past = ambiguous = periods = start = 0
+    for end in ends:
+        counts = Counter(combined[start:end])
+        start = end
+        counts.pop(MISSING, None)
+        if not counts:
+            continue
+        total = sum(counts.values())
+        multi = list(compress(counts, map(gt, counts.values(), repeat(1)))) if total > len(counts) else []
+        new_multi = list(filterfalse(seen.__contains__, multi))
+        if len(repeated) <= len(counts):  # rows of this period whose key repeated inside an earlier period
+            ambiguous += sum(map(counts.get, repeated, repeat(0)))
+        else:
+            ambiguous += sum(map(counts.__getitem__, repeated.intersection(counts)))
+        before = len(seen)
+        seen.update(counts)
+        past += total - (len(seen) - before) - (sum(map(counts.__getitem__, new_multi)) - len(new_multi))
+        repeated.update(multi)  # only for the later periods
+        eligible += total
+        periods += 1
     return {"rows": rows, "eligible_rows": eligible, "strict_past_history_rows": past,
             "past_unambiguous_history_rows": past - ambiguous, "past_ambiguous_history_rows": ambiguous,
-            "distinct_keys": keys, "distinct_periods": len({cell % period_count for cell in cells})}
-
-
-def _coverage(values: list, periods: list) -> int:
-    """Rows whose value of one column occurs in an earlier period: the bound for every key with this column."""
-    first = {}
-    for value, period in zip(values, periods):
-        if value is not None and period is not None and (value not in first or period < first[value]):
-            first[value] = period
-    return sum(1 for value, period in zip(values, periods)
-               if value is not None and period is not None and period > first[value])
+            "distinct_keys": len(seen), "distinct_periods": periods}
 
 
 def _rank(candidate: dict) -> tuple:
@@ -236,9 +291,23 @@ def _search(values: dict, periods: dict, period_order: list, key_columns: tuple,
     """Checked candidates in rank order and whether the search is complete."""
     budget, top, width = caps["max_checked_configs"], caps["max_proposals"], caps["max_auto_key_width"]
     checked = {}  # (period, frozenset of key columns) -> candidate
+    screened = {}  # evidence of one-column keys from the screening, reused (and still counted) by their check
+    sorted_codes = {}  # (period, column) -> codes of the rows with a valid period, sorted by that period
+
+    def evidence_of(period: str, key) -> dict:
+        order, ends = periods[period]
+        parts = []
+        for name in key:
+            if (period, name) not in sorted_codes:
+                codes, count = values[name]
+                sorted_codes[period, name] = list(map(codes.__getitem__, order)), count
+            parts.append(sorted_codes[period, name])
+        return _evidence(parts, ends, rows)
 
     def check(period: str, key: tuple, is_explicit: bool) -> dict:
-        evidence = _evidence([values[name] for name in key], periods[period], rows)
+        evidence = screened.pop((period, frozenset(key)), None)
+        if evidence is None:
+            evidence = evidence_of(period, key)
         candidate = {"period": period, "key": key, "explicit": is_explicit, "evidence": evidence}
         checked[period, frozenset(key)] = candidate
         counts["checked_configs"] += 1
@@ -269,7 +338,12 @@ def _search(values: dict, periods: dict, period_order: list, key_columns: tuple,
         for name in key_columns:
             if name != period:
                 counts["screened_columns"] += 1
-                bound = _coverage(values[name][0], periods[period][0])
+                single = (period, frozenset((name,)))
+                if single in checked:  # an explicit one-column key
+                    evidence = checked[single]["evidence"]
+                else:
+                    evidence = screened[single] = evidence_of(period, (name,))
+                bound = evidence["strict_past_history_rows"]  # the past coverage of this column alone
                 if bound > 0:
                     usable[period][name] = bound
                     pool[period, frozenset((name,))] = bound
@@ -366,19 +440,18 @@ def propose_history_schemas(
     if counts["work_planned"] > caps["max_work"]:
         return result("limited", "work_limit")
 
-    periods = {name: _ranks([_number(value) for value in raw_columns[name]]) for name in periods_allowed}
-    values = {}
-    for name in keys_allowed:
-        parse = _positive if name in positive else _number if name in numeric else _text
-        values[name] = _codes([parse(value) for value in raw_columns[name]])
-    distinct = {name: size for name, (_, size) in periods.items()}
-    valid = {name: sum(value is not None for value in ranks) for name, (ranks, _) in periods.items()}
+    ranked = {name: _ranks(raw_columns[name]) for name in periods_allowed}
+    values = {name: _number_codes(raw_columns[name], name in positive) if name in numeric
+              else _text_codes(raw_columns[name]) for name in keys_allowed}
+    distinct = {name: size for name, (_, size) in ranked.items()}
+    valid = {name: len(ranks) - ranks.count(size) for name, (ranks, size) in ranked.items()}
     period_order = sorted((name for name in periods_allowed if distinct[name] >= 2),
                           key=lambda name: (-distinct[name], -valid[name], name))
     counts["eligible_period_columns"] = len(period_order)
     if not period_order:
         return result("abstained", "single_period" if any(valid.values()) else "no_valid_period")
 
+    periods = {name: _period_order(*ranked[name]) for name in period_order}
     proposals, complete = _search(values, periods, period_order, keys_allowed, explicit, caps, rows, counts)
     counts["search_complete"] = complete
     if not complete:
