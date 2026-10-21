@@ -6,7 +6,9 @@ import io
 import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -70,6 +72,7 @@ def fake_execution(task, *, arm, budget, available=True, cleanup=True, api_attem
     benchmark.write_json(root / "run.json", report)
     evidence = {"version": 2, "mode": "paired_maximize", "arm": arm, "external_api_calls": 0,
                 "requested_time_budget_seconds": budget - 2,
+                "solver_returned": True, "run_report_origin": "returned", "terminal_error_type": None,
                 "run_report": (root / "run.json").relative_to(directory).as_posix(),
                 "run_report_sha256": benchmark.file_hash(root / "run.json"),
                 "worker_elapsed_seconds": 1.1, "observations": [
@@ -174,6 +177,8 @@ class MaximizeBenchmarkTests(unittest.TestCase):
             self.assertIn("360 - (time.monotonic() - started) - 2.0", code)
             for forbidden in ("host_audit", "audit_actuals", "OPENAI_API_KEY", "make_client", "load_dotenv"):
                 self.assertNotIn(forbidden, code)
+            self.assertNotIn(".glob(", code)
+            self.assertNotIn(".rglob(", code)
 
     def test_fake_native_receipts_are_audited_and_equal_caps_retained(self):
         output, _ = self.prepare()
@@ -281,6 +286,122 @@ class MaximizeBenchmarkTests(unittest.TestCase):
             report = benchmark.run_prepared(output)
         self.assertEqual(len(calls), 1)
         self.assertEqual(report["pairs"][0]["arms"]["control"]["status"], "censored")
+
+    def test_driver_pins_failed_current_state_without_admitting_an_old_valid_csv(self):
+        output, _ = self.prepare()
+        calls = []
+
+        def runner(code, task_dir, run_dir, step, *, timeout, max_memory_bytes):
+            calls.append(code)
+            task_dir = Path(task_dir)
+            shutil.copyfile(task_dir / "inputs/sample_submission.csv", task_dir / "submission.csv")
+            decoy = task_dir / ".agent_runs" / ("a" * 32)
+            current = task_dir / ".agent_runs" / ("c" * 32)
+            decoy.mkdir(parents=True)
+            current.mkdir()
+            benchmark.write_json(decoy / "run.json", {"status": "completed", "stage": "result"})
+            research = ModuleType("agent.research_v3")
+
+            def prepare_research(state):
+                benchmark.write_json(state.run_dir / "run.json", {
+                    "research_protocol_version": 3, "status": "failed", "stage": "inner_research",
+                    "mode": "local_only", "api": {"attempts": 0, "responses": 0},
+                    "time_budget_seconds": state.budget, "elapsed_seconds": .1,
+                    "evaluations": None,
+                    "coordinator": {"active": False},
+                    "local_research": {"attempted": 10, "verified": 9, "trials": []}})
+
+            def run_agent(task, client, **options):
+                state = SimpleNamespace(run_dir=current, budget=options["time_budget"])
+                research.prepare_research(state)
+                raise KeyError("label")
+
+            research.prepare_research = prepare_research
+            research.run_agent_v3 = run_agent
+            package = ModuleType("agent")
+            package.research_v3 = research
+            with patch.dict(sys.modules, {"agent": package, "agent.research_v3": research}), \
+                    patch.object(sys, "path", list(sys.path)), self.assertRaises(KeyError):
+                exec(compile(code, "fake_failed_worker.py", "exec"), {})
+            return {"exit_code": 1, "resources": {"available": False, "cleanup_complete": None}}
+
+        with patch.object(benchmark, "run_python", side_effect=runner), redirect_stdout(io.StringIO()):
+            report = benchmark.run_prepared(output)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report["status"], "incomplete")
+        self.assertEqual(report["executed_arms"], 1)
+        pair = report["pairs"][0]
+        self.assertFalse(pair["functionally_comparable"])
+        self.assertIsNone(pair["outcome"])
+        row = pair["arms"]["control"]
+        self.assertEqual(row["status"], "censored")
+        self.assertTrue(row["audit"]["valid"])
+        self.assertFalse(row["quality_admission"])
+        self.assertIn("solver_did_not_return", row["contract_errors"])
+        self.assertIn("verified_full_refit_contract", row["contract_errors"])
+        summary = row["research"]
+        self.assertEqual(summary["raw_report"], ".agent_runs/" + "c" * 32 + "/run.json")
+        self.assertEqual(summary["raw_report_sha256"], benchmark.file_hash(
+            output / "runs/nonlinear_regression_42/control" / summary["raw_report"]))
+        self.assertFalse(summary["solver_returned"])
+        self.assertEqual(summary["run_report_origin"], "observed_state_after_failure")
+        self.assertEqual(summary["terminal_error_type"], "KeyError")
+        self.assertEqual(summary["stage"], "inner_research")
+        self.assertEqual((summary["local_attempted"], summary["local_verified"]), (10, 9))
+        self.assertIsNone(summary["published_family"])
+        self.assertFalse(summary["receipt_checks_valid"])
+        self.assertEqual(row["resources"]["censored_cleanup_paths"], ["root/launcher"])
+        self.assertIsNone(row["resources"]["execution_records"][0]["cleanup_complete"])
+        self.assertIn("KeyError", (output / "report.md").read_text(encoding="utf-8"))
+
+    def test_exception_before_observed_state_never_selects_an_existing_report(self):
+        output, plan = self.prepare()
+        task = output / plan["entries"][0]["tasks"]["control"]
+        decoy = task.parent / ".agent_runs" / ("d" * 32)
+        decoy.mkdir(parents=True)
+        benchmark.write_json(decoy / "run.json", {"status": "completed"})
+        research = ModuleType("agent.research_v3")
+
+        def run_agent(*args, **kwargs):
+            raise RuntimeError("before prepare")
+
+        research.run_agent_v3 = run_agent
+        package = ModuleType("agent")
+        package.research_v3 = research
+        with patch.dict(sys.modules, {"agent": package, "agent.research_v3": research}), \
+                patch.object(sys, "path", list(sys.path)), self.assertRaises(RuntimeError):
+            exec(compile(benchmark.driver(self.solver, task, "control", 360), "fake_worker.py", "exec"), {})
+        evidence = benchmark.read_json(task.parent / "solver_output/research_benchmark.json")
+        self.assertIsNone(evidence["run_report"])
+        self.assertIsNone(evidence["run_report_origin"])
+        self.assertFalse(evidence["solver_returned"])
+        self.assertEqual(evidence["terminal_error_type"], "RuntimeError")
+        self.assertEqual(benchmark.summarize_research(task.parent, "control", 360),
+                         (None, ["missing_or_invalid_current_report"]))
+
+    def test_failed_return_cannot_admit_even_a_complete_valid_receipt_chain(self):
+        output, _ = self.prepare()
+
+        def runner(code, task_dir, run_dir, step, *, timeout, max_memory_bytes):
+            execution = fake_execution(Path(task_dir) / "task.md", arm=Path(task_dir).name, budget=timeout)
+            path = Path(task_dir) / "solver_output/research_benchmark.json"
+            evidence = benchmark.read_json(path)
+            evidence.update(solver_returned=False, run_report_origin="observed_state_after_failure",
+                            terminal_error_type="KeyError")
+            benchmark.write_json(path, evidence)
+            return execution
+
+        with patch.object(benchmark, "run_python", side_effect=runner), redirect_stdout(io.StringIO()):
+            report = benchmark.run_prepared(output)
+        self.assertEqual(report["status"], "incomplete")
+        for pair in report["pairs"]:
+            self.assertFalse(pair["functionally_comparable"])
+            for row in pair["arms"].values():
+                self.assertEqual(row["status"], "unverified_contract")
+                self.assertTrue(row["audit"]["valid"])
+                self.assertFalse(row["research"]["receipt_checks_valid"])
+                self.assertIn("solver_did_not_return", row["contract_errors"])
+                self.assertFalse(row["quality_admission"])
 
     def test_source_mutation_during_worker_removes_metric_and_stops_later_arms(self):
         output, _ = self.prepare()

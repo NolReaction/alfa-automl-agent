@@ -42,6 +42,7 @@ LOCAL_CONTINUATION_REASONS = frozenset({
     "api_error", "truncated_response", "context_budget", "step_limit", "repeated_failures",
 })
 ADAPTIVE_CONTINUATION_REASONS = LOCAL_CONTINUATION_REASONS | {"model_finished", "time_limit"}
+MAX_LOCAL_FROZEN_ATTEMPTS = 70  # 64 ordinary trials plus six custom-source trials.
 SYSTEM_V3 = """You are an autonomous ML researcher using run_python.
 Read task.md and research_validation.json in the working directory. Only the
 approved outer-fit training view is available for research. All validation
@@ -358,8 +359,18 @@ def _consider(state):
     return _assess_candidate(state, candidate, hypothesis, origin="llm")
 
 
+def _track_local_candidate(state, candidate):
+    """Retain bounded frozen identities until optional research has been guarded."""
+    attempts = getattr(state, "_local_frozen_attempts", None)
+    if attempts is not None and not any(item is candidate for item in attempts):
+        if len(attempts) >= MAX_LOCAL_FROZEN_ATTEMPTS:
+            raise RuntimeError("Local research exceeded its frozen-attempt limit")
+        attempts.append(candidate)
+
+
 def _assess_candidate(state, candidate, hypothesis, *, origin):
     """One host-scored inner trial, shared by LLM and bounded local search."""
+    _track_local_candidate(state, candidate)
     assessment_started = time.monotonic()
     gate, recipe = state.gate, candidate.recipe
     state.tried_recipes.append({"recipe": recipe, "code_hash": candidate.code_hash})
@@ -481,6 +492,64 @@ def research_configured_history(state, options):
 
 
 def continue_locally(state):
+    """Optional research may fail; retained recipe integrity may not fail.
+
+    Planning, proposal and presentation errors must not bypass the normal
+    outer/refit publication stages. This boundary intentionally excludes
+    finalization and BaseException. Every integrity check remains outside the
+    optional-operation catch, including when that operation raised an error.
+    """
+    baseline = state.baseline
+    identity = (baseline.code_hash, baseline.recipe_hash) if baseline is not None else None
+
+    def integrity():
+        try:
+            if getattr(state, "_local_integrity_failed", False):
+                raise RuntimeError("Local research integrity previously failed")
+            if state.dialogue_closed or state.report.get("stage") != "inner_research":
+                raise RuntimeError("Local research is terminal after candidate freeze")
+            state.check_source()
+            state.gate.check_inputs()
+            if state.baseline is not baseline or (baseline is not None
+                    and (baseline.code_hash, baseline.recipe_hash) != identity):
+                raise RuntimeError("Local research changed its frozen recovery baseline")
+            if baseline is not None:
+                baseline.verify()
+            if state.selected_candidate is not None:
+                state.selected_candidate.verify()
+            for candidate in getattr(state, "_local_frozen_attempts", ()):
+                candidate.verify()
+        except Exception:
+            # A later passing verifier cannot erase a known protocol breach.
+            # This marker is host memory only and is not supplied to workers.
+            state._local_integrity_failed = True
+            raise
+
+    integrity()
+    if getattr(state, "_local_frozen_attempts", None) is not None:
+        state._local_integrity_failed = True
+        raise RuntimeError("Local continuation cannot be re-entered")
+    state._local_frozen_attempts = []
+    error_type = None
+    try:
+        result = _continue_locally(state)
+    except Exception as error:
+        error_type = type(error).__name__
+    integrity()
+    del state._local_frozen_attempts
+    if error_type is None:
+        return result
+    report = state.report.get("local_research")
+    report = report if isinstance(report, dict) else {
+        "origin": "host_local", "scope": "inner_selection", "api_requests": 0, "attempted": 0}
+    report.update(status="interrupted", reason="optional_search_error", error_type=error_type,
+                  finalization_requested=True)
+    state.report["local_research"] = report
+    state.event("local_research_interrupted", error_type=error_type, finalization_requested=True)
+    return report
+
+
+def _continue_locally(state):
     """Use spare CPU after dialogue stops without reopening its frozen baseline."""
     from agent.offline_research import run_deadline_continuation, run_local_continuation, startup_seen
     if state.dialogue_closed or state.report.get("stage") != "inner_research":
@@ -513,9 +582,15 @@ def continue_locally(state):
 
     def evaluate(recipe):
         frozen = freeze_candidate(source, recipe, state.run_dir / "local_candidates" / uuid4().hex)
+        _track_local_candidate(state, frozen)
+        label = recipe.get("label")
+        if not isinstance(label, str) or not label.strip():
+            label = recipe.get("action")
+        if not isinstance(label, str) or not label.strip():
+            label = "fixed blend" if recipe.get("components") else "local model"
         feedback = _assess_candidate(state, frozen,
             {"hypothesis": "Bounded host-local alternative after research dialogue stopped: "
-             + recipe["label"]}, origin="local")
+             + label.strip()[:160]}, origin="local")
         state.event("local_experiment", result=feedback)
         return feedback
 
@@ -818,6 +893,8 @@ def _request_completion(state, client, messages):
 
 def _recover_after_unexpected_error(state):
     """Restore only an accepted checkpoint after rechecking every integrity gate."""
+    if getattr(state, "_local_integrity_failed", False):
+        raise RuntimeError("Local research integrity failed; checkpoint recovery cancelled")
     state.check_source()
     if state.gate is None:
         return None
@@ -825,6 +902,8 @@ def _recover_after_unexpected_error(state):
     for candidate in (state.baseline, state.selected_candidate):
         if candidate is not None:
             candidate.verify()
+    for candidate in getattr(state, "_local_frozen_attempts", ()):
+        candidate.verify()
     if state._accepted_backup_hash is None or not state.recover():
         return None
     state.report["recovery"] = {"status": "restored", "kind": "accepted_checkpoint",

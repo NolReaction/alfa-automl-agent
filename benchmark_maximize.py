@@ -197,18 +197,23 @@ from pathlib import Path
 import hashlib
 import json
 import functools
+import re
 from agent import research_v3 as research
 
 task = Path({str(task)!r})
 output = task.parent / "solver_output"
 output.mkdir()
 observations = []
+current_run = {{}}
 def observed(name, function):
     @functools.wraps(function)
     def call(*args, **kwargs):
         begin = time.monotonic()
         row = {{"phase": name}}
         try:
+            if name == "prepare_research":
+                state = args[0] if args else kwargs.get("state")
+                current_run["directory"] = getattr(state, "run_dir", None)
             value = function(*args, **kwargs)
             execution = getattr(value, "execution", None)
             if isinstance(execution, dict):
@@ -237,16 +242,39 @@ if callable(native):
     research.run_candidate = native_observed
 remaining = {budget!r} - (time.monotonic() - started) - 2.0
 evidence = {{"version": 2, "mode": "paired_maximize", "arm": {arm!r}, "external_api_calls": 0,
-            "requested_time_budget_seconds": remaining, "run_report": None}}
+            "requested_time_budget_seconds": remaining, "run_report": None,
+            "run_report_origin": None, "solver_returned": False, "terminal_error_type": None}}
 try:
     if remaining <= 300:
         raise TimeoutError("Startup left too little time to exercise long-run search")
     directory = research.run_agent_v3(task, None, max_steps={max_steps!r}, time_budget=remaining,
                                      local_only=True, adaptive_search={arm == 'adaptive'!r})
-    path = (directory / "run.json").resolve()
-    evidence["run_report"] = path.relative_to(task.parent.resolve()).as_posix()
-    evidence["run_report_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    current_run["returned_directory"] = directory
+    evidence["solver_returned"] = True
+except Exception as error:
+    evidence["terminal_error_type"] = type(error).__name__[:80]
+    raise
 finally:
+    directory = current_run.get("returned_directory", current_run.get("directory"))
+    if directory is not None:
+        try:
+            root = task.parent.resolve()
+            directory = Path(directory)
+            if not directory.is_absolute():
+                directory = root / directory
+            path = directory / "run.json"
+            relative = path.relative_to(root).as_posix()
+            if (not re.fullmatch(r"\\.agent_runs/[0-9a-f]{{32}}/run\\.json", relative)
+                    or path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink()
+                    or not path.is_file() or path.stat().st_size > 64 * 1024 * 1024
+                    or path.resolve().relative_to(root).as_posix() != relative):
+                raise ValueError("Current report is not an ordinary exact run path")
+            evidence["run_report_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            evidence["run_report"] = relative
+            evidence["run_report_origin"] = ("returned" if evidence["solver_returned"]
+                                             else "observed_state_after_failure")
+        except (OSError, ValueError, TypeError) as error:
+            evidence["run_report_error_type"] = type(error).__name__[:80]
     evidence["worker_elapsed_seconds"] = time.monotonic() - started
     evidence["observations"] = observations
     (output / "research_benchmark.json").write_text(json.dumps(evidence, allow_nan=False), encoding="utf-8")
@@ -266,12 +294,26 @@ def summarize_research(task_dir, arm, budget):
 
 def _summarize_research(task_dir, arm, budget):
     task_dir = Path(task_dir).resolve()
-    summary = _research_summary(task_dir)
+    evidence = read_json(regular_under(task_dir, "solver_output/research_benchmark.json"))
+    relative = evidence.get("run_report") if isinstance(evidence, dict) else None
+    if not isinstance(relative, str) or not re.fullmatch(r"\.agent_runs/[0-9a-f]{32}/run\.json", relative):
+        return None, ["missing_or_invalid_current_report"]
+    report_path = regular_under(task_dir, relative)
+    if report_path.stat().st_size > 64 * 1024 * 1024:
+        return None, ["missing_or_invalid_current_report"]
+    content = report_path.read_bytes()
+    if (len(content) > 64 * 1024 * 1024
+            or hashlib.sha256(content).hexdigest() != evidence.get("run_report_sha256")):
+        return None, ["missing_or_invalid_current_report"]
+    raw = json.loads(content)
+    if not isinstance(raw, dict):
+        return None, ["missing_or_invalid_current_report"]
+    # A failed invocation supplies diagnostic data only, never a receipt claim.
+    # Its missing/stale publication artifacts must not erase the pinned report.
+    summary = ({"receipt_checks_valid": False} if evidence.get("solver_returned") is False
+               else _research_summary(task_dir))
     if summary is None:
         return None, ["missing_or_invalid_current_report"]
-    evidence = summary["benchmark_evidence"]
-    report_path = regular_under(task_dir, evidence["run_report"])
-    raw = read_json(report_path)
     errors = []
     requested = evidence.get("requested_time_budget_seconds")
     if (evidence.get("version") != 2 or evidence.get("mode") != "paired_maximize"
@@ -279,6 +321,13 @@ def _summarize_research(task_dir, arm, budget):
             or type(requested) not in {int, float} or not 300 < requested <= budget
             or raw.get("time_budget_seconds") != requested):
         errors.append("original_offline_deadline_contract")
+    if evidence.get("solver_returned") is not True:
+        errors.append("solver_did_not_return")
+    if ((evidence.get("solver_returned") is True and evidence.get("run_report_origin") != "returned")
+            or (evidence.get("solver_returned") is False
+                and evidence.get("run_report_origin") != "observed_state_after_failure")
+            or type(evidence.get("solver_returned")) is not bool):
+        errors.append("current_report_origin_contract")
     api = raw.get("api") or {}
     if api.get("attempts") != 0 or api.get("responses") != 0 or raw.get("mode") != "local_only":
         errors.append("offline_api_contract")
@@ -298,23 +347,25 @@ def _summarize_research(task_dir, arm, budget):
             or (type(requested) in {int, float} and elapsed > requested + .1)):
         errors.append("invalid_or_exhausted_host_time_accounting")
     published_family = None
-    receipt = Path((raw.get("candidate_receipts") or {}).get("refit", ""))
-    if not receipt.is_absolute():
-        receipt = task_dir / receipt
-    recipe_path = receipt.parent / "recipe.json"
-    recipe_relative = recipe_path.resolve().relative_to(task_dir.resolve()).as_posix()
-    recipe_path = regular_under(task_dir, recipe_relative)
-    frozen = raw.get("frozen_" + str(raw.get("published_recipe"))) or {}
-    if file_hash(recipe_path) != frozen.get("recipe_hash"):
-        errors.append("published_recipe_bytes_changed")
-    else:
-        recipe = read_json(recipe_path)
-        published_family = recipe.get("family") or recipe.get("action")
-        if published_family is None and isinstance(recipe.get("components"), list):
-            published_family = "equal_blend:" + "+".join(str(item.get("action", "custom"))
-                for item in recipe["components"] if isinstance(item, dict))
+    if summary.get("receipt_checks_valid") is True:
+        receipt = Path(raw["candidate_receipts"]["refit"])
+        if not receipt.is_absolute():
+            receipt = task_dir / receipt
+        recipe_path = receipt.parent / "recipe.json"
+        recipe_relative = recipe_path.resolve().relative_to(task_dir.resolve()).as_posix()
+        recipe_path = regular_under(task_dir, recipe_relative)
+        frozen = raw.get("frozen_" + str(raw.get("published_recipe"))) or {}
+        if file_hash(recipe_path) != frozen.get("recipe_hash"):
+            errors.append("published_recipe_bytes_changed")
+        else:
+            recipe = read_json(recipe_path)
+            published_family = recipe.get("family") or recipe.get("action")
+            if published_family is None and isinstance(recipe.get("components"), list):
+                published_family = "equal_blend:" + "+".join(str(item.get("action", "custom"))
+                    for item in recipe["components"] if isinstance(item, dict))
     local = raw.get("local_research") or {}
     extensions = raw.get("research_extensions") or {}
+    evaluations = raw.get("evaluations") or {}
     measurements = (raw.get("time_allocation") or {}).get("measurements") or {}
     measured_fits = sum(len(values) for values in measurements.values() if isinstance(values, list))
     families = Counter(row.get("family", "unspecified") for row in local.get("trials", []) if isinstance(row, dict))
@@ -328,15 +379,18 @@ def _summarize_research(task_dir, arm, budget):
             phase_times[row["phase"]] = phase_times.get(row["phase"], 0) + row["elapsed_seconds"]
             if row["phase"].startswith("candidate_"):
                 invocation_counts[row["phase"]] += 1
-    result = {"status": raw.get("status"), "stop_reason": raw.get("reason"),
+    result = {"status": raw.get("status"), "stage": raw.get("stage"), "stop_reason": raw.get("reason"),
+              "solver_returned": evidence.get("solver_returned"),
+              "run_report_origin": evidence.get("run_report_origin"),
+              "terminal_error_type": evidence.get("terminal_error_type"),
               "research_stop": raw.get("research_stop"), "local_stop_reason": local.get("reason"),
               "coordinator": raw.get("coordinator"), "api_attempts": api.get("attempts"),
               "api_responses": api.get("responses"), "elapsed_seconds": raw.get("elapsed_seconds"),
               "remaining_seconds": (raw.get("time_allocation") or {}).get("remaining_seconds"),
               "requested_time_budget_seconds": requested, "published_recipe": raw.get("published_recipe"),
               "published_family": published_family,
-              "publication": raw.get("publication"), "inner_best_metric": raw.get("evaluations", {}).get("selection"),
-              "outer_final_check": raw.get("evaluations", {}).get("final_check"),
+              "publication": raw.get("publication"), "inner_best_metric": evaluations.get("selection"),
+              "outer_final_check": evaluations.get("final_check"),
               "local_attempted": _integer(local.get("attempted")), "local_verified": _integer(local.get("verified")),
               "adaptive_attempted": _integer(local.get("adaptive_attempted")),
               "extension_attempted": _integer(extensions.get("attempted")),
@@ -475,7 +529,8 @@ def markdown_report(report):
             label = "—" if metric is None else f"{metric['name']}={metric['value']:.8g}"
             lines.append(f"| {pair['case']} / {pair['seed']} | {arm} | {row['status']} | {label} | "
                          f"{row['elapsed_seconds']:.3f} | {research.get('local_attempted')} / {research.get('adaptive_attempted')} | "
-                         f"{research.get('local_stop_reason') or research.get('stop_reason')} | {row['resources']['qualification']} |")
+                         f"{research.get('local_stop_reason') or research.get('stop_reason') or research.get('terminal_error_type')} | "
+                         f"{row['resources']['qualification']} |")
     lines.extend(["", "Observed phase wall times overlap; finalize contains outer/refit work. CPU time and RAM enforcement "
                   "are not inferred from elapsed time. Missing process inventory remains explicitly unknown.", "",
                   f"Status: {report['status']}. API requests: 0. Quality admission: false."])

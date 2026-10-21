@@ -11,7 +11,12 @@ from agent.features import normalize_feature_config
 from agent.model_config import make_model_config
 from agent.offline_research import run_deadline_continuation
 from agent.research_budget import BudgetPolicy
-from agent.research_v3 import V3State, continue_locally, prepare_research, run_agent_v3
+from agent.research_candidate import freeze_candidate
+from agent.research_v3 import (
+    V3State, _recover_after_unexpected_error, _track_local_candidate,
+    continue_locally, prepare_research, run_agent_v3,
+)
+from agent.search import local_candidate_plan
 from tests.test_offline_research import CODE_HASH, State, recipe
 from tests.test_research_budget import Clock, plan
 from tests.test_research import make_regression
@@ -387,6 +392,204 @@ class DialogueExitTests(unittest.TestCase):
         for value in (1, None, "true", []):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "adaptive_search"):
                 run_agent_v3(Path("does-not-exist.md"), object(), adaptive_search=value)
+
+
+class OptionalResearchBoundaryTests(unittest.TestCase):
+    def make_state(self, root):
+        task = make_regression(Path(root))
+        state = V3State(task, 12, 600, adaptive_search=True)
+        state.report["quality_options"] = {"adaptive_search": True}
+        prepare_research(state)
+        fixture_baseline(state)
+        state.transition("inner_research")
+        return state
+
+    def test_real_ranked_plan_without_presentation_label_reaches_assessor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.make_state(directory)
+            ranked = recipe(1)
+            ranked.pop("label")
+            targets = state.gate.research_train.iloc[state.gate.fit_rows][state.gate.spec.target_column]
+            generated = local_candidate_plan(False, "RMSE", targets, [ranked])
+            unlabeled = [item for item in generated if "label" not in item]
+            self.assertTrue(unlabeled, "Actual ranked-plan variant must exercise optional metadata")
+            hypotheses = []
+
+            def assess(current, frozen, hypothesis, *, origin):
+                frozen.verify()
+                hypotheses.append(hypothesis["hypothesis"])
+                return feedback()
+
+            with patch("agent.research_v3.local_candidate_plan", return_value=unlabeled), \
+                    patch("agent.adaptive_search.AdaptiveSearch", return_value=Proposer()), \
+                    patch("agent.research_extensions.run_research_extensions", return_value={}), \
+                    patch("agent.research_v3._assess_candidate", new=assess):
+                result = continue_locally(state)
+            self.assertEqual(result["verified"], len(unlabeled))
+            self.assertTrue(all(value.endswith("linear") for value in hypotheses))
+            self.assertEqual(result["reason"], "queue_exhausted")
+
+    def test_optional_label_types_and_unlabeled_blend_do_not_affect_execution(self):
+        variants = []
+        for label in (None, "", "  ", 17, [], {}, "x" * 1000):
+            item = recipe(1)
+            item["label"] = label
+            variants.append(item)
+        variants.append({"components": [recipe(1), recipe(2)]})
+        for item in variants:
+            with self.subTest(label=item.get("label")), tempfile.TemporaryDirectory() as directory:
+                state = self.make_state(directory)
+                hypotheses = []
+
+                def assess(current, frozen, hypothesis, *, origin):
+                    frozen.verify()
+                    hypotheses.append(hypothesis["hypothesis"])
+                    return feedback()
+
+                with patch("agent.research_v3.local_candidate_plan", return_value=[item]), \
+                        patch("agent.adaptive_search.AdaptiveSearch", return_value=Proposer()), \
+                        patch("agent.research_extensions.run_research_extensions", return_value={}), \
+                        patch("agent.research_v3._assess_candidate", new=assess):
+                    result = continue_locally(state)
+                self.assertEqual(result["verified"], 1)
+                self.assertLessEqual(len(hypotheses[0]), 240)
+                if "components" in item:
+                    self.assertTrue(hypotheses[0].endswith("fixed blend"))
+
+    def test_optional_planning_error_still_enters_normal_finalization_without_forged_score(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = make_regression(Path(directory))
+            with patch("agent.research_v3.prepare_baseline", side_effect=fixture_baseline), \
+                    patch("agent.research_v3.V3State.measure_inner", return_value=SimpleNamespace(
+                        metric={"name": "RMSE", "value": 1.0, "higher_is_better": False})), \
+                    patch("agent.research_v3.inner_feedback", return_value={}), \
+                    patch("agent.research_v3.local_candidate_plan", side_effect=KeyError("secret metadata")), \
+                    patch("agent.research_v3.finalize", side_effect=lambda state, reason: state) as final:
+                state = run_agent_v3(task, None, time_budget=600, local_only=True, adaptive_search=True)
+            final.assert_called_once_with(state, "local_only")
+            self.assertEqual(state.report["local_research"]["error_type"], "KeyError")
+            self.assertEqual(state.report["local_research"]["reason"], "optional_search_error")
+            self.assertIsNone(state.selected_candidate)
+            self.assertEqual(state.report["improvements"], 0)
+            self.assertIsNone(state.report["best_metric"])
+            self.assertNotIn("secret metadata", str(state.report["local_research"]))
+
+    def test_unexpected_proposer_or_evaluator_error_retains_existing_frozen_winner(self):
+        for location, error in (("proposer", KeyError("private")), ("evaluator", TypeError("private"))):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as directory:
+                state = self.make_state(directory)
+                selected = freeze_candidate(state.baseline.code_path, {"family": "prior inner winner"},
+                                            state.run_dir / "prior_winner")
+                state.selected_candidate = selected
+                state.best_inner = {"name": "RMSE", "value": .5, "higher_is_better": False}
+                proposer = Proposer([recipe(2)])
+                if location == "proposer":
+                    proposer.suggest = lambda: (_ for _ in ()).throw(error)
+                with patch("agent.research_v3.local_candidate_plan", return_value=[]), \
+                        patch("agent.adaptive_search.AdaptiveSearch", return_value=proposer), \
+                        patch("agent.research_extensions.run_research_extensions", return_value={}), \
+                        patch("agent.research_v3._assess_candidate", side_effect=error):
+                    result = continue_locally(state)
+                self.assertEqual(result["reason"], "optional_search_error")
+                self.assertEqual(result["error_type"], type(error).__name__)
+                self.assertIs(state.selected_candidate, selected)
+                selected.verify()
+                self.assertEqual(state.best_inner["value"], .5)
+
+    def test_source_input_baseline_identity_and_bytes_mutation_remain_fatal(self):
+        for mutation in ("source", "inputs", "baseline_identity", "baseline_bytes"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                state = self.make_state(directory)
+                changed = [False]
+                original_source, original_inputs = state.check_source, state.gate.check_inputs
+
+                def check_source():
+                    if changed[0] and mutation == "source":
+                        raise ValueError("Original source integrity violation")
+                    original_source()
+
+                def check_inputs():
+                    if changed[0] and mutation == "inputs":
+                        raise ValueError("Input integrity violation")
+                    original_inputs()
+
+                def optional(current):
+                    changed[0] = True
+                    if mutation == "baseline_identity":
+                        state.baseline = freeze_candidate(state.baseline.code_path, state.baseline.recipe,
+                                                          state.run_dir / "replacement_baseline")
+                    elif mutation == "baseline_bytes":
+                        state.baseline.code_path.write_text("changed baseline", encoding="utf-8")
+                    raise KeyError("optional operation failed after mutation")
+
+                with patch.object(state, "check_source", side_effect=check_source), \
+                        patch.object(state.gate, "check_inputs", side_effect=check_inputs), \
+                        patch("agent.research_v3._continue_locally", side_effect=optional), \
+                        self.assertRaises((ValueError, RuntimeError)):
+                    continue_locally(state)
+                self.assertTrue(state._local_integrity_failed)
+                if mutation == "baseline_identity":
+                    # The replacement has valid bytes, so re-verification alone
+                    # cannot preserve the original identity guard's decision.
+                    state.baseline.verify()
+                state._accepted_backup_hash = "a" * 64
+                with patch.object(state, "recover", return_value=True) as recover, \
+                        self.assertRaisesRegex(RuntimeError, "integrity failed"):
+                    _recover_after_unexpected_error(state)
+                recover.assert_not_called()
+
+    def test_stage_or_dialogue_violation_stays_fatal_when_all_file_checks_pass(self):
+        for mutation in ("stage", "dialogue"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                state = self.make_state(directory)
+
+                def optional(current):
+                    if mutation == "stage":
+                        state.report["stage"] = "outer_validation"
+                    else:
+                        state.dialogue_closed = True
+                    raise KeyError("optional operation failed after lifecycle mutation")
+
+                with patch("agent.research_v3._continue_locally", side_effect=optional), \
+                        self.assertRaisesRegex(RuntimeError, "terminal"):
+                    continue_locally(state)
+                state.check_source()
+                state.gate.check_inputs()
+                state.baseline.verify()
+                self.assertTrue(state._local_integrity_failed)
+                state._accepted_backup_hash = "a" * 64
+                with patch.object(state, "recover", return_value=True) as recover, \
+                        self.assertRaisesRegex(RuntimeError, "integrity failed"):
+                    _recover_after_unexpected_error(state)
+                recover.assert_not_called()
+
+    def test_rejected_frozen_trial_mutation_remains_fatal_and_cannot_recover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.make_state(directory)
+
+            def optional(current):
+                rejected = freeze_candidate(state.baseline.code_path, {"family": "rejected"},
+                                            state.run_dir / "rejected_trial")
+                _track_local_candidate(state, rejected)
+                rejected.code_path.write_text("changed rejected trial", encoding="utf-8")
+                raise TypeError("optional operation failed after rejected trial mutation")
+
+            with patch("agent.research_v3._continue_locally", side_effect=optional), \
+                    self.assertRaisesRegex(ValueError, "Frozen candidate"):
+                continue_locally(state)
+            self.assertIsNone(state.selected_candidate)
+            state._accepted_backup_hash = "a" * 64
+            with patch.object(state, "recover", return_value=True) as recover, \
+                    self.assertRaisesRegex(RuntimeError, "integrity failed"):
+                _recover_after_unexpected_error(state)
+            recover.assert_not_called()
+
+    def test_keyboard_interrupt_is_not_an_optional_research_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.make_state(directory)
+            with patch("agent.research_v3._continue_locally", side_effect=KeyboardInterrupt), \
+                    self.assertRaises(KeyboardInterrupt):
+                continue_locally(state)
 
 
 if __name__ == "__main__":

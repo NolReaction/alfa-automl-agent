@@ -128,6 +128,14 @@ python experiment_autogluon_smoke.py --output data/experiments/autogluon_candida
 `refit_full` и fit-row counts. Это проверка исполнения и интерфейса, **не**
 парный benchmark качества, сравнение с AutoML или платформенный score.
 
+Первый настоящий [Linux/Windows CI run](https://github.com/NolReaction/alfa-automl-agent/actions/runs/39641270720)
+на commit `a782634f4f893b22600b7e0856d2ad9c5745c7a2` завершился успешно
+на обеих ОС. Оба case действительно обучили RandomForest и выполнили
+`RandomForest_FULL` на всех 180 fit-строках; process inventory доступен,
+cleanup подтверждён, API requests — 0. Такой же PR workflow также прошёл на
+обеих ОС. Эти receipts подтверждают исполнение backend, а не его преимущество
+по качеству. Последующие изменения координатора требуют своих общих CI checks.
+
 Официальные API версии 1.3.1:
 [fit](https://auto.gluon.ai/1.3.1/api/autogluon.tabular.TabularPredictor.fit.html),
 [refit_full](https://auto.gluon.ai/1.3.1/api/autogluon.tabular.TabularPredictor.refit_full.html).
