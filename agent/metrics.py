@@ -7,6 +7,7 @@ All class names remain the literal strings from the training CSV.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date, timedelta
 import math
 from numbers import Real
 import re
@@ -82,14 +83,49 @@ def _vector(values, *, name: str) -> np.ndarray:
 def label_values(values, *, name: str = "Class labels") -> np.ndarray:
     """Preserve literal strings while rejecting real missing numeric values."""
     import numpy as np
+    import pandas as pd
 
     # Avoid NumPy converting a missing numeric value to the literal class "nan"
     # when a mixed input also contains text labels.
     result = _vector(np.asarray(values, dtype=object), name=name)
-    if any(value is None or not str(value).strip()
+    def missing(value):
+        flag = pd.isna(value)
+        return isinstance(flag, (bool, np.bool_)) and bool(flag)
+
+    if any(missing(value) or not str(value).strip()
            or (isinstance(value, Real) and not math.isfinite(value)) for value in result):
         raise ValueError(f"{name} contains missing or empty labels")
     return result.astype(str)
+
+
+def _real_numeric_array(values, *, name: str):
+    """Parse real numbers, retaining numeric CSV strings without lossy casts.
+
+    NumPy can cast timestamps/timedeltas to their integer representation and
+    silently discard complex imaginary parts. Neither is a valid prediction.
+    The object check also prevents those values being hidden in mixed arrays.
+    """
+    import numpy as np
+
+    try:
+        raw = np.asarray(values)
+        if raw.dtype.kind not in "iufUSO":
+            raise ValueError(f"{name} must contain real numeric values")
+        # Inspect Python containers before NumPy promotes mixed bool/float
+        # values to a floating dtype. Typed numeric ndarrays already represent
+        # numbers; their earlier construction history cannot be recovered.
+        if isinstance(values, np.ndarray):
+            original = raw if raw.dtype.kind == "O" else None
+        else:
+            original = np.asarray(values, dtype=object)
+        if original is not None and any(
+                isinstance(value, (bool, np.bool_, complex, np.complexfloating,
+                                   date, timedelta, np.datetime64, np.timedelta64))
+                for value in original.flat):
+            raise ValueError(f"{name} must contain real numeric values")
+        return np.asarray(values, dtype=float)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{name} must contain real numeric values") from error
 
 
 def infer_positive_class(classes) -> str | None:
@@ -116,10 +152,7 @@ def probability_matrix(predictions, *, classes, prediction_classes=None,
     classes = tuple(str(value) for value in classes)
     if len(classes) < 2 or len(set(classes)) != len(classes):
         raise ValueError("Probability predictions require at least two unique classes")
-    try:
-        values = np.asarray(predictions, dtype=float)
-    except (TypeError, ValueError) as error:
-        raise ValueError("Probabilities must be numeric") from error
+    values = _real_numeric_array(predictions, name="Probabilities")
     if values.ndim == 2 and values.shape[1] == 1:
         values = values[:, 0]
     if values.ndim == 1:
@@ -198,8 +231,8 @@ def score_predictions(metric, actual, predictions, *, classes=(),
                                       labels=list(ordered), multi_class="ovr", average="macro")
     else:
         try:
-            actual = _vector(actual, name="Actual values").astype(float)
-            predicted = _vector(predictions, name="Predicted values").astype(float)
+            actual = _vector(_real_numeric_array(actual, name="Actual values"), name="Actual values")
+            predicted = _vector(_real_numeric_array(predictions, name="Predicted values"), name="Predicted values")
         except (TypeError, ValueError) as error:
             raise ValueError("Regression values must be numeric one-dimensional vectors") from error
         if len(actual) != len(predicted) or not np.isfinite(actual).all() or not np.isfinite(predicted).all():
