@@ -1,59 +1,73 @@
-# Night unseen: состояние работы
+# NIGHT 02: состояние и передача
 
-Задание: независимые новые табличные задачи, квалификация контрактов и
-исправления корректности. База `390829239bfb245e70d866c02d4cd69d51d4c0d9`.
-Ветка `work/night-unseen-v1`; общий поиск, recovery, CLI и ZIP не меняются.
+Ветка `work/night-unseen-v1`, PR https://github.com/NolReaction/alfa-automl-agent/pull/15 .
+База `390829239bfb245e70d866c02d4cd69d51d4c0d9`.
+Подробный протокол, дефекты и команды: `docs/night_unseen_report.md`.
 
-## Окружение и границы
+## Завершено
 
-- Рабочий checkout: `/workspace/scratch/de9281f42bd1/alfa-night-unseen`.
-- Замороженная база: `/workspace/scratch/de9281f42bd1/alfa-night-unseen-base`.
-- Python: рабочий `.venv/bin/python`, 3.12.14.
-- Установлены существующие pins `requirements.txt`: NumPy 1.26.4,
-  SciPy 1.12.0, pandas 2.2.3, sklearn 1.5.2, CatBoost 1.2.8,
-  LightGBM 4.6.0, psutil 6.1.1. Зависимости проекта не менялись.
-- Baseline организаторов доступен во вложенном текстовом файле; SHA-256
-  `ecf66e8d7c054624eeca710c13e2b82c1ac22a03314db8a45ff1778fa16e372d`
-  совпадает с записанным в документации. В корень репозитория он не добавлен.
-- Реальных API-запросов и платформенных сабмитов: 0. Отправленный ZIP
-  не перезаписывается. Обучения выполняются последовательно, до 8 потоков.
+- Зафиксирован каталог 38 случаев: 19 valid, 3 difficult, 10 negative,
+  3 metamorphic и 3 scale/budget. Метаморфные источники указаны явно.
+- Исправлены 12 групп подтверждённых дефектов своей runtime-зоны: строгие CSV,
+  вещественные значения, literal labels/categories, объявления метрик,
+  probability mapping и standalone validation. Модельный поиск и recovery не менялись.
+- Основная пара: по 13 полных solver результатов, все 9 метрик и 10 expected
+  refusals у базы и candidate. Re-audit подтвердил все CSV/refit receipts.
+- Отдельный независимый пересчёт формулами подтвердил 26 результатов и
+  312 хешей артефактов, совпадение метрик до 1e-12 без раскрытия таблиц качества.
+- Default CLI без флагов: по 3 full result у базы и candidate, API settings отсутствуют.
+- Дополнительные схемы, literal Markdown labels, группы/время и перестановки
+  вероятностей проверены реальным solver. Два valid difficult split ограничены
+  возможностями валидации и остаются solver_error, не full result.
+- Известный линейный metamorphic case candidate упал при 30 s; отдельный
+  ограниченный повтор 60 s дал full result. Первый error сохранён в матрице.
+- По 2 малых scale-probes у обеих версий дали полный refit. Два намеренных
+  8-секундных прерывания skipped до запуска из-за недоступного PID inventory.
+- Исправлены новые Windows-тесты и остановка потомков независимого runner.
+  Теперь сохраняются PID/create_time, а forced cleanup без подтверждения
+  прерывает серию. Это best effort polling, не OS sandbox.
 
-## План и текущая стадия
+## Точные версии
 
-1. Зафиксировать каталог минимум 18 валидных задач, 6 отрицательных и
-   ограниченные scale/budget probes до внешних оценок.
-2. Воспроизвести ошибки parser/data/validation на минимальных примерах;
-   исправить в разрешённых файлах и добавить regression tests.
-3. Закрепить source SHA и планы запусков; сравнить базу и исправленный код
-   на одних данных. Каждая из 9 метрик получает настоящий solver run;
-   отдельно минимум 3 запуска точной default CLI-команды.
-4. Проверить provenance, receipts полного refit и независимый пересчёт CSV;
-   выполнить `dev_check.py`, подготовить PR, Linux/Windows CI и Git bundle.
+- `461d8c97261f7bf41ea016775e233dc32a29ab84`: runtime fixes, core/default qualification.
+- `78db10f489d5f759fa67d7aafd2a2947dd107278`: только переносимость тестов.
+- `3281a863f1f45b92b78309db9eee36bc7a457fa0`: runner cleanup и его тесты,
+  продолжение оставшихся случаев. Все шесть runtime-файлов, solution.py и
+  генераторы побайтно совпадают с `461d8c9`.
 
-Каталог и runner создаются. Найдены воспроизводимые проблемы coercion
-нечисловых прогнозов, malformed CSV и отдельных объявлений задачи;
-причины и статусы будут закреплены в итоговом реестре после тестов.
+Seed 81221 — публичная qualification/development матрица. Закрытая
+confirmation-серия и чужой model-policy candidate здесь не оценивались.
+Численные audit quality-таблицы/targets остаются в игнорируемых результатах.
 
-Новые audit targets и численные quality-таблицы находятся только в
-игнорируемых результатах. До заморозки первой версии модельной политики
-другого ИИ передаётся только инфраструктурный статус и воспроизводимые
-дефекты контрактов. Обычные каталоги не являются OS-песочницей.
+## Проверки и блокер до merge
 
-## Процессы и результаты
+89 профильных tests и последующие 32 tests стенда прошли; последний набор
+имеет один пропуск detached-child proof из-за PID namespace. App: 227 tests,
+9 skips, OK. Обязательный dev_check: 646 tests, 1 error, 5 skips.
+Native Linux/Windows на 78db: по 646 tests, только тот же V2 error.
+Native CI 3281a863: по 651 tests на Linux/Windows, только тот же V2 error.
+Linux: 2 skips, Windows: 1 skip. Реальный detached-worker cleanup proof прошёл
+в Linux CI; на Windows POSIX-only proof skipped. Подробные job links в отчёте.
 
-Зафиксирован каталог 38 случаев. 89 профильных runtime/case тестов прошли.
-Runner прошёл 19 отдельных тестов. Контрольный offline solver run на известном
-metamorphic случае завершился full result с проверенными CSV и refit receipts.
-На исходной базе те же regression tests воспроизводят ошибки; последние
-data tests: 17 методов, 59 failing subtests и 1 error, а не 60 отдельных багов.
+Единственная общая ошибка: legacy V2 после порчи исходного train скрывает
+integrity ValueError за step-limit RuntimeError. Это несовместимость строгой
+валидации с V2 recovery, введённая этой веткой. Владелец agent/research.py
+должен вызвать state.check_source() вне catch выбора, до recover. Точный diff
+и существующий reproducer приведены в отчёте. Чужой файл не правился,
+валидация ради зелёного CI не ослаблялась. Автоматического merge нет.
 
-Перед основной серией выполнен независимый review runtime и самого стенда.
-Исправлены mixed-bool coercion, противоречивый unknown/known metric fallback,
-ложное распознавание отказа по traceback path и неполный manifest staged inputs.
-Далее — обязательный dev_check, фиксация опубликованного SHA и последовательная
-сравнительная серия с суммарным бюджетом 3000 s. С учётом предварительного
-smoke/contract прогона это остаётся в пределах первых 60 минут E2E.
+## Результаты и восстановление
 
-Результаты размещаются под `data/experiments/night_unseen/`.
-Не возобновлять всю серию при потере контекста: сначала прочитать manifest
-и проверить уже сохранённые exit codes, predictions и receipts.
+`data/experiments/night_unseen/` содержит manifest/summary, raw predictions,
+refit-артефакты, независимые checks и re-audit. Первая extra-серия оборвана
+перезапуском exec-service после трёх записанных результатов; у четвёртой
+попытки terminal exit неизвестен. Это явно записано в stage1_interruption.json.
+Сохранённые результаты не переобучались; оставшиеся выполнены в новых каталогах,
+stage2-index.json завершён. Нельзя повторно запускать уже начатый output dir.
+
+Проверки завершены, исходы и ограничения зафиксированы; новых обучений нет.
+Контрольные точки и проверенные Git bundles находятся в
+`data/experiments/night_unseen/checkpoints/`. Перед возобновлением читать
+checkpoints/resume.json и завершённые summaries; не повторять всю матрицу.
+Реальных конкурсных API-запросов, platform submissions и merge: 0.
+Отправленный delivery/solution.zip не перезаписывался.
