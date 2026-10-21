@@ -13,6 +13,7 @@ import re
 import threading
 
 from validation import validate_predictions
+from app.research_summary import research_summary
 
 
 RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -175,6 +176,7 @@ class RunReader:
                 or reported is not None and responses is not None and reported > responses
                 or reported is not None and attempts is not None and reported > attempts):
             raise ValueError("run.json: счётчики ответов API противоречат друг другу.")
+        research_summary(report)
         report.setdefault("events", [])
         return report
 
@@ -267,7 +269,8 @@ class RunReader:
             warnings.append("Расход токенов учтён только для части обращений к API.")
         if report["status"] == "running":
             warnings.append("Статус взят из журнала. Приложение не проверяет, работает ли процесс сейчас.")
-        return {"id": run_id, "report": report, "files": files, "usage": usage, "warnings": warnings}
+        return {"id": run_id, "report": report, "research": research_summary(report),
+                "files": files, "usage": usage, "warnings": warnings}
 
     def file(self, run_id: str, name: str) -> dict:
         if not isinstance(name, str) or not EXPERIMENT_FILE.fullmatch(name):

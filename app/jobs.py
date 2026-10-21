@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import csv
 from datetime import datetime, timezone
+import errno
 import io
 import json
 import hashlib
@@ -26,6 +27,8 @@ from app.splits import normalize_validation
 from app.model_config import make_model_config, validate_model_config, model_task_type, winner_feature_evidence, feature_evidence
 from app.file_io import replace_file
 from app.search_summary import validate_search_summary
+from app.research_summary import validate_research_summary
+from app.supervisor import process_inventory_matches
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from agent.llm import API_FIELDS, DEFAULT_MODEL, REQUIRED_API_FIELDS
 
@@ -41,13 +44,17 @@ MAX_INPUT_BYTES = 512 * 1024 * 1024
 LOCAL_TIMEOUT = 1800
 PREPARE_TIMEOUT = 600
 POLL_SECONDS = 0.2
+STAGE_READ_WINDOWS = os.name == "nt"
+STAGE_READ_ATTEMPTS = 12
+STAGE_READ_INITIAL_DELAY = 0.01
+STAGE_READ_MAX_DELAY = 0.1
 MAX_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
 MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
@@ -141,6 +148,36 @@ def _json(path: Path, root: Path, limit=2 * 1024 * 1024):
     return result
 
 
+def _stage_json(path: Path, root: Path, cancel=None):
+    """Read progress despite brief Windows replacement/reader sharing locks.
+
+    CPython's CRT open can expose EACCES without the original winerror. Retry
+    that narrowly on Windows, along with known sharing/access lock codes. A
+    permanent denial still propagates after at most .85 s of delays; malformed
+    JSON and unsafe paths are never hidden. Recheck the path on every attempt.
+    """
+    for attempt in range(STAGE_READ_ATTEMPTS):
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Запуск остановлен пользователем.")
+        try:
+            _safe(path, root)
+            if not path.exists():
+                return None
+            return _json(path, root)
+        except OSError as error:
+            winerror = getattr(error, "winerror", None)
+            crt_denial = (winerror is None and isinstance(error, PermissionError)
+                          and error.errno == errno.EACCES)
+            if (not STAGE_READ_WINDOWS or not (winerror in {5, 32, 33} or crt_denial)
+                    or attempt == STAGE_READ_ATTEMPTS - 1):
+                raise
+            delay = min(STAGE_READ_INITIAL_DELAY * (2 ** attempt), STAGE_READ_MAX_DELAY)
+            if cancel is None:
+                time.sleep(delay)
+            elif cancel.wait(delay):
+                raise InterruptedError("Запуск остановлен пользователем.") from error
+
+
 def _write_json(path: Path, value, root: Path):
     _safe(path, root)
     temporary = path.with_name(path.name + ".tmp")
@@ -203,6 +240,8 @@ def _identity(pid: int):
             return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
         finally:
             kernel.CloseHandle(handle)
+    if sys.platform == "linux" and not process_inventory_matches():
+        return None
     try:
         text = Path(f"/proc/{pid}/stat").read_text()
         return text[text.rfind(")") + 2:].split()[19]
@@ -211,6 +250,8 @@ def _identity(pid: int):
 
 
 def _descendants(pid: int):
+    if sys.platform == "linux" and not process_inventory_matches():
+        return []
     pairs = []
     proc = Path("/proc")
     if proc.is_dir():
@@ -466,6 +507,13 @@ class JobManager:
                     return False
         if job.get("agent_run_id") is not None and (not isinstance(job["agent_run_id"], str) or not JOB_ID.fullmatch(job["agent_run_id"])):
             return False
+        if "research" in job:
+            if job["action"] != "agent":
+                return False
+            try:
+                validate_research_summary(job["research"])
+            except ValueError:
+                return False
         runtime = job.get("_runtime")
         if runtime is not None and (not isinstance(runtime, dict) or type(runtime.get("pid")) is not int
                 or runtime["pid"] <= 1 or runtime.get("identity") is not None and not isinstance(runtime["identity"], str)):
@@ -515,6 +563,8 @@ class JobManager:
             summary["api"] = {key: value for key, value in summary["api"].items()
                               if key in {"state", "attempts", "responses", "reported_responses", "prompt_tokens",
                                          "completion_tokens", "total_tokens"}}
+        if "research" in summary:
+            summary["research"] = validate_research_summary(summary["research"])
         if summary.get("published"):
             summary["published"] = self._publication_current(job)
         active = self._active
@@ -712,7 +762,11 @@ class JobManager:
         if job["action"] == "automl":
             config["time_budget"] = minutes * 60
         if "model_config" in job and job["action"] != "automl":
-            config["model_params"] = validate_model_config(job["model_config"], action=_config_action(job["action"]))["parameters"]
+            model_config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
+            if {"objective", "target_transform"} & set(model_config):
+                config["model_config"] = model_config
+            else:
+                config["model_params"] = model_config["parameters"]
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 
@@ -765,8 +819,9 @@ class JobManager:
                         if path.stat().st_size > MAX_LOG_BYTES:
                             raise ValueError("Запуск остановлен: журнал превысил лимит 20 МБ.")
                     stage_file = folder / "stage.json"
-                    if job["action"] in OFFLINE_ACTIONS and stage_file.exists():
-                        evidence = _json(stage_file, self.state_root)
+                    evidence = (_stage_json(stage_file, self.state_root, active["cancel"])
+                                if job["action"] in OFFLINE_ACTIONS else None)
+                    if evidence is not None:
                         current = evidence.get("stage")
                         updates = {}
                         if current in {"training", "validating", "refitting", "finished"} and current != job["stage"]:
@@ -911,7 +966,8 @@ class JobManager:
                 detail = reader.detail(reports[0]["id"])
                 updates = dict(agent_status=detail["report"]["status"], agent_reason=detail["report"].get("reason"),
                                api=detail["usage"], model=detail["report"].get("model"),
-                               api_used=bool(detail["usage"].get("attempts")), agent_run_id=detail["id"])
+                               api_used=bool(detail["usage"].get("attempts")), agent_run_id=detail["id"],
+                               research=detail["research"])
                 updates = self.redact(job["task_id"], job["id"], updates)
                 changed = any(job.get(name) != value for name, value in updates.items())
                 job.update(updates)

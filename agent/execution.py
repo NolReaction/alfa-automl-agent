@@ -12,6 +12,44 @@ import time
 from agent.resources import DEFAULT_MEMORY_LIMIT_BYTES, POLL_SECONDS, ProcessTreeMonitor
 
 
+WINDOWS = os.name == "nt"
+WINDOWS_PROCESS_CWD_LIMIT = 258
+WINDOWS_LAUNCH_CWD_LIMIT = 240
+PYTHON_RUNNER = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='__main__')"
+PYTHON_CWD_RUNNER = ("import os, runpy, sys; os.chdir(sys.argv.pop(2)); "
+                     "runpy.run_path(sys.argv[1], run_name='__main__')")
+
+
+def _windows_path_units(path: Path) -> int:
+    return len(str(path).encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _python_launch(script: Path, task_dir: Path) -> tuple[list[str], Path]:
+    """Keep CreateProcess's initial cwd short, then enter the real task in Python.
+
+    Windows long-file-path support does not extend to CreateProcessW's cwd.
+    Only long Windows task directories need the bootstrap; the script still
+    executes in its actual directory, with the same argv as the usual runner.
+    The parent process's current directory is never changed.
+    """
+    command = [sys.executable, "-u", "-c", PYTHON_RUNNER, str(script.resolve())]
+    if not WINDOWS:
+        return command, task_dir
+    actual_task_dir = Path(task_dir).resolve()
+    if _windows_path_units(actual_task_dir) <= WINDOWS_PROCESS_CWD_LIMIT:
+        return command, task_dir
+    if not actual_task_dir.is_dir():
+        raise NotADirectoryError(f"Task working directory does not exist: {actual_task_dir}")
+    for ancestor in actual_task_dir.parents:
+        if (_windows_path_units(ancestor) <= WINDOWS_LAUNCH_CWD_LIMIT
+                and ancestor.is_dir()):
+            return ([sys.executable, "-u", "-c", PYTHON_CWD_RUNNER,
+                     str(script.resolve()), str(actual_task_dir)], ancestor)
+    raise OSError("Cannot launch Windows Python: the long task directory has no existing "
+                  f"ancestor within {WINDOWS_LAUNCH_CWD_LIMIT} UTF-16 code units. "
+                  "Use a shorter task root or share path.")
+
+
 def child_environment() -> dict[str, str]:
     # Keep Windows system paths, but do not inherit the agent's API credentials.
     allowed = (
@@ -64,11 +102,9 @@ def run_python(code: str, task_dir: Path, run_dir: Path, step: int,
     memory_limit_exceeded = False
     started = time.monotonic()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        command, launch_dir = _python_launch(script, task_dir)
         process = subprocess.Popen(
-            [sys.executable, "-u", "-c",
-             "import runpy, sys; runpy.run_path(sys.argv[1], run_name='__main__')",
-             str(script.resolve())],
-            cwd=task_dir, env=child_environment(), stdin=subprocess.DEVNULL,
+            command, cwd=launch_dir, env=child_environment(), stdin=subprocess.DEVNULL,
             stdout=stdout, stderr=stderr, start_new_session=os.name != "nt",
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
         )

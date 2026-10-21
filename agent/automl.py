@@ -28,8 +28,9 @@ from agent.diagnostics import classification_diagnostics, validate_classificatio
 from agent.execution import run_python
 from agent.file_io import replace_file
 from agent.features import normalize_feature_config
+from agent.llm import safe_error_message
 from agent.search import (align_predictions, exploration_plan, fixed_blend, inner_split_rows,
-                          metric_predictions, refinement_plan, seed_candidate, select_shortlist)
+                          metric_candidates, metric_predictions, refinement_plan, seed_candidate, select_shortlist)
 from agent.task_spec import load_task, load_task_data, score_holdout
 from agent.splits import normalize_validation, split_rows
 from offline_baseline import read_csv
@@ -77,11 +78,19 @@ def _json_hash(value) -> str:
                                     separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-def _file_hash(path: Path) -> str:
+def _before_deadline(deadline):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("The original AutoML time budget has been exhausted")
+
+
+def _file_hash(path: Path, *, deadline=None) -> str:
+    _before_deadline(deadline)
     digest = hashlib.sha256()
     with _plain(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            _before_deadline(deadline)
             digest.update(chunk)
+    _before_deadline(deadline)
     return digest.hexdigest()
 
 
@@ -122,13 +131,16 @@ def _commit_checkpoint(submission: Path, held: Path, output_dir: Path) -> Path:
     return directory
 
 
-def data_fingerprint(data_dir: Path) -> str:
+def data_fingerprint(data_dir: Path, *, deadline=None) -> str:
+    _before_deadline(deadline)
     digest = hashlib.sha256()
     for name in INPUT_NAMES:
         digest.update(name.encode("utf-8") + b"\0")
         with (data_dir / name).open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                _before_deadline(deadline)
                 digest.update(chunk)
+    _before_deadline(deadline)
     return digest.hexdigest()
 
 
@@ -242,12 +254,17 @@ def _raw_evidence(directory, spec, expected_ids, expected_actuals):
 
 
 def run_automl(task_path: Path, *, time_budget=600, validation=None,
-               dataset_fingerprint=None, progress=None, output_dir=None) -> dict:
+               dataset_fingerprint=None, progress=None, output_dir=None,
+               stability_splits=1, metric_recipes=False) -> dict:
     started = time.monotonic()
     if (type(time_budget) not in {int, float} or not math.isfinite(time_budget)
             or not 0 < time_budget <= 10500):
         raise ValueError("Время автоподбора должно быть в диапазоне (0, 10500] секунд.")
     deadline = started + time_budget
+    if type(stability_splits) is not int or stability_splits not in {1, 2, 3}:
+        raise ValueError("stability_splits must be 1, 2 or 3")
+    if type(metric_recipes) is not bool:
+        raise ValueError("metric_recipes must be boolean")
     task_path = _plain(Path(task_path))
     if not task_path.is_file() or task_path.suffix.lower() != ".md":
         raise ValueError("Передайте существующий task.md.")
@@ -294,6 +311,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
     for name in ("automl_report.json", "holdout_predictions.csv"):
         _plain(output_dir / name)
     exploration = candidate_plan(classification) if inner is not None else []
+    if metric_recipes and inner is not None and not classification:
+        exploration += metric_candidates(spec.metric.name, y.iloc[inner[0]], existing=exploration)
     plan = [seed_candidate(classification), *exploration]
     search = {"status": "running", "phase": "seed", "planned": len(plan), "completed": 0,
               "selection_completed": 0, "verified": 0, "best_candidate": None,
@@ -309,6 +328,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                                 "outer_execution_order": "measured_inner_elapsed_ascending",
                                 "blend_weight": 0.5, "refit_reserve_fraction": 0.25},
               "report_path": str(output_dir / "automl_report.json")}
+    report["search_policy"].update(stability_splits=stability_splits, metric_recipes=metric_recipes)
+    report["stability"] = {"requested_splits": stability_splits, "scope": "inner_selection",
+                           "applied": False, "rounds": [], "reason": "disabled" if stability_splits == 1 else "not_run"}
     rows, recipes, evidence = {}, {}, {}
     best = None
     phase_counter = 0
@@ -348,11 +370,13 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
     def rank(items, key):
         return sorted(items, key=lambda item: rows[item["id"]][key], reverse=spec.metric.higher_is_better)
 
-    def check_source():
-        if (data_fingerprint(data_dir) != input_fingerprint
-                or data_fingerprint(snapshot_dir) != input_fingerprint
+    def check_source(*, recovery_deadline=None):
+        _before_deadline(recovery_deadline)
+        if (data_fingerprint(data_dir, deadline=recovery_deadline) != input_fingerprint
+                or data_fingerprint(snapshot_dir, deadline=recovery_deadline) != input_fingerprint
                 or task_path.read_text(encoding="utf-8-sig") != task_text):
             raise ValueError("Исходная задача или данные изменились во время автоподбора; публикация отменена.")
+        _before_deadline(recovery_deadline)
 
     def check_submission(directory):
         spec.validate_frame(read_csv(directory / "submission.csv"), test[id_column].tolist())
@@ -364,38 +388,101 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             raise ValueError("Сохранённый результат победителя изменился; публикация отменена.")
         check_submission(submission_dir)
         check_source()
-        checkpoint_dir = _commit_checkpoint(submission_dir / "submission.csv",
-                                            record["directory"] / "holdout_predictions.csv", output_dir)
-        _atomic_copy(checkpoint_dir / "submission.csv", task_dir / "submission.csv")
-        _atomic_copy(checkpoint_dir / "holdout_predictions.csv", output_dir / "holdout_predictions.csv")
-        best = {"recipe": recipe, "record": record, "submission_dir": submission_dir, "value": value}
-        search["best_candidate"] = recipe["id"]
-        for row in search["candidates"]:
-            row["selected"] = row["id"] == recipe["id"]
-        report.update(model=recipe["model_config"]["model"], model_config=recipe["model_config"],
-                      feature_config=recipe["feature_config"],
-                      metric={"name": spec.metric.name, "value": value,
-                              "higher_is_better": spec.metric.higher_is_better}, output_valid=True)
+        metadata = {"model": recipe["model_config"]["model"], "model_config": recipe["model_config"],
+                    "feature_config": recipe["feature_config"],
+                    "metric": {"name": spec.metric.name, "value": value,
+                               "higher_is_better": spec.metric.higher_is_better}, "output_valid": True}
         if recipe.get("components"):
-            report["component_feature_configs"] = [item["feature_config"] for item in recipe["components"]]
-        else:
-            report.pop("component_feature_configs", None)
-        report.pop("classification_diagnostics", None)
+            metadata["component_feature_configs"] = [item["feature_config"] for item in recipe["components"]]
         if spec.metric.name == "Macro F1":
             held = read_csv(record["directory"] / "holdout_predictions.csv")
             diagnostics = classification_diagnostics(held["actual"], held["prediction"])
             if diagnostics is not None:
-                report["classification_diagnostics"] = validate_classification_diagnostics(
-                    diagnostics, metric=report["metric"], validation_rows=len(held_rows))
+                metadata["classification_diagnostics"] = validate_classification_diagnostics(
+                    diagnostics, metric=metadata["metric"], validation_rows=len(held_rows))
+        checkpoint_dir = _commit_checkpoint(submission_dir / "submission.csv",
+                                            record["directory"] / "holdout_predictions.csv", output_dir)
+        # Pin accepted bytes and model metadata in host memory before loose
+        # exports/reporting. A later mutable checkpoint pointer is not evidence.
+        accepted = {"candidate_id": recipe["id"], "checkpoint_dir": checkpoint_dir, "value": value,
+                    "submission_sha256": _file_hash(checkpoint_dir / "submission.csv", deadline=deadline),
+                    "holdout_sha256": _file_hash(checkpoint_dir / "holdout_predictions.csv", deadline=deadline),
+                    "metadata": deepcopy(metadata)}
+        search["best_candidate"] = recipe["id"]
+        for row in search["candidates"]:
+            row["selected"] = row["id"] == recipe["id"]
+        accepted["row"] = deepcopy(rows[recipe["id"]])
+        best = accepted
+        for key in ("component_feature_configs", "classification_diagnostics"):
+            report.pop(key, None)
+        report.update(metadata)
+        _atomic_copy(checkpoint_dir / "submission.csv", task_dir / "submission.csv")
+        _atomic_copy(checkpoint_dir / "holdout_predictions.csv", output_dir / "holdout_predictions.csv")
         save("training")
 
-    def run_phase(recipe, phase, phase_deadline, shares=1):
+    def recover_accepted(error):
+        """Recover the pinned winner without reading a mutable pointer or fitting."""
+        from agent.emergency import _bounded_copy
+
+        _before_deadline(deadline)
+        try:
+            for directory in (data_dir, snapshot_dir):
+                for name in INPUT_NAMES:
+                    _plain(directory / name)
+            check_source(recovery_deadline=deadline)
+            checkpoint = _plain(best["checkpoint_dir"])
+            for name, key in (("submission.csv", "submission_sha256"),
+                              ("holdout_predictions.csv", "holdout_sha256")):
+                if _file_hash(checkpoint / name, deadline=deadline) != best[key]:
+                    raise ValueError("Pinned accepted AutoML checkpoint bytes changed")
+            _before_deadline(deadline)
+            check_submission(checkpoint)
+            value = score_holdout(checkpoint / "holdout_predictions.csv", spec, expected_ids, expected_actuals)
+            if value != best["value"] or value != best["metadata"]["metric"]["value"]:
+                raise ValueError("Pinned accepted AutoML metric changed")
+            _before_deadline(deadline)
+            check_source(recovery_deadline=deadline)
+        except FileNotFoundError as missing:
+            raise ValueError("Pinned AutoML checkpoint or original inputs are missing") from missing
+        _bounded_copy(checkpoint / "submission.csv", task_dir / "submission.csv", deadline)
+        for key in ("component_feature_configs", "classification_diagnostics"):
+            report.pop(key, None)
+        report.update(deepcopy(best["metadata"]))
+        report["status"] = "fallback"
+        report["recovery"] = {"status": "restored", "kind": "accepted_automl_checkpoint",
+            "candidate_id": best["candidate_id"], "submission_sha256": best["submission_sha256"],
+            "holdout_sha256": best["holdout_sha256"], "error": safe_error_message(error)[-2000:]}
+        search.update(status="fallback", phase="finished", best_candidate=best["candidate_id"])
+        for row in search["candidates"]:
+            if row["id"] == best["candidate_id"]:
+                row.clear()
+                row.update(deepcopy(best["row"]))
+                row["selected"] = True
+                continue
+            row["selected"] = False
+            if row["status"] in {"running", "pending"}:
+                row.update(status="failed", rejection_reason="execution_failed",
+                           error="Search interrupted before this trial completed")
+            elif row["metric"] is not None and better(row["metric"], best["value"]):
+                row.update(rejection_reason="refit_failed",
+                           error="Search interrupted before a full-data checkpoint was accepted")
+        try:
+            _bounded_copy(checkpoint / "holdout_predictions.csv", output_dir / "holdout_predictions.csv", deadline)
+            _before_deadline(deadline)
+            save("finished")
+        except (OSError, RuntimeError, MemoryError) as report_error:
+            report["recovery"]["report_write_failed"] = True
+            report["recovery"]["report_error"] = safe_error_message(report_error)[-2000:]
+        print("Recovered the accepted AutoML checkpoint; no additional model was trained.", flush=True)
+        return deepcopy(report)
+
+    def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None):
         nonlocal phase_counter
         row = rows[recipe["id"]]
         row.update(phase=phase, status="running", error=None, rejection_reason=None)
         search["phase"] = phase
         phase_started = time.monotonic()
-        directory = run_dir / recipe["id"] / phase
+        directory = run_dir / recipe["id"] / (directory_name or phase)
         try:
             if min(phase_deadline, deadline - 2) - time.monotonic() <= 1:
                 row.update(status="skipped", rejection_reason="insufficient_budget")
@@ -404,7 +491,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             _stage_inputs(snapshot_dir, directory / "inputs")
             (directory / "task.md").write_text(task_text, encoding="utf-8")
             local_spec = replace(spec, data_dir=directory / "inputs", task_path=directory / "task.md")
-            fitting, held = inner if phase == "selection" else (fit_rows, held_rows)
+            fitting, held = split_override if split_override is not None else (
+                inner if phase == "selection" else (fit_rows, held_rows))
             config_path = directory / "config.json"
             _atomic_json(config_path, {**recipe, "candidate_dir": str(directory), "phase": phase,
                                       "task_spec": local_spec.to_dict(), "fit_rows": fitting.tolist(),
@@ -466,7 +554,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                 raw = _raw_evidence(directory, spec, ids, actual)
                 record.update(value=value, raw=raw)
                 if phase == "selection":
-                    row["selection_metric"] = value
+                    if split_override is None:
+                        row["selection_metric"] = value
                 else:
                     row.update(metric=value, verification_metric=value)
             if phase in {"seed", "refit"}:
@@ -493,8 +582,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             # Plan six refinement slots up front in the budget, but choose their
             # families only after all initial INNER results have been observed.
             adaptive = len(exploration) >= 5
+            selection_deadline = started + time_budget * (.50 if stability_splits > 1 else .60)
             for index, recipe in enumerate(exploration):
-                run_phase(recipes[recipe["id"]], "selection", started + time_budget * 0.60,
+                run_phase(recipes[recipe["id"]], "selection", selection_deadline,
                           len(exploration) - index + (6 if adaptive else 0))
             successful = [recipes[item["id"]] for item in exploration if rows[item["id"]]["selection_metric"] is not None]
             ranked_inner = rank(successful, "selection_metric")
@@ -502,9 +592,47 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             for recipe in refinements:
                 add_recipe(recipe)
             for index, recipe in enumerate(refinements):
-                run_phase(recipes[recipe["id"]], "selection", started + time_budget * 0.60, len(refinements) - index)
+                run_phase(recipes[recipe["id"]], "selection", selection_deadline, len(refinements) - index)
             successful = [recipe for recipe in recipes.values() if rows[recipe["id"]]["selection_metric"] is not None]
             shortlist = select_shortlist(rank(successful, "selection_metric"))
+            if stability_splits > 1 and len(shortlist) > 1:
+                from agent.stability import additional_inner_splits, paired_stability_summary
+                local_positions = {int(row): index for index, row in enumerate(fit_rows)}
+                canonical = tuple(np.asarray([local_positions[int(row)] for row in part]) for part in inner)
+                extra_splits = additional_inner_splits(
+                    train.iloc[fit_rows].reset_index(drop=True), y.iloc[fit_rows].reset_index(drop=True),
+                    features, classification, choice, canonical=canonical, limit=stability_splits - 1)
+                ids = [item["id"] for item in shortlist]
+                rounds = [{identifier: rows[identifier]["selection_metric"] for identifier in ids}]
+                stability_deadline = started + time_budget * .65
+                # Admit whole paired rounds, using host timings rather than a
+                # row-independent fixed timeout. No outer score participates.
+                costs = {identifier: max(.1, rows[identifier]["elapsed_seconds"]) for identifier in ids}
+                report["stability"]["reason"] = "no_additional_split" if not extra_splits else "insufficient_budget"
+                for number, (local_fit, local_held, metadata) in enumerate(extra_splits, 1):
+                    scale = max(1, len(local_fit) / len(inner[0]), len(local_held) / len(inner[1])) ** 1.25
+                    estimated = sum(costs.values()) * 1.5 * scale + len(ids)
+                    if stability_deadline - time.monotonic() < estimated:
+                        break
+                    scores = {}
+                    for index, recipe in enumerate(shortlist):
+                        record = run_phase(recipe, "selection", stability_deadline, len(shortlist) - index,
+                                           split_override=(fit_rows[local_fit], fit_rows[local_held]),
+                                           directory_name=f"stability_{number}")
+                        if record is not None:
+                            scores[recipe["id"]] = record["value"]
+                    rounds.append(scores)
+                    report["stability"]["rounds"].append({"split": metadata, "scores": scores,
+                                                         "complete": len(scores) == len(ids)})
+                    if len(scores) != len(ids):
+                        report["stability"]["reason"] = "incomplete_paired_round"
+                        break
+                summary = paired_stability_summary(ids, rounds, higher_is_better=spec.metric.higher_is_better)
+                report["stability"]["summary"] = summary
+                if len(rounds) > 1 and len(rounds[1]) == len(ids):
+                    report["stability"].update(applied=True, reason="paired_inner_mean",
+                                               outer_finalist_limit=2)
+                    shortlist = [recipes[identifier] for identifier in summary["ranking"][:2]]
             for recipe in successful:
                 if recipe not in shortlist:
                     rows[recipe["id"]]["rejection_reason"] = "not_selected"
@@ -569,7 +697,19 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         print(f"Saved: {task_dir / 'submission.csv'}", flush=True)
         print(f"Report: {output_dir / 'automl_report.json'}", flush=True)
         return deepcopy(report)
-    except Exception:
+    except Exception as error:
+        if best is not None and isinstance(error, (OSError, RuntimeError, MemoryError)):
+            try:
+                return recover_accepted(error)
+            except Exception as recovery_error:
+                search.update(status="failed", phase="finished")
+                report["output_valid"] = False
+                report["recovery"] = {"status": "rejected", "error": safe_error_message(recovery_error)[-2000:]}
+                try:
+                    save("finished")
+                except Exception:
+                    pass
+                raise
         search.update(status="failed", phase="finished")
         report["output_valid"] = False
         try:

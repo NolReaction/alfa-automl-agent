@@ -169,6 +169,16 @@ class RunReaderTests(unittest.TestCase):
                 if reported:
                     self.assertEqual(usage["total_tokens"], 18 * reported)
 
+    def test_report_details_keep_legacy_origin_and_v3_presentation_separate(self):
+        self.write_run()
+        self.assertEqual(self.reader.detail(RUN_ID)["research"], {"protocol_version": 2})
+        self.write_run(report(research_protocol_version=3, stage="candidate_frozen", stages=[
+            {"id": "candidate_frozen", "status": "completed"},
+        ], frozen_candidate={"code_hash": "b" * 64, "path": "/private/candidate.py"}))
+        summary = self.reader.detail(RUN_ID)["research"]
+        self.assertEqual(summary["stage"], "candidate_frozen")
+        self.assertEqual(summary["frozen_candidate"], {"code_hash": "b" * 64})
+
     def test_huge_json_integers_are_reported_without_overflow(self):
         huge = 10 ** 1000
         for location in ("counter", "unknown nested field"):

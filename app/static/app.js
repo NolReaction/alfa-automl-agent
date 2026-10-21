@@ -484,6 +484,67 @@ function usageView(usage) {
     return "<strong>API не вызывался</strong><span>Запросов в этом запуске не было.</span>";
   return `<strong>${number(usage.total_tokens)} токенов${usage.state === "partial" ? " · частичный учёт" : ""}</strong><span class="usage-separator">/</span><span>${number(usage.prompt_tokens)} вход · ${number(usage.completion_tokens)} выход</span>${usage.state === "partial" ? `<span>Учёт по ${number(usage.reported_responses)} из ${number(usage.responses)} ответов.</span>` : ""}`;
 }
+const RESEARCH_STAGE_NAMES = {
+  preparation: "Подготовка",
+  inner_research: "Внутренние эксперименты",
+  candidate_frozen: "Фиксация кандидата",
+  outer_validation: "Внешняя проверка",
+  full_refit: "Обучение на всех данных",
+  result: "Результат",
+};
+const RESEARCH_REASON_NAMES = {
+  api_error: "Ошибка обращения к API",
+  time_limit: "Достигнут лимит времени",
+  step_limit: "Достигнут лимит шагов",
+  truncated_response: "Ответ модели обрезан",
+  host_metric_unsupported: "Для этой метрики проверка качества не поддерживается",
+  repeated_failures: "Повторяющиеся ошибки экспериментов",
+  context_budget: "Достигнут лимит контекста модели",
+  inner_validation_unavailable: "Не удалось сформировать внутреннюю проверку",
+  refit_failed: "Не удалось завершить обучение на всех данных",
+};
+function researchFallbackReason(reason) {
+  return Object.hasOwn(RESEARCH_REASON_NAMES, reason)
+    ? RESEARCH_REASON_NAMES[reason] : "Причина завершения не указана";
+}
+function researchProvenance(summary, imported = false) {
+  if (!summary || summary.protocol_version !== 3)
+    return '<span class="research-origin legacy">Прежний протокол v2 · разделение данных не подтверждено</span>';
+  return `<span class="research-origin">Протокол v3${imported ? " · отчёт участника, локальная проверка не выполнялась" : " · внутренний подбор и внешняя приёмка"}</span>`;
+}
+function researchMetric(metric) {
+  return metric && Number.isFinite(metric.value)
+    ? `<strong>${esc(metric.name)} ${number(metric.value, 6)}</strong><span>${metric.higher_is_better ? "Больше лучше" : "Меньше лучше"}</span>`
+    : '<span class="subtle-text">Оценка ещё не получена</span>';
+}
+function researchSplit(split) {
+  if (!split) return "";
+  const strategy = { random: "Случайное разбиение", time: "По времени", grouped: "По группам дублей" }[split.strategy] || "";
+  const rows = Number.isFinite(split.train_rows) && Number.isFinite(split.validation_rows)
+    ? `Обучение ${number(split.train_rows)} / проверка ${number(split.validation_rows)}` : "";
+  return [strategy, rows].filter(Boolean).join(" · ");
+}
+function researchView(summary, { status, reason, imported = false } = {}) {
+  const provenance = researchProvenance(summary, imported);
+  const fallback = status === "fallback"
+    ? `<p class="research-fallback">Сохранён резервный результат. ${esc(researchFallbackReason(reason))}. Исследование Qwen не завершилось штатно.</p>` : "";
+  if (!summary || summary.protocol_version !== 3)
+    return `<section class="research-summary legacy" aria-label="Происхождение исследования">${provenance}${fallback}</section>`;
+  const stages = Array.isArray(summary.stages) ? summary.stages : [];
+  const terminal = ["completed", "fallback", "failed", "cancelled", "interrupted"].includes(status);
+  const labels = { pending: terminal ? "Не выполнялся" : "Ожидает", running: "Выполняется", completed: "Готово", skipped: "Пропущен", failed: "Ошибка" };
+  const selection = summary.evaluations?.selection;
+  const check = summary.evaluations?.final_check;
+  const frozen = summary.frozen_candidate;
+  return `<section class="research-summary" aria-label="Ход исследования Qwen">${provenance}${fallback}<ol class="research-stages">${Object.entries(RESEARCH_STAGE_NAMES).map(([id, name]) => {
+    const item = stages.find((entry) => entry.id === id) || { status: "pending" };
+    const stageStatus = Object.hasOwn(labels, item.status) ? item.status : "pending";
+    const active = stageStatus === "running" && !terminal;
+    const explanation = item.reason ? (Object.hasOwn(RESEARCH_REASON_NAMES, item.reason) ? RESEARCH_REASON_NAMES[item.reason] : "")
+      || ({ skipped: "Условия этапа не выполнены", failed: "Подробности в журнале запуска" }[stageStatus]) : "";
+    return `<li class="research-stage ${stageStatus}"${summary.stage === id ? ' aria-current="step"' : ""}><span class="research-stage-name">${esc(name)}</span><span class="research-stage-status">${stageStatus === "completed" ? icon("check") : active ? '<span class="spinner"></span>' : ""}${stageStatus === "running" && terminal ? "Остановлен" : labels[stageStatus]}</span>${explanation ? `<small>${esc(explanation)}</small>` : ""}</li>`;
+  }).join("")}</ol><div class="research-evaluations"><div class="research-score"><h3>Внутренний подбор</h3>${researchMetric(selection?.metric || (selection?.value != null ? selection : null))}<small>${esc(researchSplit(selection?.split))}</small></div><div class="research-score"><h3>Внешняя приёмка</h3>${check ? `<div class="research-outer-scores"><div><span>Стартовый рецепт</span>${researchMetric(check.baseline)}</div><div><span>Кандидат</span>${researchMetric(check.candidate)}</div></div>${check.selected ? `<p>${check.selected === "candidate" ? "Выбран кандидат" : "Сохранён стартовый рецепт"}</p>` : ""}<small>${esc(researchSplit(check.split))}</small>` : '<span class="subtle-text">Проводится после фиксации рецепта</span>'}</div></div><p class="research-score-note">Внешняя выборка используется для приёмки. Оценка выбранного результата не является независимой оценкой качества.</p>${frozen?.code_hash ? `<details class="research-hashes"><summary>Рецепт зафиксирован</summary><p>Код <code>${esc(frozen.code_hash.slice(0, 12))}</code>${frozen.recipe_hash ? ` · параметры <code>${esc(frozen.recipe_hash.slice(0, 12))}</code>` : ""}</p></details>` : ""}</section>`;
+}
 function eventView(event, index) {
   const result = event.result || {};
   let title,
@@ -518,6 +579,17 @@ function eventView(event, index) {
           : `Код завершился с кодом ${result.exit_code ?? "—"}. ${result.output_check?.valid ? "CSV прошёл проверку формата." : "CSV не прошёл проверку формата."}`);
       if (result.previous_output_restored)
         body += " Предыдущий CSV восстановлен.";
+      if (result.selection?.verified && !result.error && result.exit_code === 0
+          && !result.timed_out && !result.memory_limit_exceeded) {
+        const selected = result.selection;
+        const metric = selected.metric;
+        color = "success";
+        body = selected.reason === "not_better"
+          ? "Эксперимент проверен, улучшения нет. Предыдущий результат сохранён."
+          : selected.accepted ? "Эксперимент проверен и принят." : "Эксперимент проверен.";
+        if (metric && Number.isFinite(metric.value))
+          body += ` ${metric.name}: ${number(metric.value, 6)}.`;
+      }
       break;
     case "output_restored":
       title = "Восстановлен предыдущий CSV";
@@ -540,7 +612,14 @@ function eventView(event, index) {
       title = event.kind || "Событие";
       body = event.error || event.reason || "";
   }
-  return `<div class="timeline-event ${color}"><span class="event-dot"></span><div class="event-header"><span class="event-title">${esc(title)}</span><span class="event-index">${String(index + 1).padStart(2, "0")}</span></div><p class="event-body">${esc(body)}</p>${result.output_check?.errors?.length ? `<p class="event-details">${result.output_check.errors.map(esc).join(" · ")}</p>` : ""}</div>`;
+  const trial = result.selection || {};
+  const rawFamily = trial.recipe_summary?.family || trial.recipe?.family || trial.family;
+  const family = typeof rawFamily === "string" && /^[\p{L}\p{N} ._+()-]{1,120}$/u.test(rawFamily)
+    ? rawFamily : rawFamily ? "Пользовательский рецепт" : "";
+  const scope = trial.scope === "inner_selection" ? "Внутренняя проверка · подбор рецепта" : "";
+  const evidence = [scope, trial.hypothesis, family,
+    Number.isFinite(result.elapsed_seconds) ? duration(result.elapsed_seconds) : ""].filter((item) => typeof item === "string" && item);
+  return `<div class="timeline-event ${color}"><span class="event-dot"></span><div class="event-header"><span class="event-title">${esc(title)}</span><span class="event-index">${String(index + 1).padStart(2, "0")}</span></div><p class="event-body">${esc(body)}</p>${evidence.length ? `<p class="event-details">${evidence.map(esc).join(" · ")}</p>` : ""}${result.output_check?.errors?.length ? `<p class="event-details">${result.output_check.errors.map(esc).join(" · ")}</p>` : ""}</div>`;
 }
 async function loadRun(id, quiet = false) {
   const generation = ++state.runGeneration,
@@ -606,7 +685,7 @@ async function loadRun(id, quiet = false) {
       repeated_failures: "Повторяющиеся ошибки экспериментов",
     };
     $("#run-detail").innerHTML =
-      `<div class="run-detail-header"><div><h2>Запуск ${esc(id.slice(0, 8))}</h2><p>${esc(date(r.started_at))} · ${esc(r.model || "Модель не указана")}</p><div class="refresh-time"><span class="connection-dot"></span><span id="last-refresh">Обновление каждые 4 секунды</span></div></div>${statusBadge(r.status)}</div><div class="stats-grid">${stat("Время запуска", duration(r.elapsed_seconds), "по последнему отчёту", "clock", true)}${stat("Исполнений", number(r.experiments), `${number(r.successful_experiments)} с корректным CSV`, "code")}${stat("Запросов API", number(detail.usage?.attempts ?? r.api?.attempts), "попыток обращения", "activity")}${stat("Формат CSV", r.output_check?.valid === true ? "Корректен" : r.output_check?.valid === false ? "Ошибка" : "Не проверен", "не оценка ML-качества", "check", true)}</div><div class="usage-row">${usageView(detail.usage)}</div>${warningList(detail.warnings)}<section class="panel"><div class="panel-head"><div><h2>Журнал событий</h2><p>События в порядке выполнения</p></div>${badge(`${number(r.events?.length || 0)} событий`, "gray")}</div><div class="timeline">${r.events?.length ? r.events.map(eventView).join("") : '<p class="event-body">События ещё не записаны.</p>'}</div></section><section class="panel"><div class="panel-head"><div><h2>Код и вывод</h2><p>Файлы выбранного эксперимента</p></div>${experiments.length ? `<label class="sr-only" for="experiment-select">Выбрать эксперимент</label><select id="experiment-select" class="file-select">${experiments.map((value) => `<option value="${value}"${state.experiment === value ? " selected" : ""}>${value === 0 ? "Стартовая модель" : `Эксперимент ${value}`}</option>`).join("")}</select>` : ""}</div><div class="code-tabs" role="tablist" aria-label="Файл эксперимента">${[
+      `<div class="run-detail-header"><div><h2>Запуск ${esc(id.slice(0, 8))}</h2><p>${esc(date(r.started_at))} · ${esc(r.model || "Модель не указана")}</p><div class="refresh-time"><span class="connection-dot"></span><span id="last-refresh">Обновление каждые 4 секунды</span></div></div>${statusBadge(r.status)}</div><div class="stats-grid">${stat("Время запуска", duration(r.elapsed_seconds), "по последнему отчёту", "clock", true)}${stat("Исполнений", number(r.experiments), `${number(r.successful_experiments)} с корректным CSV`, "code")}${stat("Запросов API", number(detail.usage?.attempts ?? r.api?.attempts), "попыток обращения", "activity")}${stat("Формат CSV", r.output_check?.valid === true ? "Корректен" : r.output_check?.valid === false ? "Ошибка" : "Не проверен", "не оценка ML-качества", "check", true)}</div><div class="usage-row">${usageView(detail.usage)}</div>${warningList(detail.warnings)}${researchView(detail.research || { protocol_version: r.research_protocol_version || 2, stage: r.stage, stages: r.stages, evaluations: r.evaluations, frozen_candidate: r.frozen_candidate }, { status: r.status, reason: r.reason })}<section class="panel"><div class="panel-head"><div><h2>Журнал событий</h2><p>События в порядке выполнения</p></div>${badge(`${number(r.events?.length || 0)} событий`, "gray")}</div><div class="timeline">${r.events?.length ? r.events.map(eventView).join("") : '<p class="event-body">События ещё не записаны.</p>'}</div></section><section class="panel"><div class="panel-head"><div><h2>Код и вывод</h2><p>Файлы выбранного эксперимента</p></div>${experiments.length ? `<label class="sr-only" for="experiment-select">Выбрать эксперимент</label><select id="experiment-select" class="file-select">${experiments.map((value) => `<option value="${value}"${state.experiment === value ? " selected" : ""}>${value === 0 ? "Стартовая модель" : `Эксперимент ${value}`}</option>`).join("")}</select>` : ""}</div><div class="code-tabs" role="tablist" aria-label="Файл эксперимента">${[
         ["code", "Python"],
         ["stdout", "Вывод"],
         ["stderr", "Ошибки"],
@@ -1504,15 +1583,18 @@ function autoSearchView(job) {
   const search = job.search;
   if (!search || !Array.isArray(search.candidates)) return runningJob(job)
     ? `<section class="search-summary"><div class="search-heading"><h3>Подготавливаем автоподбор</h3><span class="badge">Без API</span></div>${searchStages(job)}<p>Выбираем проверку и готовим стартовую модель.</p></section>` : "";
-  const candidates = search.candidates.slice(0, 21),
-    planned = Number.isInteger(search.planned) && search.planned > 0 ? Math.min(search.planned, 21) : candidates.length,
+  // Match the bounded plan accepted by app/search_summary.py, including metric recipes.
+  const candidates = search.candidates.slice(0, 22),
+    planned = Number.isInteger(search.planned) && search.planned > 0 ? Math.min(search.planned, 22) : candidates.length,
     done = candidates.filter((row) => row.status === "completed").length,
     verified = candidates.filter((row) => Number.isFinite(row.metric)).length,
     selectionCount = candidates.filter((row) => Number.isFinite(row.selection_metric)).length,
     expanded = candidates.some((row) => Object.hasOwn(row, "selection_metric")),
     finished = job.status === "completed" && job.output_valid === true,
     best = candidates.find((row) => row.id === search.best_candidate && row.status === "completed" && row.selected === true && Number.isFinite(row.metric)),
-    status = search.status === "time_limit" && finished && best
+    status = search.status === "fallback" && finished && best
+      ? "Поиск прерван; сохранён проверенный результат"
+      : search.status === "time_limit" && finished && best
       ? "Лимит времени · лучший сохранён"
       : search.status === "failed" ? "Автоподбор завершился с ошибкой"
       : finished && best ? "Лучший вариант сохранён" : runningJob(job) ? "Подбираем модель" : "Автоподбор остановлен",
@@ -1578,7 +1660,7 @@ async function loadJobDetail(id, quiet = false) {
     const validMetric = job.metric && Number.isFinite(job.metric.value);
     const stopped = ["cancelled", "interrupted"].includes(job.status);
     $("#job-detail").innerHTML =
-      `<div class="run-detail-header"><div><h2>${esc(jobTitle(job))}</h2><p>${esc(date(job.started_at))} · ${esc(job.author || "Без автора")}</p></div>${statusBadge(job.agent_status === "fallback" ? "fallback" : job.status)}</div>${job.hypothesis ? `<p class="job-hypothesis">${esc(job.hypothesis)}</p>` : ""}<div class="job-stage">${runningJob(job) ? '<span class="spinner"></span>' : icon(job.status === "completed" ? "check" : stopped ? "clock" : "missing")}<span>${esc(job.status === "cancelled" ? "Остановлен пользователем" : job.status === "failed" ? "Запуск завершился с ошибкой" : STAGE_NAMES[job.stage] || "Подготовка")}</span><span style="margin-left:auto">${duration(job.elapsed_seconds)}</span></div>${job.error ? `<div class="warning-box">${esc(job.error)}</div>` : ""}${job.agent_status === "fallback" ? `<div class="warning-box">Резервный CSV · ${esc({ api_error: "ошибка обращения к API", time_limit: "достигнут лимит времени", step_limit: "достигнут лимит шагов", truncated_response: "ответ модели обрезан", host_metric_unsupported: "для этой метрики нет независимой проверки качества", repeated_failures: "повторяющиеся ошибки экспериментов" }[job.agent_reason] || job.agent_reason || "исследование не завершилось штатно")}.</div>` : ""}${autoSearchView(job)}${validMetric ? jobMetricView(job) : job.status === "completed" && job.action === "agent" ? `<div class="info-box">${job.agent_status === "fallback" ? "Сохранён резервный CSV. Исследование не завершилось штатно." : "Процесс Qwen завершён."} Результаты проверки качества и выбора модели смотрите в журнале агента. В сравнение запусков эта метрика пока не включена.</div>` : ""}<div class="job-actions">${currentLocalResult(job) && isFixedRecipe(job.action) ? `<button class="button" data-edit-job="${esc(job.id)}">Изменить настройки</button>` : ""}${runningJob(job) ? `<button class="button danger" data-action="stop-job">Остановить</button>` : ""}${job.status === "completed" && job.output_valid === true ? `<a class="button" href="/api/jobs/${encodeURIComponent(job.id)}/submission${task ? "?task_id=" + encodeURIComponent(task) : ""}" download>${icon("download")} Скачать CSV</a>${job.published ? badge("CSV используется", "green") : `<button class="button primary" data-action="publish-job" data-publish-id="${esc(job.id)}">Использовать CSV</button>`}` : ""}${jobBundleLink(job)}${job.action === "prepare" && job.status === "completed" ? '<button class="button primary" data-action="open-data">Открыть данные</button>' : ""}${job.action === "agent" ? '<button class="button" data-action="inspect-agent">Код агента</button>' : ""}<span class="subtle-text">${job.action === "agent" ? "Qwen · общий API-бюджет" : "Без API"}</span></div>${job.api ? `<div class="usage-row">${usageView(job.api)}</div>` : ""}<section class="panel job-logs"><div class="panel-head"><h2>Журнал запуска</h2><span class="job-log-time" id="job-refresh-time">Обновляется автоматически</span></div><div class="code-tabs" role="tablist" aria-label="Вывод процесса"><button class="code-tab ${state.jobLogKind === "stdout" ? "active" : ""}" data-job-log="stdout" role="tab" aria-selected="${state.jobLogKind === "stdout"}">Вывод</button><button class="code-tab ${state.jobLogKind === "stderr" ? "active" : ""}" data-job-log="stderr" role="tab" aria-selected="${state.jobLogKind === "stderr"}">Ошибки</button></div><pre id="job-log-output" class="code-content" role="tabpanel"></pre><div class="code-footnote">${detail.truncated ? "Показан ограниченный фрагмент журнала" : "Вывод процесса"} · ${esc(job.id?.slice(0, 8) || "")}</div></section>`;
+      `<div class="run-detail-header"><div><h2>${esc(jobTitle(job))}</h2><p>${esc(date(job.started_at))} · ${esc(job.author || "Без автора")}</p></div>${statusBadge(job.agent_status === "fallback" ? "fallback" : job.status)}</div>${job.hypothesis ? `<p class="job-hypothesis">${esc(job.hypothesis)}</p>` : ""}<div class="job-stage">${runningJob(job) ? '<span class="spinner"></span>' : icon(job.status === "completed" ? "check" : stopped ? "clock" : "missing")}<span>${esc(job.status === "cancelled" ? "Остановлен пользователем" : job.status === "failed" ? "Запуск завершился с ошибкой" : STAGE_NAMES[job.stage] || "Подготовка")}</span><span style="margin-left:auto">${duration(job.elapsed_seconds)}</span></div>${job.error ? `<div class="warning-box">${esc(job.error)}</div>` : ""}${job.action === "agent" ? researchView(job.research, { status: job.agent_status, imported: job.source === "imported" }) : ""}${autoSearchView(job)}${validMetric ? jobMetricView(job) : job.status === "completed" && job.action === "agent" ? `<div class="info-box">${job.agent_status === "fallback" ? "Сохранён резервный CSV. Исследование не завершилось штатно." : "Процесс Qwen завершён."} Результаты проверки качества и выбора модели смотрите в журнале агента. В сравнение запусков эта метрика пока не включена.</div>` : ""}<div class="job-actions">${currentLocalResult(job) && isFixedRecipe(job.action) ? `<button class="button" data-edit-job="${esc(job.id)}">Изменить настройки</button>` : ""}${runningJob(job) ? `<button class="button danger" data-action="stop-job">Остановить</button>` : ""}${job.status === "completed" && job.output_valid === true ? `<a class="button" href="/api/jobs/${encodeURIComponent(job.id)}/submission${task ? "?task_id=" + encodeURIComponent(task) : ""}" download>${icon("download")} Скачать CSV</a>${job.published ? badge("CSV используется", "green") : `<button class="button primary" data-action="publish-job" data-publish-id="${esc(job.id)}">Использовать CSV</button>`}` : ""}${jobBundleLink(job)}${job.action === "prepare" && job.status === "completed" ? '<button class="button primary" data-action="open-data">Открыть данные</button>' : ""}${job.action === "agent" ? '<button class="button" data-action="inspect-agent">Код агента</button>' : ""}<span class="subtle-text">${job.action === "agent" ? "Qwen · общий API-бюджет" : "Без API"}</span></div>${job.api ? `<div class="usage-row">${usageView(job.api)}</div>` : ""}<section class="panel job-logs"><div class="panel-head"><h2>Журнал запуска</h2><span class="job-log-time" id="job-refresh-time">Обновляется автоматически</span></div><div class="code-tabs" role="tablist" aria-label="Вывод процесса"><button class="code-tab ${state.jobLogKind === "stdout" ? "active" : ""}" data-job-log="stdout" role="tab" aria-selected="${state.jobLogKind === "stdout"}">Вывод</button><button class="code-tab ${state.jobLogKind === "stderr" ? "active" : ""}" data-job-log="stderr" role="tab" aria-selected="${state.jobLogKind === "stderr"}">Ошибки</button></div><pre id="job-log-output" class="code-content" role="tabpanel"></pre><div class="code-footnote">${detail.truncated ? "Показан ограниченный фрагмент журнала" : "Вывод процесса"} · ${esc(job.id?.slice(0, 8) || "")}</div></section>`;
     renderJobLog();
     if (scroll) {
       $("#job-log-output").scrollTop = scroll.top;
@@ -1953,7 +2035,7 @@ function comparisonWinners(reports) {
 }
 function experimentsPanel(reports) {
   const { winners, groupCount } = comparisonWinners(reports);
-  return `<section class="panel" id="experiment-history"><div class="panel-head result-history-head"><div><h2>Эксперименты команды</h2><p>Метрики, гипотезы и авторы</p></div><div class="action-buttons"><button class="button small" data-launch="automl">Автоподбор</button></div></div>${reports.length ? `<div class="table-wrap experiment-table"><table aria-label="Результаты экспериментов"><thead><tr><th scope="col">Модель и гипотеза</th><th scope="col">Метрика</th><th scope="col">Проверка</th><th scope="col">Автор</th><th scope="col">Время / статус</th><th scope="col">Результат</th></tr></thead><tbody>${reports.map((r) => `<tr class="${r.source === "imported" ? "experiment-row-imported" : winners.has(r.id) ? "experiment-row-best" : ""}"><td><span class="model-name">${esc(jobTitle(r))}<small>${esc(r.model || "")}</small></span>${modelParameterView(r, true)}<span class="report-hypothesis">${esc(r.hypothesis || "Гипотеза не указана")}</span><span class="report-source ${r.source === "imported" ? "source-imported" : ""}">${r.source === "imported" ? "От участника · не проверено локально" : "На этом компьютере"}</span>${r.dataset_fingerprint && state.currentDatasetFingerprint && r.dataset_fingerprint !== state.currentDatasetFingerprint ? badge("Другая версия данных", "amber") : ""}</td><td class="metric-cell">${r.metric && Number.isFinite(r.metric.value) ? number(r.metric.value, 6) : "—"}<small>${esc(r.metric?.name || "Нет метрики")}</small>${winners.has(r.id) ? badge("Лучший в группе", "green") : ""}</td><td class="validation-cell">${validationView(r, true)}</td><td>${esc(r.author || "Не указан")}</td><td>${duration(r.elapsed_seconds)}<br>${statusBadge(r.agent_status === "fallback" ? "fallback" : r.status)}</td><td>${r.source === "local" && r.status === "completed" && r.output_valid === true && r.dataset_fingerprint === state.currentDatasetFingerprint ? `<div class="result-row-actions">${r.published ? badge("CSV используется", "green") : `<button class="button small" data-action="publish-job" data-publish-id="${esc(r.id)}">Использовать CSV</button>`}${jobBundleLink(r, "CSV и отчёт ZIP", true)}${isFixedRecipe(r.action) ? `<button class="button small" data-edit-job="${esc(r.id)}">Изменить настройки</button>` : ""}</div>` : r.source === "imported" ? '<span class="subtle-text">Только отчёт</span>' : '<span class="subtle-text">—</span>'}</td></tr>`).join("")}</tbody></table></div><div class="comparison-note">${groupCount ? `${groupCount} групп сравнения: одна задача, схема, метрика и одинаковые проверочные строки.` : "Пока нет пары локальных результатов с одинаковой схемой проверки."} Метрики разных схем не ранжируются вместе.</div>` : '<div class="job-empty"><p>Запустите автоподбор — появятся первая метрика и лучший вариант.</p><button class="button primary" data-launch="automl">Автоподбор</button></div>'}</section>`;
+  return `<section class="panel" id="experiment-history"><div class="panel-head result-history-head"><div><h2>Эксперименты команды</h2><p>Метрики, гипотезы и авторы</p></div><div class="action-buttons"><button class="button small" data-launch="automl">Автоподбор</button></div></div>${reports.length ? `<div class="table-wrap experiment-table"><table aria-label="Результаты экспериментов"><thead><tr><th scope="col">Модель и гипотеза</th><th scope="col">Метрика</th><th scope="col">Проверка</th><th scope="col">Автор</th><th scope="col">Время / статус</th><th scope="col">Результат</th></tr></thead><tbody>${reports.map((r) => `<tr class="${r.source === "imported" ? "experiment-row-imported" : winners.has(r.id) ? "experiment-row-best" : ""}"><td><span class="model-name">${esc(jobTitle(r))}<small>${esc(r.model || "")}</small></span>${modelParameterView(r, true)}<span class="report-hypothesis">${esc(r.hypothesis || "Гипотеза не указана")}</span><span class="report-source ${r.source === "imported" ? "source-imported" : ""}">${r.source === "imported" ? "От участника · не проверено локально" : "На этом компьютере"}</span>${r.action === "agent" ? researchProvenance(r.research, r.source === "imported") : ""}${r.dataset_fingerprint && state.currentDatasetFingerprint && r.dataset_fingerprint !== state.currentDatasetFingerprint ? badge("Другая версия данных", "amber") : ""}</td><td class="metric-cell">${r.metric && Number.isFinite(r.metric.value) ? number(r.metric.value, 6) : "—"}<small>${esc(r.metric?.name || "Нет метрики")}</small>${winners.has(r.id) ? badge("Лучший в группе", "green") : ""}</td><td class="validation-cell">${validationView(r, true)}</td><td>${esc(r.author || "Не указан")}</td><td>${duration(r.elapsed_seconds)}<br>${statusBadge(r.agent_status === "fallback" ? "fallback" : r.status)}</td><td>${r.source === "local" && r.status === "completed" && r.output_valid === true && r.dataset_fingerprint === state.currentDatasetFingerprint ? `<div class="result-row-actions">${r.published ? badge("CSV используется", "green") : `<button class="button small" data-action="publish-job" data-publish-id="${esc(r.id)}">Использовать CSV</button>`}${jobBundleLink(r, "CSV и отчёт ZIP", true)}${isFixedRecipe(r.action) ? `<button class="button small" data-edit-job="${esc(r.id)}">Изменить настройки</button>` : ""}</div>` : r.source === "imported" ? '<span class="subtle-text">Только отчёт</span>' : '<span class="subtle-text">—</span>'}</td></tr>`).join("")}</tbody></table></div><div class="comparison-note">${groupCount ? `${groupCount} групп сравнения: одна задача, схема, метрика и одинаковые проверочные строки.` : "Пока нет пары локальных результатов с одинаковой схемой проверки."} Метрики разных схем не ранжируются вместе.</div>` : '<div class="job-empty"><p>Запустите автоподбор — появятся первая метрика и лучший вариант.</p><button class="button primary" data-launch="automl">Автоподбор</button></div>'}</section>`;
 }
 function downloadsPanel() {
   return `<section class="panel downloads-panel"><div class="panel-head"><div><h2>Выгрузить по кнопке</h2><p>Выберите, кому нужен результат</p></div>${icon("download")}</div><div class="download-options"><div class="download-option"><span class="download-kind">КОМАНДЕ</span><h3>Отчёт об экспериментах</h3><p>Метрики, авторы и заметки. Можно добавить JSON или ZIP-пакет коллеги.</p><div class="action-buttons"><a class="button" href="${apiBase()}/export" download>${icon("download")} Скачать отчёт JSON</a><button class="button" data-action="import-reports">Добавить отчёт коллеги</button></div></div><div class="download-option"><span class="download-kind">НА ХАКАТОН</span><h3>Архив с агентом</h3><p>Код решения для сдачи. Данные и ключи в архив не входят.</p><button class="button primary" data-action="build-delivery" ${state.deliveryBusy ? "disabled" : ""}>${state.deliveryBusy ? '<span class="spinner"></span> Собираем…' : `${icon("download")} Собрать solution.zip`}</button></div></div></section>`;
