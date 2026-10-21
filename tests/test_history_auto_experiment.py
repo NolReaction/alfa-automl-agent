@@ -169,7 +169,8 @@ class HistoryAutoExperimentTests(unittest.TestCase):
             self.assertEqual(list(frame.columns), discovery["feature_columns"])
             self.assertEqual(len(frame), discovery["fit_rows"])
             for name in ("fit_features.csv", "request.json", "discovery.json", "execution/experiment_000.py"):
-                self.assertTrue(any(path.endswith("history_discovery/" + name) for path in verified["artifacts"]))
+                self.assertTrue(any(Path(path).as_posix().endswith("history_discovery/" + name)
+                                    for path in verified["artifacts"]))
 
     def test_no_coverage_abstains_and_iid_skips_with_valid_normal_outputs(self):
         output = self.prepare(history_mode="auto")
