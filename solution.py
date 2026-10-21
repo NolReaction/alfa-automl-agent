@@ -75,11 +75,12 @@ def _remaining(deadline: float) -> float:
 
 
 def _offline_solution(task_path, *, deadline, validation, quality_options):
-    if quality_options.get("history_config") is not None or quality_options.get("history_auto"):
+    if (quality_options.get("history_config") is not None or quality_options.get("history_auto")
+            or quality_options.get("adaptive_search")):
         # History uses the same v3 INNER/outer/refit protocol as LLM
         # research, with no client construction or paid requests.
         if validation != {"strategy": "auto"}:
-            raise ValueError("Explicit history uses v3 auto validation; validation overrides are unavailable.")
+            raise ValueError("Host-local research uses v3 auto validation; validation overrides are unavailable.")
         directory = run_agent(task_path, None, time_budget=_remaining(deadline),
                               local_only=True, **quality_options)
         print(f"Host-local research report: {directory / 'run.json'}. API calls: 0.")
@@ -140,6 +141,9 @@ def main() -> int:
                         help="Seconds; default 10500 in every mode; maximum 10500")
     parser.add_argument("--search-profile", choices=("legacy", "strong_v1"), default="legacy",
                         help="CPU search plan; strong_v1 is an experimental deeper boosting plan")
+    parser.add_argument("--research-search", choices=("adaptive", "legacy"), default="adaptive",
+                        help="adaptive (default): use spare long-run CPU time for measured local research; "
+                             "legacy keeps the original finite search; budgets <=300s retain short-run behavior")
     parser.add_argument("--validation", choices=("auto", "random", "grouped", "time"), default=None,
                         help="Offline holdout strategy; defaults to auto")
     parser.add_argument("--time-column", help="Numeric period feature for --validation time")
@@ -202,6 +206,18 @@ def main() -> int:
         task_path = Path(args.task)
         if not task_path.is_file():
             raise FileNotFoundError(f"Task file not found: {task_path}")
+        if (args.research_search == "adaptive" and time_budget > 300
+                and args.validation in {None, "auto"} and args.time_column is None):
+            from agent.task_contract import parse_task_metric
+
+            try:
+                parse_task_metric(task_path.read_text(encoding="utf-8-sig"))
+            except ValueError as error:
+                if "Unsupported or unrecognized primary metric" not in str(error):
+                    raise
+                print("Adaptive search unavailable for this metric; retaining the legacy solver.", flush=True)
+            else:
+                quality_options["adaptive_search"] = True
         deadline = time.monotonic() + time_budget
         checkpoint = _prepare_emergency(task_path, deadline)
         # Hold a small part of the same deadline for checking and restoring a

@@ -16,6 +16,7 @@ STAGE_ORDER = ("baseline_outer", "candidate_outer", "baseline_refit", "candidate
 SAFETY_FACTOR = 1.5
 MAX_ROW_SCALE = 16.0
 MAX_RECENT_MEASUREMENTS = 4
+ADAPTIVE_RESERVE_MIN_BUDGET = 300.0
 
 
 def _number(value, name, *, positive=False):
@@ -58,12 +59,16 @@ class FinalizationEstimate:
 
 
 class BudgetPolicy:
-    def __init__(self, time_budget_seconds, *, started=None, clock=time.monotonic):
+    def __init__(self, time_budget_seconds, *, started=None, clock=time.monotonic,
+                 adaptive_reserve=False):
         self.time_budget_seconds = _number(time_budget_seconds, "time_budget_seconds", positive=True)
         if self.time_budget_seconds > 10500:
             raise ValueError("Research budget cannot exceed 10500 seconds")
         if not callable(clock):
             raise ValueError("clock must be callable")
+        if type(adaptive_reserve) is not bool:
+            raise ValueError("adaptive_reserve must be a boolean")
+        self.adaptive_reserve = adaptive_reserve
         self._clock = clock
         now = _number(clock(), "clock")
         self.started = now if started is None else _number(started, "started")
@@ -152,12 +157,28 @@ class BudgetPolicy:
                 stages[stage], details[stage] = self._estimate(key, fitting, predicting, default)
         stages = {stage: stages[stage] for stage in STAGE_ORDER if stage in stages}
         estimated = sum(stages.values()) + self.publication_buffer
-        reserve = min(self.time_budget_seconds, max(self.minimum_final_reserve, estimated))
-        return FinalizationEstimate(stages, estimated, reserve, {
+        reserve_floor = self.minimum_final_reserve
+        reserve_policy = "fixed_fraction"
+        # Release the large discovery-stage floor only after every pending
+        # recipe has its OWN completed host measurement. Unknown candidates
+        # never inherit the recovery baseline's cheap timing. Short smoke
+        # budgets deliberately retain the historical conservative allocation.
+        if (self.adaptive_reserve and self.time_budget_seconds > ADAPTIVE_RESERVE_MIN_BUDGET
+                and baseline_key is not None and details
+                and all(item["basis"] == "host_measurement_row_heuristic" for item in details.values())):
+            reserve_floor = min(reserve_floor, max(15.0, min(120.0, self.time_budget_seconds * .02)))
+            reserve_policy = "measured_pending_recipes"
+        reserve = min(self.time_budget_seconds, max(reserve_floor, estimated))
+        diagnostics = {
             "kind": "heuristic", "guaranteed": False, "safety_factor": SAFETY_FACTOR,
             "row_scale_limit": MAX_ROW_SCALE, "stage_estimates": details,
             "fits_original_budget_estimate": estimated <= self.time_budget_seconds,
-        }, self.deadline, self._generation)
+        }
+        if self.adaptive_reserve:
+            diagnostics.update(reserve_policy=reserve_policy,
+                               minimum_reserve_applied_seconds=reserve_floor)
+        return FinalizationEstimate(stages, estimated, reserve, diagnostics,
+                                    self.deadline, self._generation)
 
     def estimate_trial_cost(self, recipe_key, fit_rows, predict_rows):
         """Host-timing estimate for admitting a complete paired inner round."""
@@ -249,6 +270,9 @@ class BudgetPolicy:
                       "fit_rows": item.fit_rows, "predict_rows": item.predict_rows,
                       "at_seconds": item.measured_at - self.started} for item in values]
                       for key, values in self._measurements.items()}}
+        if self.adaptive_reserve:
+            result.update(adaptive_reserve=True,
+                          elapsed_seconds=max(0.0, self.time_budget_seconds - result["remaining_seconds"]))
         if estimate is not None:
             result.update(estimated_finalization_seconds=estimate.estimated_seconds,
                           final_reserve_seconds=estimate.reserve_seconds,
