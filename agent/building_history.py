@@ -51,6 +51,46 @@ def numeric_value(value) -> Decimal | None:
     return number if number.is_finite() else None
 
 
+def period_json(value: Decimal | int) -> int | str:
+    """JSON form of an exact numeric period (Decimal or int), never a binary float.
+
+    An integral period becomes a JSON integer of any size ("5", "5.0" and "5E0" all give 5); any other period becomes
+    its plain decimal text without trailing zeros ("2.50" gives "2.5"). Reading a period back: int, or Decimal(text).
+    """
+    value = Decimal(value)
+    if value == value.to_integral_value():
+        return int(value)
+    return format(value.normalize(), "f")
+
+
+def _add_exact(partials: list, value: float) -> None:
+    """Add value to non-overlapping float partials (Shewchuk), keeping their sum exact.
+
+    math.fsum(partials) is then the exact running total rounded once, the same number math.fsum gives for all values
+    added so far, in O(len(partials)) instead of O(number of values). The list stays short for finite floats.
+    """
+    index = 0
+    for other in partials:
+        if abs(value) < abs(other):
+            value, other = other, value
+        high = value + other
+        if not math.isfinite(high):
+            raise ValueError("History target sums overflow the float range")
+        low = other - (high - value)
+        if low:
+            partials[index] = low
+            index += 1
+        value = high
+    partials[index:] = [value]
+
+
+def _rounded(partials: list) -> float:
+    try:
+        return math.fsum(partials)
+    except OverflowError as error:
+        raise ValueError("History target sums overflow the float range") from error
+
+
 def history_keys(X: pd.DataFrame, key_columns, numeric_columns=(), positive_columns=(), *, allow_missing=False) -> list:
     """Structured, exact keys shared by the encoder and the diagnostic checker.
 
@@ -123,17 +163,19 @@ class HistoryEncoder:
                 per_period[(key, period)].append(answer)
         per_key = defaultdict(list)
         for (key, period), values in per_period.items():
-            per_key[key].append((period, math.fsum(values), len(values)))
+            per_key[key].append((period, _rounded(values), len(values)))
         past = {}
         for key, rows in per_key.items():
             rows.sort()
-            entry, sums, count, repeated = _Past([], [], [], []), [], 0, False
+            entry, partials, count, repeated = _Past([], [], [], []), [], 0, False
             for period, total, size in rows:
-                sums.append(total)
+                # Running exact sum of the period totals: the same value as math.fsum over all earlier totals, in
+                # linear instead of quadratic time for a key with a long history.
+                _add_exact(partials, total)
                 count += size
                 repeated = repeated or size > 1
                 entry.periods.append(period)
-                entry.sums.append(math.fsum(sums))
+                entry.sums.append(_rounded(partials))
                 entry.rows.append(count)
                 entry.ambiguous.append(repeated)
             past[key] = entry

@@ -289,6 +289,49 @@ class ContractTests(unittest.TestCase):
                 HistoryEncoder(**kwargs)
 
 
+class RunningSumTests(unittest.TestCase):
+    @staticmethod
+    def long_history(periods: int, values) -> tuple[pd.DataFrame, list]:
+        return rows(*[(period, 100.0) for period in range(1, periods + 1)]), list(values)
+
+    def test_long_history_of_one_key_needs_linear_summation_work(self):
+        periods = 2000
+        X, y = self.long_history(periods, np.linspace(1.0, 2.0, periods))
+        summed = []
+        real_fsum = math.fsum
+
+        def counting_fsum(values):
+            values = list(values)
+            summed.append(len(values))
+            return real_fsum(values)
+
+        with mock.patch("agent.building_history.math.fsum", counting_fsum):
+            encoder().fit(X, y)
+
+        self.assertLess(sum(summed), 10 * periods)  # the old prefix fsum added periods * (periods + 1) / 2 numbers
+
+    def test_running_sum_equals_fsum_of_all_earlier_period_totals_bit_for_bit(self):
+        rng = np.random.default_rng(3)
+        values = rng.choice([1e16, -1e16, 1.0, 1e-8, 3.3, -7.25e15], size=400) * rng.uniform(0.5, 1.5, 400)
+        X, y = self.long_history(400, values)
+
+        result = encoder().fit_transform(X, y)
+
+        expected = [math.nan] + [math.fsum(values[:i]) / i for i in range(1, 400)]
+        np.testing.assert_array_equal(result["history_mean"].to_numpy(), np.asarray(expected))
+        naive = np.cumsum(values)[:-1] / np.arange(1, 400)
+        self.assertGreater(np.max(np.abs(naive - np.asarray(expected[1:]))), 0)  # plain float summation drifts here
+
+    def test_sums_that_overflow_are_a_clear_error_and_never_infinite_features(self):
+        for y in ([1.5e308, 1.5e308], [-1.7e308, -1.7e308]):
+            with self.subTest(y=y), self.assertRaisesRegex(ValueError, "overflow"):
+                encoder().fit(rows((1, 100.0), (2, 100.0)), y)
+        with self.assertRaisesRegex(ValueError, "overflow"):  # two rows of one period overflow as well
+            encoder().fit(rows((1, 100.0), (1, 100.0)), [1.5e308, 1.5e308])
+        result = encoder().fit_transform(rows((1, 100.0), (2, 100.0), (3, 100.0)), [1.5e308, -1.5e308, 0.0])
+        self.assertTrue(np.isfinite(result["history_mean"].iloc[1:]).all())  # large finite values that cancel are fine
+
+
 class SyntheticCycleTests(unittest.TestCase):
     def test_encoder_to_model_to_validation_with_known_history(self):
         from sklearn.ensemble import HistGradientBoostingRegressor
