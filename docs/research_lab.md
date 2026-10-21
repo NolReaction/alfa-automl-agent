@@ -15,6 +15,8 @@ Both checkouts must be clean. `prepare` checks the exact commits, sources, selec
 
 The default pilot is **four pairs / eight arms**, one seed (`1729`), 360 seconds per arm, eight computation threads and a configured child-tree RSS budget of 24 GiB. The suite defaults to seeds `1729, 1730`. The requested PC is Windows 10, i9-10900KF, 32 GB RAM, RTX 3080. Those are intended workstation specifications, not an assertion about the host on which a report was generated. The recorded environment and hardware describe each actual plan.
 
+Pilot accepts exactly one seed; use `suite` for a multi-seed plan. The frozen CPU solvers internally use eight threads, so executable CPU plans require `--threads 8`; smaller values are rejected before any work is prepared.
+
 The worker deadline starts before imports and covers startup, prior/fallback, preprocessing, model search, INNER, outer, full refit, publication and evidence. Only the remaining original deadline reaches the native CLI. The adaptive coordinator must retain more than 300 seconds after imports for a pilot arm; a 20-second fixture cannot establish this path. Native search defaults and queues stay unchanged. Cleanup is measured separately with a 20-second planning allowance per arm; the allowance is not extra training time.
 
 ## Reuse and ownership

@@ -23,7 +23,8 @@ INPUTS = ("task.md", "inputs/train.csv", "inputs/test.csv", "inputs/data_diction
 def estimate(profile="pilot", *, manifest=ROOT / "research_lab/datasets.json", cache=None,
              time_budget_seconds=360, seeds=None, threads=8, memory_gib=24):
     require(profile in {"pilot", "suite", "confirmation", "final", "fixture-smoke"}, "Unknown execution profile")
-    require(type(threads) is int and 1 <= threads <= 8, "threads must be 1..8")
+    require(type(threads) is int and threads == 8,
+            "Frozen native CPU solvers require exactly 8 threads")
     require(type(time_budget_seconds) is int and 1 <= time_budget_seconds <= 10500, "Invalid time budget")
     catalog = load_manifest(manifest)
     records = [] if profile == "fixture-smoke" else select_records(catalog, "suite" if profile == "final" else profile)
@@ -32,6 +33,8 @@ def estimate(profile="pilot", *, manifest=ROOT / "research_lab/datasets.json", c
     count = 1 if profile == "fixture-smoke" else len(records)
     seeds = list(seeds) if seeds is not None else ([1729] if profile in {"pilot", "final", "fixture-smoke"} else [1729, 1730])
     require(seeds and len(set(seeds)) == len(seeds) and all(type(s) is int and 0 <= s < 2**32 for s in seeds), "Invalid seeds")
+    require(profile != "pilot" or len(seeds) == 1,
+            "Pilot requires exactly one seed for its frozen four-pair denominator; use suite for multiple seeds")
     arms = count * len(seeds) * 2
     cache_bytes, missing = 0, []
     for record in records:

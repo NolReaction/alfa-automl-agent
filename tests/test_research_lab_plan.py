@@ -23,6 +23,16 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(pilot["direct_rental_cost"], 0)
         self.assertIsNone(pilot["electricity_cost"])
 
+    def test_pilot_rejects_multiple_seeds_before_source_preflight(self):
+        with self.assertRaisesRegex(ValueError, "exactly one seed"):
+            planning.estimate("pilot", seeds=[1729, 1730])
+        self.assertEqual(planning.estimate("pilot", seeds=[1730])["arms"], 8)
+
+    def test_cpu_plan_rejects_thread_caps_the_frozen_solver_overrides(self):
+        for threads in (1, 4, 7):
+            with self.subTest(threads=threads), self.assertRaisesRegex(ValueError, "exactly 8 threads"):
+                planning.estimate(threads=threads)
+
     def test_sanitized_worker_environment(self):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "secret", "HTTPS_PROXY": "secret-proxy", "PYTHONPATH": "/developer"}):
             env = sanitized_environment(4)

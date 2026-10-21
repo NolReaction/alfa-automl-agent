@@ -279,7 +279,6 @@ class ResearchLabRunnerTests(unittest.TestCase):
         original_environment = trusted.sanitized_environment
 
         def stop(owned):
-            time.sleep(.01)
             return {"complete": None}
 
         def run(*args):
@@ -295,9 +294,14 @@ class ResearchLabRunnerTests(unittest.TestCase):
         monkeypatch.setenv("PYTHONPATH", "not-an-import-path")
         monkeypatch.setattr(trusted._OwnedProcesses, "stop", stop)
         monkeypatch.setattr(trusted, "run_solver", run)
+        # Exact binary fractions avoid OS timer granularity and scheduler jitter.
+        clock = iter((100.0, 100.125, 100.25, 100.375, 100.5))
+        monkeypatch.setattr(time, "monotonic", lambda: next(clock))
         result = supervise(["python"], tmp_path, tmp_path / "logs", 10, 24 * 1024**3, threads=3)
-        self.assertTrue(result["cleanup_elapsed_seconds"] >= .01)
-        self.assertTrue(result["worker_wall_seconds"] < result["elapsed_seconds"])
+        self.assertEqual(result["owned_stop_elapsed_seconds"], .125)
+        self.assertEqual(result["cleanup_elapsed_seconds"], .25)
+        self.assertEqual(result["worker_wall_seconds"], .25)
+        self.assertEqual(result["supervisor_elapsed_seconds"], .5)
         self.assertTrue(result["cleanup"]["complete"] is None)
         self.assertTrue(trusted.sanitized_environment is original_environment)
         self.assertTrue(trusted._OwnedProcesses.stop is stop)
