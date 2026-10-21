@@ -60,7 +60,10 @@ def period_json(value: Decimal | int) -> int | str:
     value = Decimal(value)
     if value == value.to_integral_value():
         return int(value)
-    return format(value.normalize(), "f")
+    # normalize() rounds to the active Decimal context before formatting.
+    # Formatting the original value is exact; only fractional zeros are removed
+    # here because integral values have already taken the integer branch.
+    return format(value, "f").rstrip("0").rstrip(".")
 
 
 def _add_exact(partials: list, value: float) -> None:

@@ -172,6 +172,24 @@ class ExportTests(unittest.TestCase):
         self.assertNotIn("<img ", html)
         self.assertIn("&lt;img src=x onerror=&quot;evil()&quot;&gt;", html)
 
+    def test_readable_report_shows_quality_options_for_individual_and_blend_components(self):
+        recipe = make_model_config("baseline", "regression", objective="mae", target_transform="log1p")
+        report = {"id": "a" * 32, "action": "baseline", "dataset_fingerprint": "b" * 64,
+                  "metric": None, "model_config": recipe}
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("Целевая функция: MAE", html)
+        self.assertIn("Преобразование цели: log1p (обратное преобразование expm1)", html)
+        report["action"] = "automl"
+        report["model_config"] = {"model": "FixedBlend", "parameters": {"weight": 0.5,
+                                 "components": [recipe, make_model_config("linear", "regression")]}}
+        html = _readable_report(report).decode("utf-8")
+        self.assertIn("HistGradientBoostingRegressor (Целевая функция: MAE; Преобразование цели: log1p", html)
+        self.assertIn(" + Ridge", html)
+        recipe["target_transform"] = '<img src=x onerror="evil()">'
+        html = _readable_report(report).decode("utf-8")
+        self.assertNotIn("<img ", html)
+        self.assertIn("&lt;img src=x onerror=&quot;evil()&quot;&gt;", html)
+
     def test_automl_report_shows_attempts_winner_and_escapes_text(self):
         search = search_summary(status="time_limit")
         search["validation_reason"] = "<script>validation</script>"

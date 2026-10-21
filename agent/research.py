@@ -1,4 +1,4 @@
-"""LLM research with an isolated workspace and independently checked best output."""
+"""Shared research accounting, explicit legacy v2 and default v3 dispatch."""
 
 from __future__ import annotations
 
@@ -98,6 +98,7 @@ class RunState:
         self.work_data = None
         self.ledger = ResearchLedger()
         self.report = {
+            "research_protocol_version": 2,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "task": str(task_path), "model": get_model(),
             "max_steps": max_steps, "time_budget_seconds": time_budget,
@@ -378,7 +379,7 @@ def starting_context(state: RunState) -> str:
     return state.redact(context)
 
 
-def run_agent(task_path: Path, client, *, max_steps: int = 12,
+def run_agent_v2(task_path: Path, client, *, max_steps: int = 12,
               time_budget: float = 10500) -> Path:
     task_path = task_path.resolve()
     state = RunState(task_path, max_steps, time_budget)
@@ -467,6 +468,10 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
                     else:
                         result["selection"] = {"accepted": False, "verified": False,
                                                "reason": "execution_failed"}
+                    # Reject changes to the original task outside candidate-error
+                    # handling: a corrupted source cannot be recovered as a
+                    # merely unsuccessful experiment.
+                    state.check_source()
                     # The task-level file always contains accepted bytes, even if
                     # generated code attempted to write through an absolute path.
                     if state.backup.is_file():
@@ -509,3 +514,25 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
         state.save()
         state.recover()
         raise
+
+
+def run_agent(task_path: Path, client, *, max_steps: int = 12,
+              time_budget: float = 10500, stability_splits=1, metric_recipes=False,
+              search_profile="legacy") -> Path:
+    """Default to v3; retain the explicitly unverified legacy unknown-metric route."""
+    from agent.task_contract import parse_task_metric
+
+    try:
+        parse_task_metric(Path(task_path).read_text(encoding="utf-8-sig"))
+    except ValueError as error:
+        if "Unsupported or unrecognized primary metric" not in str(error):
+            raise
+        if stability_splits != 1 or metric_recipes or search_profile != "legacy":
+            raise ValueError("Quality experiment options require a supported task metric") from error
+        return run_agent_v2(task_path, client, max_steps=max_steps, time_budget=time_budget)
+    from agent.research_v3 import run_agent_v3
+
+    options = {"stability_splits": stability_splits, "metric_recipes": metric_recipes}
+    if search_profile != "legacy":
+        options["search_profile"] = search_profile
+    return run_agent_v3(task_path, client, max_steps=max_steps, time_budget=time_budget, **options)

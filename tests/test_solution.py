@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import solution
+from agent.research import run_agent_v2
 
 
 class FakeCall:
@@ -97,6 +98,8 @@ class ExecutionTests(unittest.TestCase):
 
 
 class AgentTests(unittest.TestCase):
+    """Keep the legacy unknown-metric contract covered explicitly."""
+
     def make_task(self, root):
         folder = root / "inputs"
         folder.mkdir()
@@ -124,7 +127,7 @@ class AgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task = self.make_task(Path(directory))
             with patch.dict(os.environ, {"OPENAI_MODEL": "provided-test-model"}):
-                logs = solution.run_agent(task, client, max_steps=3, time_budget=30)
+                logs = run_agent_v2(task, client, max_steps=3, time_budget=30)
             self.assertEqual((task.parent / "submission.csv").read_text(encoding="utf-8"), "id,y\n1,2\n")
             failure = json.loads(next(item["content"] for item in reversed(client.received_messages[1])
                                       if item["role"] == "tool"))
@@ -146,7 +149,7 @@ class AgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task = self.make_task(Path(directory))
             with patch.dict(os.environ, {"OPENAI_MODEL": "provided-test-model"}):
-                solution.run_agent(task, client, max_steps=1, time_budget=30)
+                run_agent_v2(task, client, max_steps=1, time_budget=30)
             self.assertTrue((task.parent / "submission.csv").is_file())
 
     def test_model_saying_done_without_predictions_does_not_count_as_success(self):
@@ -155,7 +158,7 @@ class AgentTests(unittest.TestCase):
             task = self.make_task(Path(directory))
             with patch.dict(os.environ, {"OPENAI_MODEL": "provided-test-model"}):
                 with self.assertRaisesRegex(RuntimeError, "Step limit"):
-                    solution.run_agent(task, client, max_steps=1, time_budget=30)
+                    run_agent_v2(task, client, max_steps=1, time_budget=30)
 
 
 if __name__ == "__main__":

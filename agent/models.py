@@ -22,6 +22,7 @@ from sklearn.utils.validation import check_is_fitted
 
 from agent.features import FeatureTransformer, feature_schema, normalize_feature_config
 from agent.model_config import make_model_config, validate_model_config
+from agent.target_transform import Log1pTargetRegressor
 from offline_baseline import SEED, make_pipeline, prepare_features
 
 
@@ -210,9 +211,16 @@ def build_pipeline(action, task_type, numeric, categorical, model_config=None, f
     options = normalize_feature_config(feature_config)
     output_numeric, output_categorical = feature_schema(numeric, categorical, options)
     classification = task_type == "classification"
-    parameters = config["parameters"]
+    parameters = dict(config["parameters"])
+    if config.get("objective") == "mae":
+        name, value = {"baseline": ("loss", "absolute_error"),
+                       "catboost": ("loss_function", "MAE"),
+                       "lightgbm": ("objective", "regression_l1")}[action]
+        parameters[name] = value
 
     def finish(pipeline):
+        if config.get("target_transform") == "log1p":
+            pipeline.set_params(model=Log1pTargetRegressor(pipeline.named_steps["model"]))
         # Pipeline calls fit_transform(X, y) on training rows and transform(X)
         # for validation/test; the history component therefore receives no
         # validation answers. It must precede numeric coercion of entity keys.
@@ -225,7 +233,7 @@ def build_pipeline(action, task_type, numeric, categorical, model_config=None, f
             pipeline.set_params(model=constructor(random_state=SEED, n_jobs=THREADS))
         pipeline.named_steps["model"].set_params(**parameters)
         if history is None and options == normalize_feature_config():
-            return Pipeline([("features", _LegacyInputCleaner(numeric, categorical)), *pipeline.steps])
+            return finish(Pipeline([("features", _LegacyInputCleaner(numeric, categorical)), *pipeline.steps]))
         return finish(Pipeline([
             ("features", FeatureTransformer(numeric, categorical, options)),
             ("prepare", _encoded_preparation(output_numeric, output_categorical)),

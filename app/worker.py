@@ -31,7 +31,7 @@ from agent.diagnostics import classification_diagnostics, validate_classificatio
 from agent.models import build_pipeline, predict_for_metric
 from agent.task_spec import load_task, load_task_data, score_holdout
 from app.file_io import replace_file
-from app.model_config import make_model_config, winner_feature_evidence
+from app.model_config import make_model_config, model_task_type, validate_model_config, winner_feature_evidence
 from app.splits import normalize_validation, split_rows
 from offline_baseline import (
     SEED, find_data, prepare_features,
@@ -98,14 +98,16 @@ def load_config(config_path: Path) -> dict:
     config = json.loads(raw.decode("utf-8-sig"))
     required = {"job_dir", "task_path", "action", "dataset_fingerprint"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"validation", "model_params", "time_budget"}):
+            or set(config) - required - {"validation", "model_params", "model_config", "time_budget"}):
         raise ValueError("Некорректные настройки запуска.")
     if any(not isinstance(config[key], str) for key in required):
         raise ValueError("Настройки запуска должны содержать строковые значения.")
     if config["action"] not in ACTIONS:
         raise ValueError("Неизвестный рецепт обучения.")
+    if "model_params" in config and "model_config" in config:
+        raise ValueError("Передайте model_params или model_config, но не оба поля.")
     if config["action"] == "automl":
-        if "model_params" in config:
+        if "model_params" in config or "model_config" in config:
             raise ValueError("Автоподбор сам выбирает параметры моделей.")
         requested = config.get("validation")
         config["validation"] = ({"strategy": "auto"} if requested is None or requested == {"strategy": "auto"}
@@ -120,6 +122,8 @@ def load_config(config_path: Path) -> dict:
         config["validation"] = normalize_validation(config.get("validation"))
     if config.get("model_params") is not None and not isinstance(config["model_params"], dict):
         raise ValueError("Настройки модели должны быть объектом.")
+    if "model_config" in config:
+        config["model_config"] = validate_model_config(config["model_config"], action=config["action"])
     if not re.fullmatch(r"[0-9a-f]{64}", config["dataset_fingerprint"]):
         raise ValueError("Некорректный отпечаток набора данных.")
     job_dir = _plain_path(Path(config["job_dir"]), directory=True, required=True)
@@ -216,8 +220,15 @@ def run_job(config: dict) -> dict:
     spec = load_task(task_path)
     (train, test, columns, id_column, target, y, features,
      numeric, categorical, classification) = load_task_data(spec)
-    model_config = make_model_config(config["action"], "classification" if classification else "regression",
-                                     config.get("model_params"))
+    task_type = "classification" if classification else "regression"
+    if "model_config" in config:
+        if "model_params" in config:
+            raise ValueError("Передайте model_params или model_config, но не оба поля.")
+        model_config = validate_model_config(config["model_config"], action=config["action"])
+        if model_task_type(model_config) != task_type:
+            raise ValueError("Модель не соответствует типу задачи.")
+    else:
+        model_config = make_model_config(config["action"], task_type, config.get("model_params"))
     x = train.loc[:, features]
     test_x = test.loc[:, features]
     if config["action"] in {"baseline", "extra_trees"}:
@@ -280,10 +291,16 @@ def run_job(config: dict) -> dict:
     elapsed = time.monotonic() - started
     metric = {"name": metric_name, "value": float(value), "higher_is_better": spec.metric.higher_is_better}
     model_name = model_config["model"]
+    fitted_model = pipeline.named_steps["model"]
+    if model_config.get("target_transform") == "log1p":
+        # The wrapper's get_params includes an estimator object, which cannot
+        # be JSON evidence. Record the fitted underlying model's parameters;
+        # the complete recipe above retains the explicit target transform.
+        fitted_model = fitted_model.regressor_
     metrics = {
         "task_type": "classification" if classification else "regression",
         "seed": SEED, "split": split,
-        "model": {"name": model_name, "parameters": pipeline.named_steps["model"].get_params()},
+        "model": {"name": model_name, "parameters": fitted_model.get_params()},
         "model_config": model_config,
         "metric": {**metric, "source": "local_holdout_from_train.csv"},
         "shapes": {"train": list(train.shape), "test": list(test.shape),

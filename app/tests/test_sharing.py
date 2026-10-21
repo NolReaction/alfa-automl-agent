@@ -105,6 +105,25 @@ class SharingTests(unittest.TestCase):
                          {"imported": 0, "skipped": 1})
         self.assertEqual(len(self.store.list("regression")), 1)
 
+    def test_v3_research_exchange_keeps_provenance_without_machine_reasons_or_local_verification(self):
+        from app.tests.test_research_summary import v3_report
+        from app.research_summary import research_summary
+
+        summary = research_summary(v3_report())
+        summary["stages"][0]["reason"] = "/private/secret-key"
+        original = job(action="agent", model="Qwen", metric=None, split=None,
+                       comparison_key=None, research=summary,
+                       agent_status="fallback", agent_reason="context_budget")
+        envelope = self.envelope(original)
+        self.assertNotIn("/private", json.dumps(envelope))
+        self.store.import_reports("regression", FINGERPRINT, envelope)
+        imported, = self.store.list("regression")
+        self.assertEqual(imported["research"]["protocol_version"], 3)
+        self.assertEqual(imported["agent_reason"], "context_budget")
+        self.assertFalse(imported["research"]["evaluations"]["final_check"]["unbiased_estimate"])
+        self.assertFalse(imported["verified"])
+        self.assertEqual(self.envelope(imported)["reports"], envelope["reports"])
+
     def test_class_diagnostics_survive_exchange_without_becoming_verified(self):
         original = classification_job()
         envelope = self.envelope(original)

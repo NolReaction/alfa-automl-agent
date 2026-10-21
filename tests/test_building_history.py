@@ -1,5 +1,5 @@
 import copy
-from decimal import Decimal
+from decimal import Decimal, Inexact, ROUND_FLOOR, ROUND_UP, Rounded, localcontext
 import json
 import math
 import os
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from agent.building_history import FEATURES, HistoryEncoder
+from agent.building_history import FEATURES, HistoryEncoder, period_json
 import experiment_regression_history as experiment
 
 HISTORY = list(FEATURES)
@@ -40,6 +40,62 @@ def rows(*items) -> pd.DataFrame:
 
 def one(frame: pd.DataFrame, position: int) -> dict:
     return frame.iloc[position].to_dict()
+
+
+class PeriodJsonTests(unittest.TestCase):
+    def test_long_fractional_periods_keep_exact_plain_decimal_text(self):
+        cases = (
+            ("1.123456789012345678901234567890123000", "1.123456789012345678901234567890123"),
+            ("-1.123456789012345678901234567890123000", "-1.123456789012345678901234567890123"),
+            ("123456789012345678901234567890.000000000000000000000000000123000",
+             "123456789012345678901234567890.000000000000000000000000000123"),
+            ("-123456789012345678901234567890.000000000000000000000000000123000",
+             "-123456789012345678901234567890.000000000000000000000000000123"),
+            ("1E-40", "0." + "0" * 39 + "1"),
+            ("-1E-40", "-0." + "0" * 39 + "1"),
+        )
+        for original, expected in cases:
+            with self.subTest(period=original):
+                encoded = period_json(Decimal(original))
+                self.assertIs(type(encoded), str)
+                self.assertEqual(encoded, expected)
+                self.assertEqual(Decimal(json.loads(json.dumps(encoded))), Decimal(original))
+
+    def test_integral_periods_remain_json_integers_without_size_loss(self):
+        cases = ((Decimal("5.000"), 5), (Decimal("5E60"), 5 * 10 ** 60),
+                 (Decimal("-5E60"), -5 * 10 ** 60), (Decimal("-0.000"), 0),
+                 (10 ** 80 + 1, 10 ** 80 + 1))
+        for original, expected in cases:
+            with self.subTest(period=original):
+                encoded = period_json(original)
+                self.assertIs(type(encoded), int)
+                self.assertEqual(encoded, expected)
+                self.assertEqual(json.loads(json.dumps(encoded)), expected)
+
+    def test_serialization_ignores_decimal_precision_rounding_and_exponent_limits(self):
+        cases = (
+            (Decimal("123456789012345678901234567890.12500"), "123456789012345678901234567890.125"),
+            (Decimal("-123456789012345678901234567890.12500"), "-123456789012345678901234567890.125"),
+            (Decimal("1E-40"), "0." + "0" * 39 + "1"),
+            (Decimal("5E60"), 5 * 10 ** 60),
+        )
+        for precision in (1, 2, 5):
+            for rounding in (ROUND_FLOOR, ROUND_UP):
+                with self.subTest(precision=precision, rounding=rounding), localcontext() as context:
+                    context.prec, context.rounding = precision, rounding
+                    context.Emin, context.Emax = -9, 9
+                    context.traps[Inexact] = context.traps[Rounded] = True
+                    context.clear_flags()
+                    for value, expected in cases:
+                        self.assertEqual(period_json(value), expected)
+                    self.assertFalse(any(context.flags.values()), "Serialization must not signal rounding")
+
+    def test_nearby_fractional_periods_stay_distinct_after_json_round_trip(self):
+        values = [Decimal("1.123456789012345678901234567890001"),
+                  Decimal("1.123456789012345678901234567890002")]
+        encoded = json.loads(json.dumps([period_json(value) for value in values]))
+        self.assertNotEqual(encoded[0], encoded[1])
+        self.assertEqual([Decimal(value) for value in encoded], values)
 
 
 class FeatureValueTests(unittest.TestCase):

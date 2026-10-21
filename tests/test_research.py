@@ -1,3 +1,5 @@
+"""Explicit v2 regression evidence; default v3 is exercised by team integration."""
+
 import contextlib
 import copy
 import csv
@@ -10,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from agent.research import run_agent
+from agent.research import run_agent_v2 as run_agent
 from validation import validate_predictions
 
 

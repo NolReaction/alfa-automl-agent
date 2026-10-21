@@ -78,6 +78,26 @@ class APISettingsTests(unittest.TestCase):
         self.assertEqual(jobs.api_settings()["missing"], list(jobs.REQUIRED_API_FIELDS))
 
 
+@unittest.skipUnless(sys.platform == "linux", "Linux process inventory")
+class ProcessInventoryTests(unittest.TestCase):
+    def test_mismatched_inventory_never_reads_guessed_pids_and_only_stops_the_launched_root(self):
+        root_pid = 123
+        with patch.object(jobs, "process_inventory_matches", return_value=False), \
+                patch.object(jobs.Path, "read_text") as read_stat, \
+                patch.object(jobs.Path, "iterdir") as enumerate_proc, \
+                patch.object(jobs.Path, "is_dir") as inspect_proc, \
+                patch.object(jobs.os, "kill") as signal_pid, \
+                patch.object(jobs.os, "killpg") as signal_group:
+            self.assertIsNone(jobs._identity(root_pid))
+            self.assertEqual(jobs._descendants(root_pid), [])
+            jobs._kill_tree(root_pid)
+            read_stat.assert_not_called()
+            enumerate_proc.assert_not_called()
+            inspect_proc.assert_not_called()
+            self.assertEqual([call.args[0] for call in signal_pid.call_args_list], [root_pid, root_pid])
+            signal_group.assert_called_once_with(root_pid, jobs.signal.SIGKILL)
+
+
 class JobTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -278,6 +298,24 @@ class JobTests(unittest.TestCase):
             self.assertEqual(restored.detail("example", result["id"])["job"]["model_config"],
                              result["model_config"])
 
+    def test_worker_command_preserves_opt_in_recipe_fields_without_changing_legacy_payload(self):
+        for index, options in enumerate(({}, {"objective": "mae"}, {"target_transform": "log1p"},
+                                         {"objective": "mae", "target_transform": "log1p"})):
+            with self.subTest(options=options):
+                recipe = jobs.make_model_config("baseline", "regression", **options)
+                job = {"id": f"{index:032x}", "action": "baseline", "dataset_fingerprint": "b" * 64,
+                       "model_config": recipe}
+                folder = self.manager.jobs_root / job["id"]
+                folder.mkdir()
+                self.manager._command(job, self.task / "task.md", 1)
+                config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+                if options:
+                    self.assertEqual(config["model_config"], recipe)
+                    self.assertNotIn("model_params", config)
+                else:
+                    self.assertEqual(config["model_params"], recipe["parameters"])
+                    self.assertNotIn("model_config", config)
+
     def test_invalid_model_parameters_create_no_jobs(self):
         original = (self.task / "submission.csv").read_bytes()
         invalid = [True, [], "anything", {"command": "anything"}, {"n_jobs": 1},
@@ -409,8 +447,8 @@ class JobTests(unittest.TestCase):
             nested.start("example", "baseline")
 
     def test_one_job_at_a_time_cancel_and_close_are_bounded(self):
-        if os.name != "nt" and not Path("/proc").is_dir():
-            self.skipTest("Arbitrary subprocess fixtures require OS process inventory")
+        if os.name != "nt" and not jobs.process_inventory_matches():
+            self.skipTest("Arbitrary subprocess fixtures require /proc in the current PID namespace")
         command = [sys.executable, "-u", "-c", "import time; print('started', flush=True); time.sleep(60)"]
         with patch.object(self.manager, "_command", return_value=command):
             job = self.manager.start("example", "baseline")
@@ -444,8 +482,8 @@ class JobTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX sessions and /proc are checked here")
     def test_cancel_kills_descendants_even_in_new_sessions(self):
-        if not Path("/proc").is_dir():
-            self.skipTest("Detached descendant fixture requires OS process inventory")
+        if not jobs.process_inventory_matches():
+            self.skipTest("Detached descendant fixture requires /proc in the current PID namespace")
         child_pid = self.root / "child.pid"
         grandchild = "import time; time.sleep(60)"
         code = ("import subprocess,sys,time,pathlib; "
@@ -465,8 +503,8 @@ class JobTests(unittest.TestCase):
                 self.assertEqual(text[text.rfind(")") + 2:].split()[0], "Z")
 
     def test_timeout_and_oversized_logs_fail_without_touching_source(self):
-        if os.name != "nt" and not Path("/proc").is_dir():
-            self.skipTest("Arbitrary subprocess fixtures require OS process inventory")
+        if os.name != "nt" and not jobs.process_inventory_matches():
+            self.skipTest("Arbitrary subprocess fixtures require /proc in the current PID namespace")
         before = (self.task / "submission.csv").read_bytes()
         command = [sys.executable, "-u", "-c", "import time; print('waiting',flush=True); time.sleep(60)"]
         with patch.object(self.manager, "_command", return_value=command), patch.object(jobs, "LOCAL_TIMEOUT", 0.1):
@@ -580,6 +618,10 @@ class JobTests(unittest.TestCase):
                "hypothesis": "Проверить новый числовой признак"}
         task_path = self.manager._stage(job, threading.Event())
         self.assertIn(job["hypothesis"], task_path.read_text(encoding="utf-8"))
+        from agent.research_workspace import ResearchWorkspace
+        view = ResearchWorkspace(task_path, task_path.parent / "allowed-research")
+        self.assertIn(job["hypothesis"], view.task_text)
+        self.assertIn("only the approved inputs and inner validation", view.task_text)
         self.assertEqual((self.task / "task.md").read_bytes(), original)
 
     def test_failed_agent_retains_usage_and_redacts_nested_logs_without_real_api(self):
@@ -591,6 +633,8 @@ class JobTests(unittest.TestCase):
         run = self.state / "jobs" / job["id"] / "task" / ".agent_runs" / ("a" * 32)
         run.mkdir(parents=True)
         report = {"status": "failed", "events": [], "error": "API failed", "model": "fake",
+                  "research_protocol_version": 3, "stage": "inner_research", "stages": [
+                      {"id": "inner_research", "status": "failed", "reason": "secret-for-test"}],
                   "api": {"attempts": 1, "responses": 0, "usage_reported_responses": 0,
                           "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
         (run / "run.json").write_text(json.dumps(report), encoding="utf-8")
@@ -601,6 +645,9 @@ class JobTests(unittest.TestCase):
             result = self.manager.detail("example", job["id"])["job"]
             self.assertTrue(result["api_used"])
             self.assertEqual(result["api"]["state"], "unknown")
+            self.assertEqual(result["research"]["protocol_version"], 3)
+            self.assertEqual(result["research"]["stage"], "inner_research")
+            self.assertEqual(result["research"]["stages"][0]["reason"], "[REDACTED]")
             self.assertIsNone(result["metric"])
             detail = self.manager.detail("example", job["id"])
             self.assertNotIn("secret-for-test", detail["stdout"])
