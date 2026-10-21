@@ -7,7 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import subprocess
 import sys
@@ -565,6 +565,18 @@ class CompletedArmAuditTests(TemporaryEvidence):
         self.assertIsNone(result["frequency"])
         self.assertGreater(len(result["proof_hashes"]), 20)
 
+    def test_canonical_artifacts_accept_an_existing_noncanonical_output_alias(self):
+        # _regular_under returns canonical paths. An output alias must resolve
+        # to the same root before relative proof keys are generated (including
+        # Windows short/long temp aliases in the ordinary fixture above).
+        expected = self.audit()
+        alias_step = self.root / "existing_alias_step"
+        alias_step.mkdir()
+        output_alias = alias_step / ".."
+        actual = experiment.audit_arm(output_alias, self.entry, "control", self.summary, self.plan)
+        self.assertEqual(actual, expected)
+        self.assertTrue(all(not Path(key).is_absolute() for key in actual["proof_hashes"]))
+
     def test_missing_full_refit_cannot_be_replaced_by_published_csv_claim(self):
         self.observation["invocations"].pop()
         self.seal_artifacts()
@@ -745,6 +757,31 @@ class ControllerProtocolTests(TemporaryEvidence):
             result = experiment.re_audit(self.root)
         self.assertTrue(result["verified"])
         self.assertEqual(result["fits"], 0)
+
+    def test_development_summary_paths_use_pair_structure_with_native_separators(self):
+        # The Windows spelling must work even when this regression runs on
+        # Linux. Selection never searches for POSIX substrings in saved keys.
+        for path_type in (PurePosixPath, PureWindowsPath):
+            with self.subTest(path_type=path_type.__name__):
+                pairs = [{"arms": {arm: {"directory": str(path_type("runs") / case / arm)}
+                                    for arm in experiment.ARMS}}
+                         for case in ("development_case", "confirmation_case")]
+                pairs[0]["arms"]["not_started"] = {"status": "not_started"}
+                paths = experiment._arm_summary_paths(path_type("evidence_root"), pairs[:1])
+                self.assertEqual(paths, [str(path_type("runs") / "development_case" / arm / "arm_summary.json")
+                                         for arm in experiment.ARMS])
+
+    def test_development_summary_seal_drift_is_rejected_after_outer_resealing(self):
+        report = experiment.run_prepared(self.root)
+        path = self.root / "confirmation_seal.json"
+        seal = experiment.read_json(path)
+        first = next(iter(seal["development_summary_hashes"]))
+        seal["development_summary_hashes"][first] = "0" * 64
+        experiment.write_json(path, seal)
+        report["confirmation_seal_hash"] = experiment.file_hash(path)
+        self.reseal_report(report)
+        with self.assertRaisesRegex(ValueError, "Development evidence changed"):
+            experiment.re_audit(self.root)
 
     def test_insufficient_coordinator_reserve_starts_neither_arm(self):
         with patch.object(experiment.time, "monotonic", side_effect=[0.0] + [1621.0] * 40):

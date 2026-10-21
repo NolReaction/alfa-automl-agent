@@ -1,0 +1,74 @@
+[
+  {
+    "branch": "work/dima-team-plan",
+    "commit": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+    "source": "docs/team/DIMA.md",
+    "archived": "docs/archive_20261021/old_team_plan/DIMA.md",
+    "sha256": "ff54695bc5b92c38fd5b3522227ec15c9fe206f115e7eb0380adbb12c8fe5c71",
+    "bytes": 25893
+  },
+  {
+    "branch": "work/dima-team-plan",
+    "commit": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+    "source": "docs/team/MURAD.md",
+    "archived": "docs/archive_20261021/old_team_plan/MURAD.md",
+    "sha256": "c93e352979e9680ee2df8a682f575899411f460812d1db9d43286784329dd4c5",
+    "bytes": 25618
+  },
+  {
+    "branch": "work/dima-team-plan",
+    "commit": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+    "source": "docs/team/NIKA.md",
+    "archived": "docs/archive_20261021/old_team_plan/NIKA.md",
+    "sha256": "0bc8331fa8a35f71bb061d959a778452ca0b6e56a7edd939f27ef16ddbe467af",
+    "bytes": 26942
+  },
+  {
+    "branch": "work/dima-team-plan",
+    "commit": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+    "source": "docs/team/README.md",
+    "archived": "docs/archive_20261021/old_team_plan/README.md",
+    "sha256": "a219a5e0d76f61fa17c09962887887026f918377769448a6a25e64e20f009f64",
+    "bytes": 9692
+  },
+  {
+    "branch": "work/dima-team-plan",
+    "commit": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+    "source": "docs/team/TANYA.md",
+    "archived": "docs/archive_20261021/old_team_plan/TANYA.md",
+    "sha256": "d61254d61fa4748e7cac0ac4307551a92d703f72fafb026edf6b2c5e2178806c",
+    "bytes": 23483
+  },
+  {
+    "branch": "work/strong-tabular-evidence-v1",
+    "commit": "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
+    "source": "docs/strong_tabular_budget_admission.json",
+    "archived": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_budget_admission.json",
+    "sha256": "9627c2c0357ad24a86a1db46497137a52ffe24c42a7d9b4c46f7c3c53d364b22",
+    "bytes": 14380
+  },
+  {
+    "branch": "work/strong-tabular-evidence-v1",
+    "commit": "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
+    "source": "docs/strong_tabular_budget_admission.md",
+    "archived": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_budget_admission.md",
+    "sha256": "c95c05f8438c19d0ed00fed7416014d9bf622578ed35d68d3144065bfb695bfa",
+    "bytes": 6294
+  },
+  {
+    "branch": "work/strong-tabular-evidence-v1",
+    "commit": "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
+    "source": "docs/strong_tabular_qualification.json",
+    "archived": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_qualification.json",
+    "sha256": "73f3f8f956086febbe45c463091f2a4b5f7915e8a3aaa4c6ed60d535c14e087c",
+    "bytes": 22335
+  },
+  {
+    "branch": "work/strong-tabular-evidence-v1",
+    "commit": "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
+    "source": "docs/strong_tabular_report.md",
+    "archived": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_report.md",
+    "sha256": "9323af3308eb7ef4c353f2bd777dccc19850c0ad32ec53e69818eb78e2bc76da",
+    "bytes": 8555
+  }
+]

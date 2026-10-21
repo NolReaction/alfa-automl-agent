@@ -630,7 +630,7 @@ def _check_execution(execution, label):
 def audit_arm(output_dir, entry, arm, summary, plan):
     """Reject unsupported success; independently verify every native artifact."""
     from agent.task_spec import TaskSpec
-    output = _output_root(output_dir)
+    output = _output_root(output_dir).resolve()
     require(arm in ARMS and summary.get("arm") == arm and summary.get("case") == entry["key"], "Arm identity mismatch")
     directory = output / summary["directory"]
     require(directory.resolve() == (output / "runs" / entry["key"] / arm).resolve(), "Unexpected arm directory")
@@ -1030,15 +1030,19 @@ def _report_paths(output, suite):
     return output / ("report.json" if suite == "synthetic" else "public_report.json"), output / (suite + "_completion_seal.json")
 
 
+def _arm_summary_paths(output, pairs):
+    """Use the saved arm structure, preserving the host's sealed path format."""
+    return [str((output / arm["directory"] / "arm_summary.json").relative_to(output))
+            for pair in pairs for arm in pair["arms"].values() if arm.get("directory")]
+
+
 def _confirmation_seal(output, plan, pairs):
     require(len(pairs) == 4 and all(pair["stage"] == "development" for pair in pairs), "Confirmation seal requires all four development records")
     load_plan(output)
     seal = {"version": 1, "created_at": utc_now(), "plan_hash": file_hash(output / "plan.json"),
             "method_sha": plan["method_sha"], "sources": source_hashes(), "environment": environment_versions(),
             "development_pairs_hash": json_hash(pairs),
-            "development_summary_hashes": {str((output / arm["directory"] / "arm_summary.json").relative_to(output)):
-                                           file_hash(output / arm["directory"] / "arm_summary.json")
-                                           for pair in pairs for arm in pair["arms"].values() if arm.get("directory")},
+            "development_summary_hashes": {path: file_hash(output / path) for path in _arm_summary_paths(output, pairs)},
             "method_changed_after_development": False}
     path = output / "confirmation_seal.json"
     require(not path.exists(), "Confirmation seal already exists")
@@ -1090,9 +1094,7 @@ def run_prepared(output_dir, suite="synthetic"):
     report["active_elapsed_seconds"] = time.monotonic() - started
     report["comparable_pairs"] = sum(pair["comparable"] for pair in report["pairs"])
     report["completed_arms"] = sum(arm["status"] == "completed" for pair in report["pairs"] for arm in pair["arms"].values())
-    report["arm_summary_hashes"] = {str((output / arm["directory"] / "arm_summary.json").relative_to(output)):
-                                    file_hash(output / arm["directory"] / "arm_summary.json")
-                                    for pair in report["pairs"] for arm in pair["arms"].values() if arm.get("directory")}
+    report["arm_summary_hashes"] = {path: file_hash(output / path) for path in _arm_summary_paths(output, report["pairs"])}
     write_json(report_path, report)
     write_json(completed_path, {"version": 1, "suite": suite, "report_hash": file_hash(report_path),
                                 "plan_hash": report["plan_hash"], "terminal_status": report["status"], "ended_at": report["ended_at"]})
@@ -1163,8 +1165,7 @@ def re_audit(output_dir, suite="synthetic"):
                     and confirmation.get("sources") == plan["sources"] and confirmation.get("environment") == plan["environment"]
                     and confirmation.get("development_pairs_hash") == json_hash(pairs[:4])
                     and confirmation.get("method_changed_after_development") is False, "Method/environment changed before confirmation")
-            expected_dev = {path: digest for path, digest in report["arm_summary_hashes"].items()
-                            if any("/" + entry["key"] + "/" in "/" + path for entry in entries[:4])}
+            expected_dev = {path: report["arm_summary_hashes"][path] for path in _arm_summary_paths(output, pairs[:4])}
             require(confirmation.get("development_summary_hashes") == expected_dev, "Development evidence changed after confirmation seal")
     comparable = sum(pair["comparable"] for pair in verified_pairs)
     completed = sum(arm["status"] == "completed" for pair in pairs for arm in pair["arms"].values())

@@ -1,0 +1,578 @@
+{
+  "version": 1,
+  "profile": "strong_v1",
+  "default_qualification": "not_qualified",
+  "decision": "Both public TRAIN comparisons worsened; retain opt-in only. Synthetic gains do not override public losses.",
+  "source_commit": "69dbb0a7a41ac75d353a795e362a733fa22db3ce",
+  "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+  "harness_commit": "a3c04a1dd601d9537a2924e8574a20f42b262ab1",
+  "reaudited_at_utc": "2026-10-21T11:19:13.942481+00:00",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3",
+    "scikit-learn": "1.5.2",
+    "catboost": "1.2.8",
+    "lightgbm": "4.6.0",
+    "psutil": "6.1.1"
+  },
+  "resource_scope": {
+    "cgroup_cpu_max": "800000 100000",
+    "cgroup_memory_max_bytes": 8589934592,
+    "configured_child_memory_bytes": 6442450944,
+    "process_telemetry_available": false,
+    "note": "8 CPU / 8 GiB local cgroup. Process inventory unavailable; per-child 6 GiB cap enforcement and RSS/CPU telemetry not verified. Not 32 GiB or full-three-hour platform qualification."
+  },
+  "scope": "Previously researched public TRAIN holdouts and predeclared fresh synthetic seed 31415; not organizer/private scores or a universal quality guarantee.",
+  "protocol": "Same immutable native solver checkout and paired input bytes/budget; real isolated run_automl, host audit answers outside task directories, full-data checkpoint CSV/holdout independently rescored, profiles verified from solver reports. Class outer groups disjoint; regression outer year5 fits only earlier periods.",
+  "api_calls": 0,
+  "counts": {
+    "trials": 10,
+    "full_refit_verified": 10,
+    "native_profiles_verified": 10,
+    "wins": 2,
+    "ties": 1,
+    "losses": 2
+  },
+  "raw_reports": [
+    {
+      "path": "data/experiments/strong_tabular/public_v1_300/report.json",
+      "sha256": "5c2d1454e9a0351f00aadd1c6c56758a8b7822ff3330c4d904cc6620223d33f0",
+      "harness_sha256": {
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/experiment_strong_tabular.py": "c0a512d877ae0165bccbf6d290f9e8bc932ae909f3c97beadda37d2c3088baed",
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/experiment_portfolio_recipes.py": "efabb4adb3f33dea63cbff46377a235d21ce28c1835fd53e074257c340d3dcd2"
+      }
+    },
+    {
+      "path": "data/experiments/strong_tabular/transfer_v1_90/report.json",
+      "sha256": "50fcd63913494c2a1ddfc528366d731398065d585e6cdf96bf86e9d13036057c",
+      "harness_sha256": {
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/experiment_strong_tabular.py": "c0a512d877ae0165bccbf6d290f9e8bc932ae909f3c97beadda37d2c3088baed",
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+        "/workspace/scratch/271f408d330f/alfa-quality-backend/experiment_portfolio_recipes.py": "efabb4adb3f33dea63cbff46377a235d21ce28c1835fd53e074257c340d3dcd2"
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "case": "public_regression_year_5",
+      "seed": 0,
+      "metric": "RMSE",
+      "higher_is_better": false,
+      "budget_seconds": 300.0,
+      "legacy": 48.99497992932833,
+      "strong_v1": 50.37486121513939,
+      "signed_improvement": -1.3798812858110594,
+      "relative_improvement_percent": -2.816372795338292,
+      "outcome": "loss",
+      "legacy_seconds": 89.16861,
+      "strong_seconds": 106.031137
+    },
+    {
+      "case": "public_classification_seed_31415_fold_0",
+      "seed": 31415,
+      "metric": "Macro F1",
+      "higher_is_better": true,
+      "budget_seconds": 300.0,
+      "legacy": 0.6249712706825125,
+      "strong_v1": 0.6047743424112129,
+      "signed_improvement": -0.020196928271299597,
+      "relative_improvement_percent": -3.231657072691219,
+      "outcome": "loss",
+      "legacy_seconds": 197.296177,
+      "strong_seconds": 202.232366
+    },
+    {
+      "case": "linear_regression",
+      "seed": 31415,
+      "metric": "RMSE",
+      "higher_is_better": false,
+      "budget_seconds": 90.0,
+      "legacy": 0.5275701073580348,
+      "strong_v1": 0.5275701073580348,
+      "signed_improvement": -0.0,
+      "relative_improvement_percent": -0.0,
+      "outcome": "tie",
+      "legacy_seconds": 21.932559,
+      "strong_seconds": 17.41716
+    },
+    {
+      "case": "mae_signed_nonlinear",
+      "seed": 31415,
+      "metric": "MAE",
+      "higher_is_better": false,
+      "budget_seconds": 90.0,
+      "legacy": 0.45832251063668233,
+      "strong_v1": 0.37105030661474325,
+      "signed_improvement": 0.08727220402193908,
+      "relative_improvement_percent": 19.041657783883277,
+      "outcome": "win",
+      "legacy_seconds": 20.266812,
+      "strong_seconds": 18.56464
+    },
+    {
+      "case": "multiclass_duplicates",
+      "seed": 31415,
+      "metric": "Macro F1",
+      "higher_is_better": true,
+      "budget_seconds": 90.0,
+      "legacy": 0.902962894873916,
+      "strong_v1": 0.9420105459928468,
+      "signed_improvement": 0.039047651118930826,
+      "relative_improvement_percent": 4.324391549265509,
+      "outcome": "win",
+      "legacy_seconds": 23.566922,
+      "strong_seconds": 20.498791
+    }
+  ],
+  "rows": [
+    {
+      "case": "public_regression_year_5",
+      "seed": 0,
+      "scope": "public_train_development",
+      "profile": "legacy",
+      "status": "completed",
+      "budget_seconds": 300.0,
+      "elapsed_seconds": 89.16861,
+      "audit_metric": {
+        "name": "RMSE",
+        "value": 48.99497992932833,
+        "higher_is_better": false
+      },
+      "internal_holdout_metric": {
+        "name": "RMSE",
+        "value": 44.22165283526658,
+        "higher_is_better": false
+      },
+      "model": "FixedBlend",
+      "best_candidate": "blend",
+      "search_status": "completed",
+      "candidate_count": 16,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "2d76fe8c18536287f7fba818676a4b8d6b24efb205c77284e81304f522c1d749",
+      "audit_sha256": "958e16371e25dea77eef809934fe7836a516a15f71d1510cee81f2dc114f76a8",
+      "submission_sha256": "d308de97045801792a1d386db07e515afbfe340a0d085114d9c912cd825a5afb",
+      "raw_automl_report_sha256": "ce2c71ae7c98a866020a15dadfa32159aa9d549416a1e75b25cde000967bb8a9",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "public_regression_year_5",
+      "seed": 0,
+      "scope": "public_train_development",
+      "profile": "strong_v1",
+      "status": "completed",
+      "budget_seconds": 300.0,
+      "elapsed_seconds": 106.031137,
+      "audit_metric": {
+        "name": "RMSE",
+        "value": 50.37486121513939,
+        "higher_is_better": false
+      },
+      "internal_holdout_metric": {
+        "name": "RMSE",
+        "value": 42.406314513518474,
+        "higher_is_better": false
+      },
+      "model": "FixedBlend",
+      "best_candidate": "blend",
+      "search_status": "completed",
+      "candidate_count": 10,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "2d76fe8c18536287f7fba818676a4b8d6b24efb205c77284e81304f522c1d749",
+      "audit_sha256": "958e16371e25dea77eef809934fe7836a516a15f71d1510cee81f2dc114f76a8",
+      "submission_sha256": "46fb2c5f2afa790b5de4f1125ec281b7b6b1e54ac566f34255665be3f51a0e5c",
+      "raw_automl_report_sha256": "9a00b31196dadbbe3fe56f3d268a1cef9daa458e85e1c246cdd230168af6fbfd",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "public_classification_seed_31415_fold_0",
+      "seed": 31415,
+      "scope": "public_train_development",
+      "profile": "strong_v1",
+      "status": "completed",
+      "budget_seconds": 300.0,
+      "elapsed_seconds": 202.232366,
+      "audit_metric": {
+        "name": "Macro F1",
+        "value": 0.6047743424112129,
+        "higher_is_better": true
+      },
+      "internal_holdout_metric": {
+        "name": "Macro F1",
+        "value": 0.5718711661859815,
+        "higher_is_better": true
+      },
+      "model": "RandomForestClassifier",
+      "best_candidate": "strong_reference",
+      "search_status": "time_limit",
+      "candidate_count": 10,
+      "timed_out_candidates": [
+        "strong_lgbm_800",
+        "strong_cat_1200",
+        "strong_lgbm_1600_regularized",
+        "strong_lgbm_1200_leaves63",
+        "strong_cat_1600_depth8",
+        "strong_lgbm_1000_balanced"
+      ],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "314e935ec30802c024dc792e569bb1340480e343aaaef0d546d723da1c4b1e7b",
+      "audit_sha256": "24c3d24d862643cb1ace8a257ad80aefd2cc2c7b75d5717310114fb800e2a8a3",
+      "submission_sha256": "9b584b883a00bc90b95df3e94a32c7980e1173ae93770b04dd27bf8533ca642e",
+      "raw_automl_report_sha256": "befbc13a130e6523cffa5a56fc43a060a05f96648b9fde0f447d455ec0f594ff",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "public_classification_seed_31415_fold_0",
+      "seed": 31415,
+      "scope": "public_train_development",
+      "profile": "legacy",
+      "status": "completed",
+      "budget_seconds": 300.0,
+      "elapsed_seconds": 197.296177,
+      "audit_metric": {
+        "name": "Macro F1",
+        "value": 0.6249712706825125,
+        "higher_is_better": true
+      },
+      "internal_holdout_metric": {
+        "name": "Macro F1",
+        "value": 0.6109287161172154,
+        "higher_is_better": true
+      },
+      "model": "FixedBlend",
+      "best_candidate": "blend",
+      "search_status": "time_limit",
+      "candidate_count": 16,
+      "timed_out_candidates": [
+        "candidate_5",
+        "refine_2",
+        "refine_3"
+      ],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "314e935ec30802c024dc792e569bb1340480e343aaaef0d546d723da1c4b1e7b",
+      "audit_sha256": "24c3d24d862643cb1ace8a257ad80aefd2cc2c7b75d5717310114fb800e2a8a3",
+      "submission_sha256": "83523933d42b1902c279572c84c63943ea994dc45ecac60f82e84ce09b3713af",
+      "raw_automl_report_sha256": "50f1652fa9cf0406d4fc1d560566a4253ce9217d97f820dea21539fc75ce5d30",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "linear_regression",
+      "seed": 31415,
+      "scope": "synthetic_transfer",
+      "profile": "legacy",
+      "status": "completed",
+      "budget_seconds": 90.0,
+      "elapsed_seconds": 21.932559,
+      "audit_metric": {
+        "name": "RMSE",
+        "value": 0.5275701073580348,
+        "higher_is_better": false
+      },
+      "internal_holdout_metric": {
+        "name": "RMSE",
+        "value": 0.8805903701456136,
+        "higher_is_better": false
+      },
+      "model": "Ridge",
+      "best_candidate": "seed",
+      "search_status": "completed",
+      "candidate_count": 16,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "3d2567f56ae98fcb497dd3b1a3948f02c7524e3a1a789d93808960c6060355af",
+      "audit_sha256": "c88cc89d013960e7cd72832c69e6c56adbb65d2b01b2e00b87b3003e71bd1b9b",
+      "submission_sha256": "31ec2ca3d2c47f516bfc29370707190101019bdefac9eea1f099d16f8dc7e456",
+      "raw_automl_report_sha256": "c84e1d64348744121c70d57c592a81cf5b2d56796af3cfe8c45f79c1d63357d9",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "linear_regression",
+      "seed": 31415,
+      "scope": "synthetic_transfer",
+      "profile": "strong_v1",
+      "status": "completed",
+      "budget_seconds": 90.0,
+      "elapsed_seconds": 17.41716,
+      "audit_metric": {
+        "name": "RMSE",
+        "value": 0.5275701073580348,
+        "higher_is_better": false
+      },
+      "internal_holdout_metric": {
+        "name": "RMSE",
+        "value": 0.8805903701456136,
+        "higher_is_better": false
+      },
+      "model": "Ridge",
+      "best_candidate": "seed",
+      "search_status": "completed",
+      "candidate_count": 10,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "3d2567f56ae98fcb497dd3b1a3948f02c7524e3a1a789d93808960c6060355af",
+      "audit_sha256": "c88cc89d013960e7cd72832c69e6c56adbb65d2b01b2e00b87b3003e71bd1b9b",
+      "submission_sha256": "31ec2ca3d2c47f516bfc29370707190101019bdefac9eea1f099d16f8dc7e456",
+      "raw_automl_report_sha256": "6d955ee2ce00cc5ced6c92315a9b6519f19e45b7947fb118d5bd67781a6956c0",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "mae_signed_nonlinear",
+      "seed": 31415,
+      "scope": "synthetic_transfer",
+      "profile": "strong_v1",
+      "status": "completed",
+      "budget_seconds": 90.0,
+      "elapsed_seconds": 18.56464,
+      "audit_metric": {
+        "name": "MAE",
+        "value": 0.37105030661474325,
+        "higher_is_better": false
+      },
+      "internal_holdout_metric": {
+        "name": "MAE",
+        "value": 0.4875345189082926,
+        "higher_is_better": false
+      },
+      "model": "CatBoostRegressor",
+      "best_candidate": "strong_cat_1200",
+      "search_status": "completed",
+      "candidate_count": 10,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "29c4fbccb96eaa822f890499f244dcad303c833a4e1b5f859a811dbf7165b6cb",
+      "audit_sha256": "c6191426b4bef3235967ff223e5f56262cc0a5c402b4ef1d4f4333c3dd446e9d",
+      "submission_sha256": "b877cec5ee84996e0ad7675fa14031d1a127bed3ac79e2ed55894207e30a9ac0",
+      "raw_automl_report_sha256": "017c552e20f2e986e17472d3195101a4f0f3bcb87d2678b531aab8854466096e",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "mae_signed_nonlinear",
+      "seed": 31415,
+      "scope": "synthetic_transfer",
+      "profile": "legacy",
+      "status": "completed",
+      "budget_seconds": 90.0,
+      "elapsed_seconds": 20.266812,
+      "audit_metric": {
+        "name": "MAE",
+        "value": 0.45832251063668233,
+        "higher_is_better": false
+      },
+      "internal_holdout_metric": {
+        "name": "MAE",
+        "value": 0.5183994314329947,
+        "higher_is_better": false
+      },
+      "model": "FixedBlend",
+      "best_candidate": "blend",
+      "search_status": "completed",
+      "candidate_count": 16,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "29c4fbccb96eaa822f890499f244dcad303c833a4e1b5f859a811dbf7165b6cb",
+      "audit_sha256": "c6191426b4bef3235967ff223e5f56262cc0a5c402b4ef1d4f4333c3dd446e9d",
+      "submission_sha256": "6e2397208504718373179b3fc1c5e4f985903eda158fbdac9ee7db0750c66631",
+      "raw_automl_report_sha256": "076de68345fe81fac1eabe79418de1793047762a175b689eb200b21348966cd3",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "multiclass_duplicates",
+      "seed": 31415,
+      "scope": "synthetic_transfer",
+      "profile": "legacy",
+      "status": "completed",
+      "budget_seconds": 90.0,
+      "elapsed_seconds": 23.566922,
+      "audit_metric": {
+        "name": "Macro F1",
+        "value": 0.902962894873916,
+        "higher_is_better": true
+      },
+      "internal_holdout_metric": {
+        "name": "Macro F1",
+        "value": 0.8484650270364557,
+        "higher_is_better": true
+      },
+      "model": "LogisticRegression",
+      "best_candidate": "candidate_8",
+      "search_status": "completed",
+      "candidate_count": 16,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "8d99c3813a4667b4d0bbb59e7450e9b17eb9b16e2673a59375730a1ce8b3f559",
+      "audit_sha256": "5fac5320c9a375fad4ac71f0a9e19c12c2c88ddbd9af375e164e5c20e991196e",
+      "submission_sha256": "fc6662ea3044f8a947248a686db99395bee19dba32085b14acdfc339e339b355",
+      "raw_automl_report_sha256": "3a188821f1f3f6d790570cdffc7c697cf1f17cd31d21e5af76707a512cce4b99",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "multiclass_duplicates",
+      "seed": 31415,
+      "scope": "synthetic_transfer",
+      "profile": "strong_v1",
+      "status": "completed",
+      "budget_seconds": 90.0,
+      "elapsed_seconds": 20.498791,
+      "audit_metric": {
+        "name": "Macro F1",
+        "value": 0.9420105459928468,
+        "higher_is_better": true
+      },
+      "internal_holdout_metric": {
+        "name": "Macro F1",
+        "value": 0.8087009608748739,
+        "higher_is_better": true
+      },
+      "model": "LogisticRegression",
+      "best_candidate": "seed",
+      "search_status": "completed",
+      "candidate_count": 10,
+      "timed_out_candidates": [],
+      "failed_candidates": [],
+      "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+      "input_sha256": "8d99c3813a4667b4d0bbb59e7450e9b17eb9b16e2673a59375730a1ce8b3f559",
+      "audit_sha256": "5fac5320c9a375fad4ac71f0a9e19c12c2c88ddbd9af375e164e5c20e991196e",
+      "submission_sha256": "472cc3a6c0e334da441e917757ba96ba7015d3ef84bf910d92da22b5f24fce0c",
+      "raw_automl_report_sha256": "4cee28b0a9207f89698f744fbf8b31dbdbf17345c72d27d39f04aa05a1d580e1",
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    }
+  ],
+  "source_snapshot_commit": "a748cd569dc73539ead7ce1d2e952b4e7f4ff459",
+  "source_snapshot_tree": "7ba19cfaaa7ab424839a4ac14d1ef6450e3c5c3c",
+  "source_snapshot_note": "Remote snapshot has exactly the same complete Git tree as qualified local 69dbb0a; only Git commit metadata differ."
+}

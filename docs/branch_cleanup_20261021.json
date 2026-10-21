@@ -112,29 +112,29 @@
       "name": "work/dima-team-plan",
       "expected_sha": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
       "decision": "transfer_then_delete",
-      "reason": "Устаревшее ТЗ PR #10; документы перенести в main/архив документации.",
+      "reason": "Исторические документы сохранены точными копиями в docs/archive_20261021; исходный tip также в pinned archive.",
       "require_main_ancestor": false,
       "pull_request": 10,
       "required_transfers": [
         {
           "source_path": "docs/team/DIMA.md",
-          "main_path": "docs/team/DIMA.md"
+          "main_path": "docs/archive_20261021/old_team_plan/DIMA.md"
         },
         {
           "source_path": "docs/team/MURAD.md",
-          "main_path": "docs/team/MURAD.md"
+          "main_path": "docs/archive_20261021/old_team_plan/MURAD.md"
         },
         {
           "source_path": "docs/team/NIKA.md",
-          "main_path": "docs/team/NIKA.md"
+          "main_path": "docs/archive_20261021/old_team_plan/NIKA.md"
         },
         {
           "source_path": "docs/team/README.md",
-          "main_path": "docs/team/README.md"
+          "main_path": "docs/archive_20261021/old_team_plan/README.md"
         },
         {
           "source_path": "docs/team/TANYA.md",
-          "main_path": "docs/team/TANYA.md"
+          "main_path": "docs/archive_20261021/old_team_plan/TANYA.md"
         }
       ]
     },
@@ -318,25 +318,25 @@
       "name": "work/strong-tabular-evidence-v1",
       "expected_sha": "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
       "decision": "transfer_then_delete",
-      "reason": "Перенести четыре отчёта в main; уникальные benchmark/test сохранить в архиве.",
+      "reason": "Исторические документы сохранены точными копиями в docs/archive_20261021; исходный tip также в pinned archive.",
       "require_main_ancestor": false,
       "pull_request": null,
       "required_transfers": [
         {
           "source_path": "docs/strong_tabular_budget_admission.json",
-          "main_path": "docs/strong_tabular_budget_admission.json"
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_budget_admission.json"
         },
         {
           "source_path": "docs/strong_tabular_budget_admission.md",
-          "main_path": "docs/strong_tabular_budget_admission.md"
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_budget_admission.md"
         },
         {
           "source_path": "docs/strong_tabular_qualification.json",
-          "main_path": "docs/strong_tabular_qualification.json"
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_qualification.json"
         },
         {
           "source_path": "docs/strong_tabular_report.md",
-          "main_path": "docs/strong_tabular_report.md"
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_report.md"
         }
       ]
     },
