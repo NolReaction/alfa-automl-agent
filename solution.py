@@ -135,7 +135,8 @@ def main() -> int:
                              "offline: budgeted AutoML without API; llm: Qwen research with local .env support")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Offline environment check; no API calls")
-    mode.add_argument("--check-api", action="store_true", help="Make one short request to the configured API")
+    mode.add_argument("--check-api", action="store_true",
+                      help="Check the API with up to two short requests; retry a transient official gateway failure via its reserve")
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--time-budget", type=float, default=None,
                         help="Seconds; default 10500 in every mode; maximum 10500")
