@@ -255,7 +255,7 @@ def _raw_evidence(directory, spec, expected_ids, expected_actuals):
 
 def run_automl(task_path: Path, *, time_budget=600, validation=None,
                dataset_fingerprint=None, progress=None, output_dir=None,
-               stability_splits=1, metric_recipes=False) -> dict:
+               stability_splits=1, metric_recipes=False, search_profile="legacy") -> dict:
     started = time.monotonic()
     if (type(time_budget) not in {int, float} or not math.isfinite(time_budget)
             or not 0 < time_budget <= 10500):
@@ -265,6 +265,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         raise ValueError("stability_splits must be 1, 2 or 3")
     if type(metric_recipes) is not bool:
         raise ValueError("metric_recipes must be boolean")
+    if not isinstance(search_profile, str) or search_profile not in {"legacy", "strong_v1"}:
+        raise ValueError("search_profile must be legacy or strong_v1")
     task_path = _plain(Path(task_path))
     if not task_path.is_file() or task_path.suffix.lower() != ".md":
         raise ValueError("Передайте существующий task.md.")
@@ -311,6 +313,10 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
     for name in ("automl_report.json", "holdout_predictions.csv"):
         _plain(output_dir / name)
     exploration = candidate_plan(classification) if inner is not None else []
+    if search_profile == "strong_v1" and inner is not None:
+        from agent.tabular_backend import strong_candidate_plan
+
+        exploration = strong_candidate_plan(classification, spec.metric.name, y.iloc[inner[0]])
     if metric_recipes and inner is not None and not classification:
         exploration += metric_candidates(spec.metric.name, y.iloc[inner[0]], existing=exploration)
     plan = [seed_candidate(classification), *exploration]
@@ -328,7 +334,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                                 "outer_execution_order": "measured_inner_elapsed_ascending",
                                 "blend_weight": 0.5, "refit_reserve_fraction": 0.25},
               "report_path": str(output_dir / "automl_report.json")}
-    report["search_policy"].update(stability_splits=stability_splits, metric_recipes=metric_recipes)
+    report["search_policy"].update(stability_splits=stability_splits, metric_recipes=metric_recipes,
+                                   search_profile=search_profile)
     report["stability"] = {"requested_splits": stability_splits, "scope": "inner_selection",
                            "applied": False, "rounds": [], "reason": "disabled" if stability_splits == 1 else "not_run"}
     rows, recipes, evidence = {}, {}, {}
@@ -581,7 +588,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         if inner is not None:
             # Plan six refinement slots up front in the budget, but choose their
             # families only after all initial INNER results have been observed.
-            adaptive = len(exploration) >= 5
+            # Strong plans already allocate their trials to deeper boosting.
+            # Keep their training shares instead of appending legacy refinements.
+            adaptive = search_profile == "legacy" and len(exploration) >= 5
             selection_deadline = started + time_budget * (.50 if stability_splits > 1 else .60)
             for index, recipe in enumerate(exploration):
                 run_phase(recipes[recipe["id"]], "selection", selection_deadline,

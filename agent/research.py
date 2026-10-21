@@ -517,7 +517,8 @@ def run_agent_v2(task_path: Path, client, *, max_steps: int = 12,
 
 
 def run_agent(task_path: Path, client, *, max_steps: int = 12,
-              time_budget: float = 10500, stability_splits=1, metric_recipes=False) -> Path:
+              time_budget: float = 10500, stability_splits=1, metric_recipes=False,
+              search_profile="legacy") -> Path:
     """Default to v3; retain the explicitly unverified legacy unknown-metric route."""
     from agent.task_contract import parse_task_metric
 
@@ -526,10 +527,12 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
     except ValueError as error:
         if "Unsupported or unrecognized primary metric" not in str(error):
             raise
-        if stability_splits != 1 or metric_recipes:
+        if stability_splits != 1 or metric_recipes or search_profile != "legacy":
             raise ValueError("Quality experiment options require a supported task metric") from error
         return run_agent_v2(task_path, client, max_steps=max_steps, time_budget=time_budget)
     from agent.research_v3 import run_agent_v3
 
-    return run_agent_v3(task_path, client, max_steps=max_steps, time_budget=time_budget,
-                        stability_splits=stability_splits, metric_recipes=metric_recipes)
+    options = {"stability_splits": stability_splits, "metric_recipes": metric_recipes}
+    if search_profile != "legacy":
+        options["search_profile"] = search_profile
+    return run_agent_v3(task_path, client, max_steps=max_steps, time_budget=time_budget, **options)
