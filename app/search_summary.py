@@ -54,7 +54,7 @@ def validate_search_summary(raw, *, metric=None, model=None, allow_running=False
     """Accept legacy rows and separate selection evidence from outer verification."""
     if not isinstance(raw, dict) or not _BASE <= set(raw) or set(raw) - _BASE - _OPTIONAL:
         raise ValueError("Неполный или неизвестный формат отчёта автоподбора.")
-    statuses = {"completed", "time_limit"} | ({"running", "failed"} if allow_running else set())
+    statuses = {"completed", "time_limit", "fallback"} | ({"running", "failed"} if allow_running else set())
     if not isinstance(raw["status"], str) or raw["status"] not in statuses:
         raise ValueError("Некорректный статус автоподбора.")
     if type(raw["planned"]) is not int or not 1 <= raw["planned"] <= MAX_SEARCH_CANDIDATES or type(raw["completed"]) is not int or not 0 <= raw["completed"] <= raw["planned"]:

@@ -28,6 +28,7 @@ from agent.diagnostics import classification_diagnostics, validate_classificatio
 from agent.execution import run_python
 from agent.file_io import replace_file
 from agent.features import normalize_feature_config
+from agent.llm import safe_error_message
 from agent.search import (align_predictions, exploration_plan, fixed_blend, inner_split_rows,
                           metric_candidates, metric_predictions, refinement_plan, seed_candidate, select_shortlist)
 from agent.task_spec import load_task, load_task_data, score_holdout
@@ -77,11 +78,19 @@ def _json_hash(value) -> str:
                                     separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-def _file_hash(path: Path) -> str:
+def _before_deadline(deadline):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("The original AutoML time budget has been exhausted")
+
+
+def _file_hash(path: Path, *, deadline=None) -> str:
+    _before_deadline(deadline)
     digest = hashlib.sha256()
     with _plain(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            _before_deadline(deadline)
             digest.update(chunk)
+    _before_deadline(deadline)
     return digest.hexdigest()
 
 
@@ -122,13 +131,16 @@ def _commit_checkpoint(submission: Path, held: Path, output_dir: Path) -> Path:
     return directory
 
 
-def data_fingerprint(data_dir: Path) -> str:
+def data_fingerprint(data_dir: Path, *, deadline=None) -> str:
+    _before_deadline(deadline)
     digest = hashlib.sha256()
     for name in INPUT_NAMES:
         digest.update(name.encode("utf-8") + b"\0")
         with (data_dir / name).open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                _before_deadline(deadline)
                 digest.update(chunk)
+    _before_deadline(deadline)
     return digest.hexdigest()
 
 
@@ -358,11 +370,13 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
     def rank(items, key):
         return sorted(items, key=lambda item: rows[item["id"]][key], reverse=spec.metric.higher_is_better)
 
-    def check_source():
-        if (data_fingerprint(data_dir) != input_fingerprint
-                or data_fingerprint(snapshot_dir) != input_fingerprint
+    def check_source(*, recovery_deadline=None):
+        _before_deadline(recovery_deadline)
+        if (data_fingerprint(data_dir, deadline=recovery_deadline) != input_fingerprint
+                or data_fingerprint(snapshot_dir, deadline=recovery_deadline) != input_fingerprint
                 or task_path.read_text(encoding="utf-8-sig") != task_text):
             raise ValueError("Исходная задача или данные изменились во время автоподбора; публикация отменена.")
+        _before_deadline(recovery_deadline)
 
     def check_submission(directory):
         spec.validate_frame(read_csv(directory / "submission.csv"), test[id_column].tolist())
@@ -374,30 +388,93 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             raise ValueError("Сохранённый результат победителя изменился; публикация отменена.")
         check_submission(submission_dir)
         check_source()
-        checkpoint_dir = _commit_checkpoint(submission_dir / "submission.csv",
-                                            record["directory"] / "holdout_predictions.csv", output_dir)
-        _atomic_copy(checkpoint_dir / "submission.csv", task_dir / "submission.csv")
-        _atomic_copy(checkpoint_dir / "holdout_predictions.csv", output_dir / "holdout_predictions.csv")
-        best = {"recipe": recipe, "record": record, "submission_dir": submission_dir, "value": value}
-        search["best_candidate"] = recipe["id"]
-        for row in search["candidates"]:
-            row["selected"] = row["id"] == recipe["id"]
-        report.update(model=recipe["model_config"]["model"], model_config=recipe["model_config"],
-                      feature_config=recipe["feature_config"],
-                      metric={"name": spec.metric.name, "value": value,
-                              "higher_is_better": spec.metric.higher_is_better}, output_valid=True)
+        metadata = {"model": recipe["model_config"]["model"], "model_config": recipe["model_config"],
+                    "feature_config": recipe["feature_config"],
+                    "metric": {"name": spec.metric.name, "value": value,
+                               "higher_is_better": spec.metric.higher_is_better}, "output_valid": True}
         if recipe.get("components"):
-            report["component_feature_configs"] = [item["feature_config"] for item in recipe["components"]]
-        else:
-            report.pop("component_feature_configs", None)
-        report.pop("classification_diagnostics", None)
+            metadata["component_feature_configs"] = [item["feature_config"] for item in recipe["components"]]
         if spec.metric.name == "Macro F1":
             held = read_csv(record["directory"] / "holdout_predictions.csv")
             diagnostics = classification_diagnostics(held["actual"], held["prediction"])
             if diagnostics is not None:
-                report["classification_diagnostics"] = validate_classification_diagnostics(
-                    diagnostics, metric=report["metric"], validation_rows=len(held_rows))
+                metadata["classification_diagnostics"] = validate_classification_diagnostics(
+                    diagnostics, metric=metadata["metric"], validation_rows=len(held_rows))
+        checkpoint_dir = _commit_checkpoint(submission_dir / "submission.csv",
+                                            record["directory"] / "holdout_predictions.csv", output_dir)
+        # Pin accepted bytes and model metadata in host memory before loose
+        # exports/reporting. A later mutable checkpoint pointer is not evidence.
+        accepted = {"candidate_id": recipe["id"], "checkpoint_dir": checkpoint_dir, "value": value,
+                    "submission_sha256": _file_hash(checkpoint_dir / "submission.csv", deadline=deadline),
+                    "holdout_sha256": _file_hash(checkpoint_dir / "holdout_predictions.csv", deadline=deadline),
+                    "metadata": deepcopy(metadata)}
+        search["best_candidate"] = recipe["id"]
+        for row in search["candidates"]:
+            row["selected"] = row["id"] == recipe["id"]
+        accepted["row"] = deepcopy(rows[recipe["id"]])
+        best = accepted
+        for key in ("component_feature_configs", "classification_diagnostics"):
+            report.pop(key, None)
+        report.update(metadata)
+        _atomic_copy(checkpoint_dir / "submission.csv", task_dir / "submission.csv")
+        _atomic_copy(checkpoint_dir / "holdout_predictions.csv", output_dir / "holdout_predictions.csv")
         save("training")
+
+    def recover_accepted(error):
+        """Recover the pinned winner without reading a mutable pointer or fitting."""
+        from agent.emergency import _bounded_copy
+
+        _before_deadline(deadline)
+        try:
+            for directory in (data_dir, snapshot_dir):
+                for name in INPUT_NAMES:
+                    _plain(directory / name)
+            check_source(recovery_deadline=deadline)
+            checkpoint = _plain(best["checkpoint_dir"])
+            for name, key in (("submission.csv", "submission_sha256"),
+                              ("holdout_predictions.csv", "holdout_sha256")):
+                if _file_hash(checkpoint / name, deadline=deadline) != best[key]:
+                    raise ValueError("Pinned accepted AutoML checkpoint bytes changed")
+            _before_deadline(deadline)
+            check_submission(checkpoint)
+            value = score_holdout(checkpoint / "holdout_predictions.csv", spec, expected_ids, expected_actuals)
+            if value != best["value"] or value != best["metadata"]["metric"]["value"]:
+                raise ValueError("Pinned accepted AutoML metric changed")
+            _before_deadline(deadline)
+            check_source(recovery_deadline=deadline)
+        except FileNotFoundError as missing:
+            raise ValueError("Pinned AutoML checkpoint or original inputs are missing") from missing
+        _bounded_copy(checkpoint / "submission.csv", task_dir / "submission.csv", deadline)
+        for key in ("component_feature_configs", "classification_diagnostics"):
+            report.pop(key, None)
+        report.update(deepcopy(best["metadata"]))
+        report["status"] = "fallback"
+        report["recovery"] = {"status": "restored", "kind": "accepted_automl_checkpoint",
+            "candidate_id": best["candidate_id"], "submission_sha256": best["submission_sha256"],
+            "holdout_sha256": best["holdout_sha256"], "error": safe_error_message(error)[-2000:]}
+        search.update(status="fallback", phase="finished", best_candidate=best["candidate_id"])
+        for row in search["candidates"]:
+            if row["id"] == best["candidate_id"]:
+                row.clear()
+                row.update(deepcopy(best["row"]))
+                row["selected"] = True
+                continue
+            row["selected"] = False
+            if row["status"] in {"running", "pending"}:
+                row.update(status="failed", rejection_reason="execution_failed",
+                           error="Search interrupted before this trial completed")
+            elif row["metric"] is not None and better(row["metric"], best["value"]):
+                row.update(rejection_reason="refit_failed",
+                           error="Search interrupted before a full-data checkpoint was accepted")
+        try:
+            _bounded_copy(checkpoint / "holdout_predictions.csv", output_dir / "holdout_predictions.csv", deadline)
+            _before_deadline(deadline)
+            save("finished")
+        except (OSError, RuntimeError, MemoryError) as report_error:
+            report["recovery"]["report_write_failed"] = True
+            report["recovery"]["report_error"] = safe_error_message(report_error)[-2000:]
+        print("Recovered the accepted AutoML checkpoint; no additional model was trained.", flush=True)
+        return deepcopy(report)
 
     def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None):
         nonlocal phase_counter
@@ -620,7 +697,19 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         print(f"Saved: {task_dir / 'submission.csv'}", flush=True)
         print(f"Report: {output_dir / 'automl_report.json'}", flush=True)
         return deepcopy(report)
-    except Exception:
+    except Exception as error:
+        if best is not None and isinstance(error, (OSError, RuntimeError, MemoryError)):
+            try:
+                return recover_accepted(error)
+            except Exception as recovery_error:
+                search.update(status="failed", phase="finished")
+                report["output_valid"] = False
+                report["recovery"] = {"status": "rejected", "error": safe_error_message(recovery_error)[-2000:]}
+                try:
+                    save("finished")
+                except Exception:
+                    pass
+                raise
         search.update(status="failed", phase="finished")
         report["output_valid"] = False
         try:

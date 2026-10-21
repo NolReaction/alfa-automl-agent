@@ -1592,7 +1592,9 @@ function autoSearchView(job) {
     expanded = candidates.some((row) => Object.hasOwn(row, "selection_metric")),
     finished = job.status === "completed" && job.output_valid === true,
     best = candidates.find((row) => row.id === search.best_candidate && row.status === "completed" && row.selected === true && Number.isFinite(row.metric)),
-    status = search.status === "time_limit" && finished && best
+    status = search.status === "fallback" && finished && best
+      ? "Поиск прерван; сохранён проверенный результат"
+      : search.status === "time_limit" && finished && best
       ? "Лимит времени · лучший сохранён"
       : search.status === "failed" ? "Автоподбор завершился с ошибкой"
       : finished && best ? "Лучший вариант сохранён" : runningJob(job) ? "Подбираем модель" : "Автоподбор остановлен",

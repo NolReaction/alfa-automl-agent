@@ -165,6 +165,75 @@ class ClassificationDecisionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     predict_with_rule([row], self.CLASSES, rule)
 
+    def test_date_and_duration_arrays_are_not_probabilities(self):
+        rule = self.identity_rule()
+        # These values cast to the plausible probability row [0, 1, 0]. Their
+        # dtype still represents dates/durations, not real numeric model output.
+        for dtype in ("datetime64[D]", "datetime64[ns]", "timedelta64[D]", "timedelta64[ns]"):
+            probabilities = np.asarray([[0, 1, 0]], dtype=dtype)
+            with self.subTest(dtype=dtype):
+                with self.assertRaises(ValueError):
+                    fit_decision_rule(probabilities, ["NA"], self.CLASSES)
+                with self.assertRaises(ValueError):
+                    predict_with_rule(probabilities, self.CLASSES, rule)
+                with self.assertRaises(ValueError):
+                    decision.fit_guarded_decision_rule(
+                        probabilities, ["NA"], self.CLASSES,
+                        tuning_rows=[0], selection_rows=[],
+                    )
+
+    def test_numeric_object_and_integer_probabilities_retain_their_contract(self):
+        rule = self.identity_rule()
+        expected = np.asarray(self.CLASSES)
+        for dtype in (np.int64, np.uint8, object):
+            probabilities = np.eye(3, dtype=dtype)
+            with self.subTest(dtype=dtype):
+                np.testing.assert_array_equal(
+                    predict_with_rule(probabilities, self.CLASSES, rule), expected)
+                fitted = fit_decision_rule(probabilities, self.CLASSES, self.CLASSES)
+                self.assertEqual(fitted["diagnostics"]["control_score"], 1.0)
+                self.assertEqual(fitted["multipliers"], [1.0, 1.0, 1.0])
+
+    def test_per_class_counts_match_sklearn_with_missing_and_empty_classes(self):
+        rng = np.random.default_rng(441)
+        fixtures = [(np.array([], dtype=int), np.array([], dtype=int), 3),
+                    (np.asarray([0, 0, 1, 1]), np.asarray([1, 2, 1, 2]), 4)]
+        fixtures.extend((rng.integers(0, count - 1, 71), rng.integers(0, count, 71), count)
+                        for count in (2, 3, 7))
+        for actual, predicted, count in fixtures:
+            with self.subTest(classes=count, rows=len(actual)):
+                expected = f1_score(actual, predicted, labels=np.arange(count),
+                                    average=None, zero_division=0)
+                np.testing.assert_allclose(decision._class_f1(actual, predicted, count),
+                                           expected, rtol=0, atol=1e-15)
+                self.assertAlmostEqual(decision._macro_f1(actual, predicted, count),
+                                       float(expected.mean()), places=15)
+
+    def test_many_declared_classes_use_linear_counters_and_fall_back(self):
+        count = 20_000
+        classes = [f"class {index}" for index in range(count)]
+        probabilities = np.zeros((2, count))
+        probabilities[0, 0] = probabilities[1, 1] = 1.0
+        labels = classes[:2]
+        original_bincount = np.bincount
+
+        def bounded_bincount(values, weights=None, minlength=0):
+            # Refuse a quadratic allocation before NumPy can attempt it. A
+            # 20k-class confusion matrix alone would request over 3 GiB.
+            self.assertLessEqual(minlength, count)
+            return original_bincount(values, weights=weights, minlength=minlength)
+
+        with patch.object(decision.np, "bincount", side_effect=bounded_bincount):
+            fitted = fit_decision_rule(probabilities, labels, classes)
+            guarded = decision.fit_guarded_decision_rule(
+                probabilities, labels, classes, tuning_rows=[0], selection_rows=[1])
+        self.assertEqual(fitted["diagnostics"]["fallback_reason"], "missing_class")
+        self.assertEqual(fitted["diagnostics"]["control_score"], 2.0 / count)
+        self.assertEqual(fitted["multipliers"], [1.0] * count)
+        self.assertFalse(guarded["diagnostics"]["accepted"])
+        self.assertEqual(guarded["diagnostics"]["reason"], "tuning_missing_class")
+        self.assertEqual(guarded["rule"]["multipliers"], [1.0] * count)
+
     def test_invalid_class_schemas_are_rejected(self):
         for classes in (["01", "01", "class c"], ["01", "", "class c"],
                         ["01", None, "class c"], ["01", 1, "class c"],

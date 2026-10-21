@@ -70,7 +70,7 @@ def _classes(values):
 def _probabilities(values, n_classes):
     try:
         raw = np.asarray(values)
-        if raw.dtype.kind in "bcUS":
+        if raw.dtype.kind not in "iufO":
             raise ValueError("Probabilities must be real numeric values")
         if raw.dtype.kind == "O" and any(
                 isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
@@ -130,12 +130,7 @@ def _options(options):
 
 
 def _macro_f1(actual, predicted, n_classes):
-    counts = np.bincount(actual * n_classes + predicted,
-                         minlength=n_classes * n_classes).reshape(n_classes, n_classes)
-    numerator = 2.0 * counts.diagonal()
-    denominator = counts.sum(axis=0) + counts.sum(axis=1)
-    values = np.divide(numerator, denominator, out=np.zeros(n_classes), where=denominator != 0)
-    return float(values.mean())
+    return float(_class_f1(actual, predicted, n_classes).mean())
 
 
 def _simplicity(multipliers):
@@ -336,10 +331,13 @@ def _regularized_candidate(matrix, labels, classes, config):
 
 
 def _class_f1(actual, predicted, n_classes):
-    confusion = np.bincount(actual * n_classes + predicted,
-                            minlength=n_classes * n_classes).reshape(n_classes, n_classes)
-    denominator = confusion.sum(axis=0) + confusion.sum(axis=1)
-    return np.divide(2.0 * confusion.diagonal(), denominator,
+    # Per-class F1 needs only support, prediction counts and true positives.
+    # Avoid a K-by-K confusion matrix, especially before rare-class fallback.
+    actual_counts = np.bincount(actual, minlength=n_classes)
+    predicted_counts = np.bincount(predicted, minlength=n_classes)
+    correct_counts = np.bincount(actual[actual == predicted], minlength=n_classes)
+    denominator = actual_counts + predicted_counts
+    return np.divide(2.0 * correct_counts, denominator,
                      out=np.zeros(n_classes), where=denominator != 0)
 
 

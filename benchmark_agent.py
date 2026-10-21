@@ -145,7 +145,7 @@ def _research_driver(solver_root: Path, task: Path, budget: float, solver_option
         f"output = Path({str(task.parent / 'solver_output')!r})\noutput.mkdir()\n"
         f"remaining = {budget!r} - (time.monotonic() - started)\n"
         "if remaining <= 0:\n    raise TimeoutError('Worker startup exhausted the benchmark budget')\n"
-        "evidence = {'version': 1, 'mode': 'research_api_failure', 'external_api_calls': 0, "
+        "evidence = {'version': 2, 'mode': 'research_api_failure', 'external_api_calls': 0, "
         "'simulated_api_calls': 0, 'requested_time_budget_seconds': remaining, 'run_report': None}\n"
         "try:\n"
         f"    run_dir = run_agent_v3(task, client, time_budget=remaining, **{solver_options!r})\n"
@@ -267,13 +267,15 @@ def _research_summary(directory: Path) -> dict | None:
                         or (key == "refit" and prediction_hash != hashlib.sha256(
                             (directory / "submission.csv").read_bytes()).hexdigest())):
                     receipt_valid = False
-        fields = ("research_protocol_version", "status", "reason", "stage", "stages", "api",
+        fields = ("research_protocol_version", "status", "reason", "stage", "stages", "api", "api_recovery",
                   "experiments", "successful_experiments", "local_experiments", "local_successful_experiments",
                   "local_research", "baseline_search", "evaluations", "publication", "output_check",
                   "time_budget_seconds", "elapsed_seconds", "time_allocation", "published_recipe", "quality_options",
                   "host_validation", "best_metric")
         result = {key: report.get(key) for key in fields}
         result.update(benchmark_evidence=evidence, receipt_checks_valid=bool(receipt_valid),
+                      api_retry_count=sum(isinstance(event, dict) and event.get("kind") == "api_retry"
+                                          for event in report.get("events", [])),
                       api_errors=[event.get("details") for event in report.get("events", [])
                                   if isinstance(event, dict) and event.get("kind") == "api_error"])
         return result
@@ -296,18 +298,22 @@ def _research_contract_errors(summary: dict, budget: float, validation: dict | N
                               metric_name: str | None) -> list[str]:
     errors = []
     evidence = summary.get("benchmark_evidence") or {}
-    if (evidence.get("version") != 1 or evidence.get("mode") != "research_api_failure"
+    if (evidence.get("version") != 2 or evidence.get("mode") != "research_api_failure"
             or type(evidence.get("external_api_calls")) is not int or evidence["external_api_calls"] != 0
-            or type(evidence.get("simulated_api_calls")) is not int or evidence["simulated_api_calls"] != 1):
+            or type(evidence.get("simulated_api_calls")) is not int or evidence["simulated_api_calls"] != 2):
         errors.append("simulated_client_contract")
     api = summary.get("api") or {}
-    if (type(api.get("attempts")) is not int or api.get("attempts") != 1
+    recovery = summary.get("api_recovery") or {}
+    if (type(api.get("attempts")) is not int or api.get("attempts") != 2
             or type(api.get("responses")) is not int or api.get("responses") != 0
             or summary.get("experiments") != 0 or summary.get("successful_experiments") != 0
-            or len(summary.get("api_errors") or []) != 1
-            or summary["api_errors"][0] != {"error_type": "APIConnectionError", "cause_type": "ConnectError",
-                                           "transport_reason": "connect_error"}):
-        errors.append("api_failure_not_observed_once")
+            or len(summary.get("api_errors") or []) != 2
+            or any(error != {"error_type": "APIConnectionError", "cause_type": "ConnectError",
+                             "transport_reason": "connect_error"} for error in summary.get("api_errors", []))
+            or type(recovery.get("maximum_retries")) is not int or recovery.get("maximum_retries") != 1
+            or type(recovery.get("retries")) is not int or recovery.get("retries") != 1
+            or type(summary.get("api_retry_count")) is not int or summary.get("api_retry_count") != 1):
+        errors.append("api_failure_retry_not_verified")
     if (summary.get("research_protocol_version") != 3 or summary.get("status") != "fallback"
             or summary.get("reason") != "api_error" or summary.get("stage") != "result"):
         errors.append("research_failure_recovery_not_completed")
@@ -513,7 +519,7 @@ def benchmark(output: Path, *, solver_root: Path = ROOT, cases=CASE_NAMES, seeds
               "case_generator_sha256": hashlib.sha256(host_bytes["benchmark_cases.py"]).hexdigest(),
               "mode_definition": {"seed": "Full run_automl lifecycle with all exploration/metric recipe generators disabled",
                                   "automl": "Unmodified run_automl exploration for the selected solver options",
-                                  "research_api_failure": "Real run_agent_v3 with real startup, automatic validation, local queue, outer/refit; only the provider client is replaced by one typed connection failure. External API calls remain zero."},
+                                  "research_api_failure": "Real run_agent_v3 with real startup, automatic validation, local queue, outer/refit; only the provider client is replaced by persistent typed connection failures, including one budgeted retry. External API calls remain zero."},
               "environment": _versions(), "cases": list(cases), "seeds": list(seeds), "modes": list(modes),
               "time_budget_seconds_per_trial": float(time_budget), "memory_limit_mib": memory_mib,
               "solver_options": solver_options, "api": {"used": False, "calls": 0},

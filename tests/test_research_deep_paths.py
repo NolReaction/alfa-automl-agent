@@ -37,7 +37,7 @@ class DeepPathResearchTests(unittest.TestCase):
             self.assertEqual(trial.get("research_contract_errors"), [], details)
             self.assertEqual(report["api"], {"used": False, "calls": 0})
             self.assertEqual(report["simulation"]["external_api_calls"], 0)
-            self.assertEqual(report["simulation"]["recorded_simulated_api_calls"], 1)
+            self.assertEqual(report["simulation"]["recorded_simulated_api_calls"], 2)
             summary = trial["solver_report"]
             self.assertTrue(summary["receipt_checks_valid"], details)
             self.assertTrue(summary["publication"]["new_result_published"], details)

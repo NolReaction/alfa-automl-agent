@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from agent.automl import _atomic_copy
+from agent.automl import _atomic_copy, _file_hash
 from agent.features import normalize_feature_config
 from agent.llm import ROOT, TOOL, get_model, safe_error_details, safe_error_message
 from agent.model_config import ACTIONS, make_model_config
@@ -33,6 +33,7 @@ from validation import validate_predictions
 
 
 STAGES = ("preparation", "inner_research", "candidate_frozen", "outer_validation", "full_refit", "result")
+MAX_API_RETRIES = 1
 SYSTEM_V3 = """You are an autonomous ML researcher using run_python.
 Read task.md and research_validation.json in the working directory. Only the
 approved outer-fit training view is available for research. All validation
@@ -123,6 +124,7 @@ def _recipe_from_report(report, task_type):
 class V3State(RunState):
     def __init__(self, task_path, max_steps, time_budget):
         super().__init__(task_path, max_steps, time_budget)
+        self._accepted_backup_hash = None
         self.gate = None
         self.baseline = None
         self.baseline_inner = None
@@ -136,7 +138,21 @@ class V3State(RunState):
             evaluations={"selection": None, "final_check": None},
             isolation={"kind": "allowed_input_view", "os_sandbox": False},
             extensions={"policy": "not_connected", "portfolio": "not_connected", "history": "disabled"})
+        self.report["api_recovery"] = {"maximum_retries": MAX_API_RETRIES, "retries": 0}
         self.transition("preparation")
+
+    def checkpoint(self, directory, metric=None):
+        accepted = super().checkpoint(directory, metric)
+        if accepted:
+            self._accepted_backup_hash = _file_hash(self.backup)
+        return accepted
+
+    def recover(self, *, force=False):
+        if self._accepted_backup_hash is None:
+            return False
+        if _file_hash(self.backup) != self._accepted_backup_hash:
+            raise ValueError("Accepted research checkpoint bytes changed")
+        return super().recover(force=force)
 
     def transition(self, stage, *, reason=None):
         if stage not in STAGES:
@@ -602,6 +618,99 @@ def finalize(state, reason):
     return state.finish(status, reason)
 
 
+def _retryable_api_error(error):
+    """Retry transport/server overload once, never explicit account exhaustion.
+
+    Only SDK exception types, status and structured code/type fields participate;
+    a provider's free-form message is neither parsed nor copied into prompts.
+    """
+    from openai import APIConnectionError, APIStatusError
+
+    fields = [getattr(error, name, None) for name in ("code", "type")]
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        fields.extend(body.get(name) for name in ("code", "type"))
+        nested = body.get("error")
+        if isinstance(nested, dict):
+            fields.extend(nested.get(name) for name in ("code", "type"))
+    exhausted = ("quota", "balance", "billing", "budget", "credit", "fund", "payment")
+    if any(isinstance(value, str) and any(word in value.lower() for word in exhausted)
+           for value in fields):
+        return False
+    if isinstance(error, APIConnectionError):
+        return True
+    return (isinstance(error, APIStatusError)
+            and (error.status_code == 429 or 500 <= error.status_code <= 599))
+
+
+def _request_completion(state, client, messages):
+    """Charge every actual request to the original guards, including one retry."""
+    pending_retry = False
+    recovery = state.report["api_recovery"]
+    while True:
+        request_messages = [*messages, {"role": "user", "content":
+            "Current host budget: " + json.dumps(state.budget_context(), ensure_ascii=False, allow_nan=False)}]
+        blocked = state.request_allowed(request_messages)
+        timeout = state.research_timeout(120) if not blocked else 0
+        if not blocked and timeout <= 0:
+            blocked = "time_limit"
+        if blocked:
+            if pending_retry:
+                state.event("api_retry_skipped", reason=blocked)
+            return None, "api_error" if pending_retry else blocked
+        state.report["api"]["attempts"] += 1
+        if pending_retry:
+            recovery["retries"] += 1
+            state.event("api_retry", attempt=state.report["api"]["attempts"],
+                        retry_number=recovery["retries"])
+        state.save()
+        try:
+            response = client.with_options(timeout=timeout).chat.completions.create(
+                model=get_model(), messages=state.clean(request_messages), tools=[TOOL],
+                parallel_tool_calls=False, max_tokens=4096)
+        except Exception as error:
+            state.event("api_error", error=safe_error_message(error), details=safe_error_details(error))
+            if not pending_retry and recovery["retries"] < MAX_API_RETRIES and _retryable_api_error(error):
+                pending_retry = True
+                continue
+            return None, "api_error"
+        state.report["api"]["responses"] += 1
+        try:
+            record_usage(state, response)
+            completion = checked_completion(response)
+        except Exception as error:
+            # The provider already returned a response; malformed paid output
+            # does not justify repeating the request as a transport failure.
+            state.event("api_error", error=safe_error_message(error), details=safe_error_details(error))
+            return None, "api_error"
+        if pending_retry:
+            state.event("api_retry_recovered", attempt=state.report["api"]["attempts"])
+        return completion, None
+
+
+def _recover_after_unexpected_error(state):
+    """Restore only an accepted checkpoint after rechecking every integrity gate."""
+    state.check_source()
+    if state.gate is None:
+        return None
+    state.gate.check_inputs()
+    for candidate in (state.baseline, state.selected_candidate):
+        if candidate is not None:
+            candidate.verify()
+    if state._accepted_backup_hash is None or not state.recover():
+        return None
+    state.report["recovery"] = {"status": "restored", "kind": "accepted_checkpoint",
+                                "submission_sha256": state._accepted_backup_hash}
+    state.report["publication"] = {"new_result_published": False,
+                                   "reason": "unexpected_error", "recovered_checkpoint": True}
+    state.report["best_metric_provenance"] = {
+        "scope": "accepted_checkpoint", "quality_verified": state.report["best_metric"] is not None}
+    state.report["stage"] = "result"
+    state.report["stages"][-1]["status"] = "completed"
+    state.report["events"].append({"kind": "unexpected_error_recovered"})
+    return state.finish("fallback", "unexpected_error")
+
+
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
@@ -644,24 +753,9 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         for step in range(1, max_steps + 1):
             # This host snapshot is refreshed, not appended to accumulated
             # history. It contains only inner information and measured costs.
-            request_messages = [*messages, {"role": "user", "content":
-                "Current host budget: " + json.dumps(state.budget_context(), ensure_ascii=False, allow_nan=False)}]
-            blocked = state.request_allowed(request_messages)
-            if blocked:
-                reason = blocked
-                break
-            state.report["api"]["attempts"] += 1
-            state.save()
-            try:
-                response = client.with_options(timeout=state.research_timeout(120)).chat.completions.create(
-                    model=get_model(), messages=state.clean(request_messages), tools=[TOOL],
-                    parallel_tool_calls=False, max_tokens=4096)
-                state.report["api"]["responses"] += 1
-                record_usage(state, response)
-                completion = checked_completion(response)
-            except Exception as error:
-                state.event("api_error", error=safe_error_message(error), details=safe_error_details(error))
-                reason = "api_error"
+            completion, stopped = _request_completion(state, client, messages)
+            if stopped:
+                reason = stopped
                 break
             if completion["finish_reason"] == "length":
                 reason = "truncated_response"
@@ -733,6 +827,18 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         for stage in state.report.get("stages", []):
             if stage["status"] == "running":
                 stage.update(status="failed", reason=safe_error_message(error))
-        state.save()
-        state.recover()
+        try:
+            state.save()
+        except (OSError, ValueError, TypeError):
+            pass
+        try:
+            recovered = _recover_after_unexpected_error(state)
+            if recovered is not None:
+                return recovered
+        except Exception as recovery_error:
+            state.report["recovery"] = {"status": "rejected", "error": safe_error_message(recovery_error)}
+            try:
+                state.save()
+            except (OSError, ValueError, TypeError):
+                pass
         raise

@@ -38,7 +38,7 @@ def alive(pid):
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
         return stat[stat.rfind(")") + 2:].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
 
 

@@ -22,10 +22,11 @@ from agent.llm import safe_error_details
 
 def run_agent_v3(task, client, *, time_budget, **options):
     assert not any(name in os.environ for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"))
-    try:
-        client.with_options(timeout=2).chat.completions.create(model="fake", messages=[])
-    except Exception as error:
-        details = safe_error_details(error)
+    for _ in range(2):
+        try:
+            client.with_options(timeout=2).chat.completions.create(model="fake", messages=[])
+        except Exception as error:
+            details = safe_error_details(error)
     run_dir = task.parent / ".agent_runs" / ("a" * 32)
     run_dir.mkdir(parents=True)
     shutil.copyfile(task.parent / "inputs" / "sample_submission.csv", task.parent / "submission.csv")
@@ -43,7 +44,8 @@ def run_agent_v3(task, client, *, time_budget, **options):
     report = {"research_protocol_version": 3, "status": "fallback", "reason": "api_error", "stage": "result",
         "stages": [{"id": stage, "status": "completed"} for stage in
                    ("preparation", "inner_research", "candidate_frozen", "outer_validation", "full_refit", "result")],
-        "api": {"attempts": 1, "responses": 0}, "experiments": 0, "successful_experiments": 0,
+        "api": {"attempts": 2, "responses": 0}, "experiments": 0, "successful_experiments": 0,
+        "api_recovery": {"maximum_retries": 1, "retries": 1},
         "baseline_search": {"status": "searched", "execution": {"exit_code": 0, "timed_out": False}},
         "host_validation": {"split": {"strategy": "random"}},
         "local_experiments": 1, "local_successful_experiments": 1,
@@ -56,7 +58,8 @@ def run_agent_v3(task, client, *, time_budget, **options):
         "output_check": {"valid": True}, "time_budget_seconds": time_budget,
         "time_allocation": {"time_budget_seconds": time_budget}, "published_recipe": "baseline",
         "frozen_baseline": frozen, "candidate_receipts": receipts, "quality_options": options,
-        "events": [{"kind": "api_error", "details": details}]}
+        "events": [{"kind": "api_error", "details": details}, {"kind": "api_retry"},
+                   {"kind": "api_error", "details": details}]}
     (run_dir / "run.json").write_text(json.dumps(report), encoding="utf-8")
     return run_dir
 '''
@@ -88,8 +91,8 @@ class BenchmarkResearchTests(unittest.TestCase):
             self.assertEqual(report["status"], "completed", row)
             self.assertEqual(row["research_contract_errors"], [])
             self.assertEqual(report["api"], {"used": False, "calls": 0})
-            self.assertEqual(report["simulation"]["recorded_simulated_api_calls"], 1)
-            self.assertEqual(row["solver_report"]["api"], {"attempts": 1, "responses": 0})
+            self.assertEqual(report["simulation"]["recorded_simulated_api_calls"], 2)
+            self.assertEqual(row["solver_report"]["api"], {"attempts": 2, "responses": 0})
             self.assertEqual(row["solver_report"]["status"], "fallback")
             self.assertTrue(row["solver_report"]["receipt_checks_valid"])
             self.assertEqual(row["solver_report"]["quality_options"], {"metric_recipes": True})
@@ -106,9 +109,11 @@ class BenchmarkResearchTests(unittest.TestCase):
             _, row, _ = self.run_fixture(Path(directory))
             summary = row["solver_report"]
             interventions = (
-                ("benchmark_evidence", {"simulated_api_calls": 2}),
-                ("api", {"attempts": 2}),
+                ("benchmark_evidence", {"simulated_api_calls": 1}),
+                ("api", {"attempts": 1}),
                 ("api", {"attempts": True}),
+                ("api_recovery", {"retries": 0}),
+                ("api_recovery", {"retries": True}),
                 ("baseline_search", {"status": "seed_only"}),
                 ("local_research", {"attempted": 0, "verified": 0, "failed": 0}),
                 ("publication", {"new_result_published": False}),
