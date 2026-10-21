@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
+import csv
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
@@ -18,6 +19,7 @@ import solution
 from agent.llm import DEFAULT_MODEL
 from agent.research import run_agent_v2
 from tests.test_research import FakeClient, known_start, make_regression, response as fake_response
+from validation import validate_predictions
 
 
 HAS_PACKAGES = all(importlib.util.find_spec(name) is not None
@@ -53,7 +55,7 @@ def tool_completion(calls):
 @unittest.skipUnless(HAS_PACKAGES, "Install requirements.txt for SDK protocol tests")
 class ResearchProtocolTests(unittest.TestCase):
     def run_case(self, replies, *, starter=True, max_steps=2, fake_client=None, on_request=None,
-                 model="provided-test-model", response_status=200):
+                 model="provided-test-model", response_status=200, emergency=True):
         """Exercise the real SDK parser; only startup training and tools are mocked."""
         requests = []
 
@@ -95,9 +97,10 @@ class ResearchProtocolTests(unittest.TestCase):
                 with patch.dict(os.environ, env, clear=True), \
                         patch("solution.run_agent", side_effect=run_agent_v2), \
                         patch("sys.argv", ["solution.py", str(task), "--max-steps", str(max_steps),
-                                           "--time-budget", "30"]), \
+                                           "--time-budget", "120"]), \
                         patch("agent.research.prepare_starting_output", side_effect=known_start if starter else None), \
                         patch("agent.research.run_python", side_effect=AssertionError("Invalid reply executed code")) as execute, \
+                        (nullcontext() if emergency else patch("solution._prepare_emergency", return_value=None)), \
                         (patch("solution.make_client", return_value=nullcontext(fake_client))
                          if fake_client is not None else nullcontext()), \
                         redirect_stdout(output), redirect_stderr(errors):
@@ -106,12 +109,16 @@ class ResearchProtocolTests(unittest.TestCase):
                 self.assertEqual(len(reports), 1)
                 report = json.loads(reports[0].read_text(encoding="utf-8"))
                 result = task_dir / "submission.csv"
+                emergency_reports = [json.loads(path.read_text(encoding="utf-8"))
+                                     for path in (task_dir / ".agent_runs").glob("*/emergency.json")]
                 return {
                     "status": status, "report": report, "requests": requests if fake_client is None else [
                         {"messages": messages} for messages in fake_client.received_messages],
                     "output": result.read_bytes() if result.exists() else None,
                     "stdout": output.getvalue(), "stderr": errors.getvalue(),
                     "executions": execute.call_count,
+                    "output_valid": validate_predictions(task_dir)["valid"],
+                    "emergency_reports": emergency_reports,
                 }
         finally:
             server.shutdown()
@@ -126,6 +133,25 @@ class ResearchProtocolTests(unittest.TestCase):
         self.assertEqual(result["executions"], 0)
         self.assertEqual(result["report"]["best_metric"]["value"], 10)
 
+    def assert_emergency_prior_fallback(self, result, reason):
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertTrue(result["output_valid"])
+        self.assertEqual((result["report"]["status"], result["report"]["reason"]),
+                         ("fallback", reason))
+        self.assertIsNone(result["report"]["best_metric"])
+        self.assertEqual(result["report"]["successful_experiments"], 0)
+        self.assertEqual(result["executions"], 0)
+        prior, = result["emergency_reports"]
+        self.assertEqual(prior["kind"], "target_prior")
+        self.assertFalse(prior["quality_verified"])
+        self.assertEqual(prior["model"]["strategy"], "mean")
+        self.assertEqual(prior["model"]["fit_rows"], 100)
+        self.assertEqual(prior["predict_rows"], 2)
+        rows = list(csv.reader(io.StringIO(result["output"].decode("utf-8"))))
+        self.assertEqual(rows[0], ["row_key", "outcome"])
+        self.assertEqual([row[0] for row in rows[1:]], ["0005", "NA"])
+        self.assertEqual([float(row[1]) for row in rows[1:]], [150.5, 150.5])
+
     def test_required_environment_alone_uses_default_model_in_request_and_report(self):
         for model in (None, "   ", "provided-test-model"):
             with self.subTest(model=model):
@@ -138,15 +164,24 @@ class ResearchProtocolTests(unittest.TestCase):
     def test_rate_limit_has_no_retries_or_provider_body_in_output_and_report(self):
         reply = {"error": {"code": "insufficient_quota", "message":
                           "Authorization: Bearer local-protocol-placeholder; private-body-marker"}}
-        for starter in (True, False):
-            with self.subTest(starter=starter):
-                result = self.run_case([reply], starter=starter, response_status=429, model=None)
+        for starter, emergency in ((True, True), (False, True), (False, False)):
+            with self.subTest(starter=starter, emergency=emergency):
+                result = self.run_case([reply], starter=starter, emergency=emergency,
+                                       response_status=429, model=None)
                 self.assertEqual(len(result["requests"]), 1)
+                self.assertEqual(result["report"]["api"]["attempts"], 1)
+                self.assertEqual(result["report"]["api"]["responses"], 0)
                 if starter:
                     self.assert_preserved_fallback(result, "api_error")
+                elif emergency:
+                    self.assert_emergency_prior_fallback(result, "api_error")
                 else:
                     self.assertEqual(result["status"], 1)
-                evidence = json.dumps(result["report"]) + result["stdout"] + result["stderr"]
+                    self.assertEqual(result["report"]["status"], "failed")
+                    self.assertIsNone(result["output"])
+                    self.assertEqual(result["emergency_reports"], [])
+                evidence = (json.dumps(result["report"]) + json.dumps(result["emergency_reports"])
+                            + result["stdout"] + result["stderr"])
                 self.assertIn("RateLimitError", evidence)
                 self.assertIn("HTTP 429", evidence)
                 self.assertIn("req-local-protocol", evidence)
@@ -243,13 +278,21 @@ class ResearchProtocolTests(unittest.TestCase):
         self.assertIn("Original task inputs changed", result["stderr"])
 
     def test_bad_envelope_without_accepted_predictions_still_returns_nonzero(self):
-        result = self.run_case([completion(choices=[])], starter=False)
+        result = self.run_case([completion(choices=[])], starter=False, emergency=False)
         self.assertEqual(result["status"], 1)
         self.assertEqual(result["report"]["status"], "failed")
         self.assertIsNone(result["output"])
         self.assertEqual(result["executions"], 0)
         self.assertEqual(len(result["requests"]), 1)
         self.assertIn("Error:", result["stderr"])
+
+    def test_bad_envelope_with_only_a_fresh_emergency_prior_returns_honest_fallback(self):
+        result = self.run_case([completion(choices=[])], starter=False)
+        self.assert_emergency_prior_fallback(result, "api_error")
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertEqual(result["report"]["api"]["attempts"], 1)
+        self.assertEqual(result["report"]["api"]["responses"], 1)
+        self.assertTrue(any(event["kind"] == "api_error" for event in result["report"]["events"]))
 
 
 if __name__ == "__main__":
