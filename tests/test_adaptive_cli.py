@@ -68,13 +68,16 @@ class AdaptiveCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task = make_regression(Path(directory))
             with patch.object(solution, "run_agent", return_value=Path(directory)) as execute, \
-                    patch("agent.automl.run_automl") as legacy, redirect_stdout(io.StringIO()):
+                    patch("agent.automl.run_automl") as legacy, \
+                    patch("solution.time.monotonic", side_effect=[1024.0, 1034.0]), \
+                    redirect_stdout(io.StringIO()):
+                # Ten seconds pass between setting the deadline and dispatch.
                 solution._offline_solution(task, deadline=time.monotonic() + 350,
                     validation={"strategy": "auto"}, quality_options={"adaptive_search": True})
             self.assertEqual(execute.call_args.args, (task, None))
             self.assertTrue(execute.call_args.kwargs["local_only"])
             self.assertTrue(execute.call_args.kwargs["adaptive_search"])
-            self.assertLessEqual(execute.call_args.kwargs["time_budget"], 350)
+            self.assertEqual(execute.call_args.kwargs["time_budget"], 340.0)
             legacy.assert_not_called()
 
     def test_router_forwards_adaptive_flag_and_rejects_non_boolean_values(self):
