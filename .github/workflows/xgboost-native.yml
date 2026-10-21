@@ -1,0 +1,32 @@
+name: XGBoost native contract
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  xgboost-contract:
+    name: XGBoost contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned runtime and XGBoost
+        run: python -m pip install -r requirements.txt xgboost==2.1.4
+      - name: Verify native candidate and sealed subprocess audit
+        run: python -m unittest discover -s tests -p "test_xgboost_candidate*.py" -v
