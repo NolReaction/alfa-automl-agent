@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -31,6 +32,7 @@ from agent.features import normalize_feature_config
 from agent.llm import safe_error_message
 from agent.search import (align_predictions, exploration_plan, fixed_blend, inner_split_rows,
                           metric_candidates, metric_predictions, refinement_plan, seed_candidate, select_shortlist)
+from agent.search_policy import exploration_candidates, normalize_search_policy, refinement_candidates
 from agent.task_spec import load_task, load_task_data, score_holdout
 from agent.splits import normalize_validation, split_rows
 from offline_baseline import read_csv
@@ -255,7 +257,7 @@ def _raw_evidence(directory, spec, expected_ids, expected_actuals):
 
 def run_automl(task_path: Path, *, time_budget=600, validation=None,
                dataset_fingerprint=None, progress=None, output_dir=None,
-               stability_splits=1, metric_recipes=False) -> dict:
+               stability_splits=1, metric_recipes=False, search_policy="legacy") -> dict:
     started = time.monotonic()
     if (type(time_budget) not in {int, float} or not math.isfinite(time_budget)
             or not 0 < time_budget <= 10500):
@@ -265,6 +267,7 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         raise ValueError("stability_splits must be 1, 2 or 3")
     if type(metric_recipes) is not bool:
         raise ValueError("metric_recipes must be boolean")
+    adaptive_policy = normalize_search_policy(search_policy) == "adaptive_v1"
     task_path = _plain(Path(task_path))
     if not task_path.is_file() or task_path.suffix.lower() != ".md":
         raise ValueError("Передайте существующий task.md.")
@@ -310,8 +313,13 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
     output_dir.mkdir(parents=True, exist_ok=True)
     for name in ("automl_report.json", "holdout_predictions.csv"):
         _plain(output_dir / name)
-    exploration = candidate_plan(classification) if inner is not None else []
-    if metric_recipes and inner is not None and not classification:
+    available_actions = (tuple(action for action in ("linear", "baseline", "extra_trees", "lightgbm", "catboost")
+                               if action not in {"lightgbm", "catboost"} or importlib.util.find_spec(action) is not None)
+                         if adaptive_policy else ())
+    exploration = (exploration_candidates(classification, spec.metric.name, y.iloc[inner[0]],
+                                         available_actions=available_actions)
+                   if adaptive_policy and inner is not None else candidate_plan(classification) if inner is not None else [])
+    if metric_recipes and not adaptive_policy and inner is not None and not classification:
         exploration += metric_candidates(spec.metric.name, y.iloc[inner[0]], existing=exploration)
     plan = [seed_candidate(classification), *exploration]
     search = {"status": "running", "phase": "seed", "planned": len(plan), "completed": 0,
@@ -329,6 +337,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                                 "blend_weight": 0.5, "refit_reserve_fraction": 0.25},
               "report_path": str(output_dir / "automl_report.json")}
     report["search_policy"].update(stability_splits=stability_splits, metric_recipes=metric_recipes)
+    if adaptive_policy:
+        report["search_policy"].update(name="adaptive_v1", metric_aware_candidates=True,
+                                       timing_source="host_wall", cost_estimates_guaranteed=False)
     report["stability"] = {"requested_splits": stability_splits, "scope": "inner_selection",
                            "applied": False, "rounds": [], "reason": "disabled" if stability_splits == 1 else "not_run"}
     rows, recipes, evidence = {}, {}, {}
@@ -476,7 +487,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         print("Recovered the accepted AutoML checkpoint; no additional model was trained.", flush=True)
         return deepcopy(report)
 
-    def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None):
+    def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None,
+                  trial_limit=1800.0):
         nonlocal phase_counter
         row = rows[recipe["id"]]
         row.update(phase=phase, status="running", error=None, rejection_reason=None)
@@ -500,7 +512,7 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             save("training")
             # Staging and progress callbacks are charged to the same deadline.
             remaining = min(phase_deadline, deadline - 2) - time.monotonic()
-            timeout = min(1800.0, remaining / max(1, shares))
+            timeout = min(1800.0, trial_limit, remaining / max(1, shares))
             if timeout <= 1:
                 row.update(status="skipped", rejection_reason="insufficient_budget")
                 return None
@@ -581,18 +593,71 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         if inner is not None:
             # Plan six refinement slots up front in the budget, but choose their
             # families only after all initial INNER results have been observed.
-            adaptive = len(exploration) >= 5
             selection_deadline = started + time_budget * (.50 if stability_splits > 1 else .60)
-            for index, recipe in enumerate(exploration):
-                run_phase(recipes[recipe["id"]], "selection", selection_deadline,
-                          len(exploration) - index + (6 if adaptive else 0))
-            successful = [recipes[item["id"]] for item in exploration if rows[item["id"]]["selection_metric"] is not None]
-            ranked_inner = rank(successful, "selection_metric")
-            refinements = refinement_plan(classification, ranked_inner, list(recipes.values())) if adaptive else []
-            for recipe in refinements:
-                add_recipe(recipe)
-            for index, recipe in enumerate(refinements):
-                run_phase(recipes[recipe["id"]], "selection", selection_deadline, len(refinements) - index)
+            if adaptive_policy:
+                from agent.search_schedule import AdaptiveSearchSchedule
+
+                schedule = AdaptiveSearchSchedule(fit_rows=len(inner[0]), predict_rows=len(inner[1]),
+                    outer_fit_rows=len(fit_rows), outer_predict_rows=len(held_rows),
+                    full_fit_rows=len(train), full_predict_rows=len(test))
+                pending = list(exploration)
+                refined = False
+                attempted_families = set()
+                initial_families = {item["action"] for item in pending}
+                while pending:
+                    successful = [item for item in recipes.values()
+                                  if rows[item["id"]]["selection_metric"] is not None]
+                    ranked_inner = rank(successful, "selection_metric")
+                    if not refined and attempted_families >= initial_families:
+                        for item in refinement_candidates(classification, spec.metric.name, ranked_inner,
+                                existing=list(recipes.values()), available_actions=available_actions):
+                            add_recipe(item)
+                            pending.append(item)
+                        refined = True
+                    decision = schedule.choose(pending,
+                        selection_remaining=max(0, selection_deadline - time.monotonic()),
+                        total_remaining=max(0, deadline - time.monotonic()), ranked=ranked_inner)
+                    report["search_policy"]["schedule"] = schedule.report()
+                    if decision.get("index") is None:
+                        for item in pending:
+                            row = rows[item["id"]]
+                            if row["selection_metric"] is None and row["rejection_reason"] is None:
+                                row["rejection_reason"] = ("insufficient_budget" if decision["reason"] in {
+                                    "finalization_budget", "trial_budget"} else "not_selected")
+                        break
+                    recipe = pending.pop(decision["index"])
+                    attempted_families.add(recipe["action"])
+                    trial_started = time.monotonic()
+                    record = run_phase(recipes[recipe["id"]], "selection", selection_deadline,
+                                       trial_limit=decision["timeout"])
+                    row = rows[recipe["id"]]
+                    elapsed = max(.001, time.monotonic() - trial_started)
+                    # Host scoring, saving and progress callbacks belong to the
+                    # same selection deadline, including their post-fit work.
+                    if record is not None and time.monotonic() > selection_deadline:
+                        row.update(selection_metric=None, status="skipped", rejection_reason="insufficient_budget")
+                        record = None
+                    schedule.observe(recipe, elapsed_seconds=elapsed, completed=record is not None)
+                    if row["rejection_reason"] == "optional_dependency_unavailable":
+                        available_actions = tuple(action for action in available_actions if action != recipe["action"])
+                        for item in pending:
+                            if item["action"] == recipe["action"]:
+                                rows[item["id"]]["rejection_reason"] = "optional_dependency_unavailable"
+                        pending = [item for item in pending if item["action"] != recipe["action"]]
+                    report["search_policy"]["schedule"] = schedule.report()
+                    save("training")
+            else:
+                adaptive = len(exploration) >= 5
+                for index, recipe in enumerate(exploration):
+                    run_phase(recipes[recipe["id"]], "selection", selection_deadline,
+                              len(exploration) - index + (6 if adaptive else 0))
+                successful = [recipes[item["id"]] for item in exploration if rows[item["id"]]["selection_metric"] is not None]
+                ranked_inner = rank(successful, "selection_metric")
+                refinements = refinement_plan(classification, ranked_inner, list(recipes.values())) if adaptive else []
+                for recipe in refinements:
+                    add_recipe(recipe)
+                for index, recipe in enumerate(refinements):
+                    run_phase(recipes[recipe["id"]], "selection", selection_deadline, len(refinements) - index)
             successful = [recipe for recipe in recipes.values() if rows[recipe["id"]]["selection_metric"] is not None]
             shortlist = select_shortlist(rank(successful, "selection_metric"))
             if stability_splits > 1 and len(shortlist) > 1:

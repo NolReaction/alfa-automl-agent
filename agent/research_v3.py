@@ -29,6 +29,7 @@ from agent.research_candidate import (
 from agent.research_validation import HYPOTHESIS_NAME, read_hypothesis
 from agent.research_workspace import ResearchWorkspace
 from agent.search import local_candidate_plan, seed_candidate
+from agent.search_policy import normalize_search_policy
 from validation import validate_predictions
 
 
@@ -275,11 +276,13 @@ def prepare_baseline(state):
         state.report["baseline_search"]["reason"] = "task_semantics_too_large"
     if semantics_allowed and gate.held_rows and timeout > 8:
         startup = state.run_dir / "startup"
+        policy_argument = (", search_policy='adaptive_v1'"
+                           if state.report.get("quality_options", {}).get("search_policy") == "adaptive_v1" else "")
         code = (f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
             "from pathlib import Path\nfrom agent.automl import run_automl\n"
             f"run_automl(Path({str(gate.work_task)!r}), time_budget={timeout - 2!r}, "
             f"validation={gate.choice!r}, output_dir=Path({str(startup)!r}), "
-            f"metric_recipes={state.report.get('quality_options', {}).get('metric_recipes', False)!r})\n")
+            f"metric_recipes={state.report.get('quality_options', {}).get('metric_recipes', False)!r}{policy_argument})\n")
         from agent.execution import run_python
         result = run_python(code, state.workspace, state.run_dir / "startup_execution", 0, timeout=timeout)
         gate.check_inputs()
@@ -289,6 +292,8 @@ def prepare_baseline(state):
             recipe = _recipe_from_report(report, gate.spec.metric.task_type)
             state.report["baseline_search"] = {"scope": "outer_fit_only", "status": "searched",
                 "search": report.get("search"), "execution": result}
+            if policy_argument:
+                state.report["baseline_search"]["search_policy"] = report.get("search_policy")
         except (OSError, ValueError, KeyError, TypeError) as error:
             state.report["baseline_search"].update(reason=str(error), execution=result)
     source = state.run_dir / "baseline_source.py"
@@ -339,11 +344,11 @@ def _consider(state):
     return _assess_candidate(state, candidate, hypothesis, origin="llm")
 
 
-def _assess_candidate(state, candidate, hypothesis, *, origin):
+def _assess_candidate(state, candidate, hypothesis, *, origin, maximum=None):
     """One host-scored inner trial, shared by LLM and bounded local search."""
     gate, recipe = state.gate, candidate.recipe
     state.tried_recipes.append({"recipe": recipe, "code_hash": candidate.code_hash})
-    result = state.measure_inner(candidate)
+    result = state.measure_inner(candidate) if maximum is None else state.measure_inner(candidate, maximum=maximum)
     state.gate.check_inputs()
     counter = "successful_experiments" if origin == "llm" else "local_successful_experiments"
     state.report[counter] = state.report.get(counter, 0) + 1
@@ -402,13 +407,19 @@ def continue_locally(state):
     seen = [*startup_seen(search, code_hash=code_hash), *state.tried_recipes,
             {"recipe": state.baseline.recipe, "code_hash": state.baseline.code_hash}]
 
-    def evaluate(recipe):
+    def evaluate(recipe, maximum=None):
         frozen = freeze_candidate(source, recipe, state.run_dir / "local_candidates" / uuid4().hex)
         feedback = _assess_candidate(state, frozen,
-            {"hypothesis": "Bounded offline alternative after API failure: " + recipe["label"]}, origin="local")
+            {"hypothesis": "Bounded offline alternative after API failure: " + recipe["label"]},
+            origin="local", maximum=maximum)
         state.event("local_experiment", result=feedback)
         return feedback
 
+    if state.report.get("quality_options", {}).get("search_policy") == "adaptive_v1":
+        from agent.adaptive_local import run_adaptive_continuation
+
+        return run_adaptive_continuation(state, evaluate=evaluate, seen=seen,
+                                         code_hash=code_hash, ranked=ranked)
     return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
 
@@ -712,14 +723,18 @@ def _recover_after_unexpected_error(state):
 
 
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
-                 stability_splits=1, metric_recipes=False):
+                 stability_splits=1, metric_recipes=False, search_policy="legacy"):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
     if type(stability_splits) is not int or stability_splits not in {1, 2, 3} or type(metric_recipes) is not bool:
         raise ValueError("Invalid quality experiment options")
+    search_policy = normalize_search_policy(search_policy)
     state = V3State(Path(task_path).resolve(), max_steps, time_budget)
     state.report["quality_options"] = {"stability_splits": stability_splits, "metric_recipes": metric_recipes}
+    if search_policy != "legacy":
+        state.report["quality_options"]["search_policy"] = search_policy
+        state.report["extensions"].update(policy=search_policy, portfolio="bounded_candidates")
     try:
         prepare_research(state)
         prepare_baseline(state)

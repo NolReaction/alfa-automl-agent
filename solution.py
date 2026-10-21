@@ -135,6 +135,8 @@ def main() -> int:
                         help="Experimental paired inner checks of finalists; default 1 (disabled)")
     parser.add_argument("--metric-recipes", action="store_true",
                         help="Experimentally add metric-aware regression recipes to startup AutoML")
+    parser.add_argument("--search-policy", choices=("legacy", "adaptive_v1"), default="legacy",
+                        help="Opt-in diverse, metric-aware search with host timing admission")
     args = parser.parse_args()
     try:
         if args.check:
@@ -150,6 +152,8 @@ def main() -> int:
             quality_options["stability_splits"] = args.stability_splits
         if args.metric_recipes:
             quality_options["metric_recipes"] = True
+        if args.search_policy != "legacy":
+            quality_options["search_policy"] = args.search_policy
         time_budget = args.time_budget if args.time_budget is not None else (600 if selected_mode == "offline" else 10500)
         if args.max_steps < 1 or not 0 < time_budget <= 10500:
             raise ValueError("max-steps must be positive; time-budget must be in (0, 10500].")
