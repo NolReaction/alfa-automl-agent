@@ -83,7 +83,8 @@ LLM и обычных локальных проб. В API передаётся �
 .\.venv\Scripts\python.exe -m unittest tests.test_history_runtime tests.test_history_cli tests.test_history_research -v
 ```
 
-Полный протокол парных измерений находится в `docs/history_runtime_experiments.md`.
+Протокол и результаты парных измерений публикуются в
+[отдельной ветке доказательств](https://github.com/NolReaction/alfa-automl-agent/blob/work/history-runtime-evidence-v1/docs/history_runtime_experiments.md).
 Настоящий AutoML baseline, общий wall-time budget, все отказы и неизменность
 исходных данных проверяются стендом; fixture baseline в unit-тесте не является
 подтверждением улучшения качества. До результата квалификации default не меняется.
