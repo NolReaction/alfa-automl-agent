@@ -1,0 +1,442 @@
+{
+  "version": 1,
+  "repository": "NolReaction/alfa-automl-agent",
+  "main_at_snapshot": "143708b91f50959052dceb15ac968ef279071f02",
+  "archive": {
+    "branch": "archive/2026-10-21",
+    "commit": "31082a347d152585bffcf2d6f88d941f71902a64",
+    "proposed_parent_shas": [
+      "4ba713be2a220d05e1bde1d0cb5e32213d5120c6",
+      "a83ea836b2d98403009f55a19e30a386454af2a5",
+      "bbce98ca7480ac1b55cf91b865ab85c5e7cee2b5",
+      "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+      "4ffafbba6f6ea9df8fe450fa9c2cf95827c5f159",
+      "d4fc0a05bf8d82762fdf94249d61106c89e9cff9",
+      "b8114a36b0b587f3c0915e8a3a23ad07413330b0",
+      "a4b88780fb86dcee57bfc1284b6e849e841c6e1b",
+      "534de08b81a6a1222075ee5008c8ef14ac58c71d",
+      "9069fde512f18c1ec635f223054f28d1ea77352e",
+      "99ad6ed9ac878b4f274d8eed3168066d63f907cc",
+      "c44fe22455e90a912f7da9bfbf06afc2f0ab2017",
+      "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
+      "29ee5f2c92a133db0a5649f84fbf9196c423ff78",
+      "c0b6d5f2b5b69c1a16ffb6c3928707fed5074fa9"
+    ],
+    "first_parent_sha": "143708b91f50959052dceb15ac968ef279071f02",
+    "never_merge_into_main": true,
+    "note": "Root pins commit only after publishing a durable archive containing every removable tip; extra parents listed here preserve all unique stale tips."
+  },
+  "branches": [
+    {
+      "name": "app",
+      "expected_sha": "4ba713be2a220d05e1bde1d0cb5e32213d5120c6",
+      "decision": "archive_first",
+      "reason": "PR #3 слит через squash; старый tip не ancestor main.",
+      "require_main_ancestor": false,
+      "pull_request": 3,
+      "required_transfers": []
+    },
+    {
+      "name": "main",
+      "expected_sha": "143708b91f50959052dceb15ac968ef279071f02",
+      "decision": "keep",
+      "reason": "Основная ветка; никогда не удалять.",
+      "require_main_ancestor": false,
+      "pull_request": null,
+      "required_transfers": []
+    },
+    {
+      "name": "work/competition-quality-v2",
+      "expected_sha": "490844a8f36ead3a14c1c8c9d4f3bbebf4e753a8",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 17,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima",
+      "expected_sha": "a83ea836b2d98403009f55a19e30a386454af2a5",
+      "decision": "archive_first",
+      "reason": "PR #4 слит через squash; старый tip не ancestor main.",
+      "require_main_ancestor": false,
+      "pull_request": 4,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima-automl",
+      "expected_sha": "bbce98ca7480ac1b55cf91b865ab85c5e7cee2b5",
+      "decision": "archive_first",
+      "reason": "PR #6 слит через squash; старый tip не ancestor main.",
+      "require_main_ancestor": false,
+      "pull_request": 6,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima-expanded-agent",
+      "expected_sha": "5de1f3e71e53eac259c7ddc6d2f318715268fa5a",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 8,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima-integration",
+      "expected_sha": "d5980f7477ec618d84eca0d1bb1ace4e516a2073",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 9,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima-platform-reliability",
+      "expected_sha": "01d3900cd50b5b4f7b0a66ad06ca0f56147ba432",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 7,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima-research-v2",
+      "expected_sha": "c33e467c744f13dd3d34b08edd2edf667158cfc7",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 11,
+      "required_transfers": []
+    },
+    {
+      "name": "work/dima-team-plan",
+      "expected_sha": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+      "decision": "transfer_then_delete",
+      "reason": "Исторические документы сохранены точными копиями в docs/archive_20261021; исходный tip также в pinned archive.",
+      "require_main_ancestor": false,
+      "pull_request": 10,
+      "required_transfers": [
+        {
+          "source_path": "docs/team/DIMA.md",
+          "main_path": "docs/archive_20261021/old_team_plan/DIMA.md"
+        },
+        {
+          "source_path": "docs/team/MURAD.md",
+          "main_path": "docs/archive_20261021/old_team_plan/MURAD.md"
+        },
+        {
+          "source_path": "docs/team/NIKA.md",
+          "main_path": "docs/archive_20261021/old_team_plan/NIKA.md"
+        },
+        {
+          "source_path": "docs/team/README.md",
+          "main_path": "docs/archive_20261021/old_team_plan/README.md"
+        },
+        {
+          "source_path": "docs/team/TANYA.md",
+          "main_path": "docs/archive_20261021/old_team_plan/TANYA.md"
+        }
+      ]
+    },
+    {
+      "name": "work/frequency-candidate-v1",
+      "expected_sha": "4ffafbba6f6ea9df8fe450fa9c2cf95827c5f159",
+      "decision": "delete_after_merge",
+      "reason": "PR #24; удалить только после принятия и включения tip в main.",
+      "require_main_ancestor": true,
+      "pull_request": 24,
+      "required_transfers": []
+    },
+    {
+      "name": "work/gpt-macro-f1-rules",
+      "expected_sha": "497ff65f919cf751d2550329664354d21747bc6c",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 13,
+      "required_transfers": []
+    },
+    {
+      "name": "work/history-auto-evidence-v1",
+      "expected_sha": "d4fc0a05bf8d82762fdf94249d61106c89e9cff9",
+      "decision": "transfer_then_delete",
+      "reason": "Перенести оба отчёта auto-history в main.",
+      "require_main_ancestor": false,
+      "pull_request": null,
+      "required_transfers": [
+        {
+          "source_path": "docs/history_auto_experiments.md",
+          "main_path": "docs/history_auto_experiments.md"
+        },
+        {
+          "source_path": "docs/history_auto_results.json",
+          "main_path": "docs/history_auto_results.json"
+        }
+      ]
+    },
+    {
+      "name": "work/history-auto-v1",
+      "expected_sha": "b8114a36b0b587f3c0915e8a3a23ad07413330b0",
+      "decision": "delete_after_merge",
+      "reason": "PR #23; удалить только после включения tip в main.",
+      "require_main_ancestor": true,
+      "pull_request": 23,
+      "required_transfers": []
+    },
+    {
+      "name": "work/history-runtime-evidence-v1",
+      "expected_sha": "a4b88780fb86dcee57bfc1284b6e849e841c6e1b",
+      "decision": "transfer_then_delete",
+      "reason": "Перенести оба отчёта explicit history в main.",
+      "require_main_ancestor": false,
+      "pull_request": null,
+      "required_transfers": [
+        {
+          "source_path": "docs/history_runtime_experiments.md",
+          "main_path": "docs/history_runtime_experiments.md"
+        },
+        {
+          "source_path": "docs/history_runtime_results.json",
+          "main_path": "docs/history_runtime_results.json"
+        }
+      ]
+    },
+    {
+      "name": "work/history-runtime-v1",
+      "expected_sha": "c5f127223dde0eb935d021a62e2d2fdbb5fbcc55",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 19,
+      "required_transfers": []
+    },
+    {
+      "name": "work/murad-building-history",
+      "expected_sha": "13242f6761fde7bf038a6b52e174c6705d02f32b",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 5,
+      "required_transfers": []
+    },
+    {
+      "name": "work/murad-data",
+      "expected_sha": "9dcc5366b436dbcfe07730165af4abe2b97c8423",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 1,
+      "required_transfers": []
+    },
+    {
+      "name": "work/murad-history-schema-v1",
+      "expected_sha": "534de08b81a6a1222075ee5008c8ef14ac58c71d",
+      "decision": "delete_after_merge",
+      "reason": "PR #21, включая ускорение; удалить только после включения tip в main.",
+      "require_main_ancestor": true,
+      "pull_request": 21,
+      "required_transfers": []
+    },
+    {
+      "name": "work/murad-history-v2",
+      "expected_sha": "0f1ffcfe6804b5033eceb2ed6c5a7881cedba05f",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 16,
+      "required_transfers": []
+    },
+    {
+      "name": "work/murad-profiling",
+      "expected_sha": "9069fde512f18c1ec635f223054f28d1ea77352e",
+      "decision": "archive_first",
+      "reason": "PR #2 закрыт без merge; сохранить уникальные исходники в архивном graph.",
+      "require_main_ancestor": false,
+      "pull_request": 2,
+      "required_transfers": []
+    },
+    {
+      "name": "work/night-quality-v1",
+      "expected_sha": "99ad6ed9ac878b4f274d8eed3168066d63f907cc",
+      "decision": "archive_first",
+      "reason": "PR #14 содержит уникальный experimental adaptive search; сохранить до закрытия.",
+      "require_main_ancestor": false,
+      "pull_request": 14,
+      "required_transfers": []
+    },
+    {
+      "name": "work/night-unseen-v1",
+      "expected_sha": "e2444ed9fc952098922e4448c175518518b628fc",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 15,
+      "required_transfers": []
+    },
+    {
+      "name": "work/nika-research-policy",
+      "expected_sha": "3e10edd0679b86d1b3dac2ec729c22afd9b50219",
+      "decision": "keep",
+      "reason": "Активная работа Ники, PR #22; никогда не удалять этим планом.",
+      "require_main_ancestor": false,
+      "pull_request": 22,
+      "required_transfers": []
+    },
+    {
+      "name": "work/oof-macro-f1-v1",
+      "expected_sha": "682ea5b36a184eaf5b2ab7c50ea10ab52d4aa195",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 20,
+      "required_transfers": []
+    },
+    {
+      "name": "work/portfolio-recipes",
+      "expected_sha": "46f3ff517e1b379446e9c30ae8ecb576b9042a8b",
+      "decision": "delete_merged",
+      "reason": "Tip уже ancestry-reachable из main; исходные коммиты сохраняются.",
+      "require_main_ancestor": true,
+      "pull_request": 12,
+      "required_transfers": []
+    },
+    {
+      "name": "work/round4-frequency-task",
+      "expected_sha": "c44fe22455e90a912f7da9bfbf06afc2f0ab2017",
+      "decision": "transfer_then_delete",
+      "reason": "ТЗ второго ИИ сохранить в main до удаления ветки.",
+      "require_main_ancestor": false,
+      "pull_request": null,
+      "required_transfers": [
+        {
+          "source_path": "docs/team_round3/SECOND_AI_FREQUENCY.md",
+          "main_path": "docs/team_round3/SECOND_AI_FREQUENCY.md"
+        }
+      ]
+    },
+    {
+      "name": "work/strong-tabular-evidence-v1",
+      "expected_sha": "8ee9c9f1fc2eb6891d63257059f04e9e05fc08c3",
+      "decision": "transfer_then_delete",
+      "reason": "Исторические документы сохранены точными копиями в docs/archive_20261021; исходный tip также в pinned archive.",
+      "require_main_ancestor": false,
+      "pull_request": null,
+      "required_transfers": [
+        {
+          "source_path": "docs/strong_tabular_budget_admission.json",
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_budget_admission.json"
+        },
+        {
+          "source_path": "docs/strong_tabular_budget_admission.md",
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_budget_admission.md"
+        },
+        {
+          "source_path": "docs/strong_tabular_qualification.json",
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_qualification.json"
+        },
+        {
+          "source_path": "docs/strong_tabular_report.md",
+          "main_path": "docs/archive_20261021/strong_tabular_evidence/strong_tabular_report.md"
+        }
+      ]
+    },
+    {
+      "name": "work/team-policy-followup-v1",
+      "expected_sha": "29ee5f2c92a133db0a5649f84fbf9196c423ff78",
+      "decision": "transfer_then_delete",
+      "reason": "ТЗ Ники перенести в main до удаления ветки.",
+      "require_main_ancestor": false,
+      "pull_request": null,
+      "required_transfers": [
+        {
+          "source_path": "docs/team_round3/NIKA_POLICY_V2.md",
+          "main_path": "docs/team_round3/NIKA_POLICY_V2.md"
+        },
+        {
+          "source_path": "docs/team_round3/README.md",
+          "main_path": "docs/team_round3/README.md"
+        }
+      ]
+    },
+    {
+      "name": "work/veronika-qwen",
+      "expected_sha": "c0b6d5f2b5b69c1a16ffb6c3928707fed5074fa9",
+      "decision": "archive_first",
+      "reason": "Устаревший PR #18 меняет llm.py; сохранить tip, не подмешивать в release.",
+      "require_main_ancestor": false,
+      "pull_request": 18,
+      "required_transfers": []
+    }
+  ],
+  "open_pull_requests": [
+    {
+      "number": 24,
+      "title": "Research: isolated fit-only frequency candidate for full v3 agent",
+      "head": "work/frequency-candidate-v1",
+      "head_sha": "4ffafbba6f6ea9df8fe450fa9c2cf95827c5f159",
+      "draft": true,
+      "decision": "review_and_merge_before_branch_delete"
+    },
+    {
+      "number": 23,
+      "title": "Add opt-in automatic history schema discovery through v3",
+      "head": "work/history-auto-v1",
+      "head_sha": "b8114a36b0b587f3c0915e8a3a23ad07413330b0",
+      "draft": true,
+      "decision": "review_and_merge_before_branch_delete"
+    },
+    {
+      "number": 22,
+      "title": "Work/nika research policy",
+      "head": "work/nika-research-policy",
+      "head_sha": "3e10edd0679b86d1b3dac2ec729c22afd9b50219",
+      "draft": false,
+      "decision": "keep_active"
+    },
+    {
+      "number": 21,
+      "title": "Генератор схем истории: ограниченный proposer, каталог, audit и отчёт",
+      "head": "work/murad-history-schema-v1",
+      "head_sha": "534de08b81a6a1222075ee5008c8ef14ac58c71d",
+      "draft": false,
+      "decision": "review_and_merge_before_branch_delete"
+    },
+    {
+      "number": 18,
+      "title": "Update llm.py",
+      "head": "work/veronika-qwen",
+      "head_sha": "c0b6d5f2b5b69c1a16ffb6c3928707fed5074fa9",
+      "draft": false,
+      "decision": "archive_before_close"
+    },
+    {
+      "number": 14,
+      "title": "Добавить opt-in adaptive search и независимую проверку качества",
+      "head": "work/night-quality-v1",
+      "head_sha": "99ad6ed9ac878b4f274d8eed3168066d63f907cc",
+      "draft": false,
+      "decision": "archive_before_close"
+    },
+    {
+      "number": 10,
+      "title": "ТЗ команды: четыре параллельных направления без конфликтов",
+      "head": "work/dima-team-plan",
+      "head_sha": "bb1e4592ffe59cb62a84e49fd382de484bf04c3f",
+      "draft": false,
+      "decision": "archive_before_close"
+    }
+  ],
+  "instructions": [
+    "Dry-run is the default. It may fetch immutable objects for ancestry checks but never pushes.",
+    "Execution requires --execute and a current main checkout.",
+    "Pin archive.commit only after root creates the immutable archive branch; a placeholder blocks execution.",
+    "Refresh expected_sha when a branch changes. A moved or missing ref is never deleted.",
+    "PR21/23/24 tips must be ancestors of the current remote main before removal.",
+    "For documents/tasks, tip ancestry in current main preserves original blobs in history. If ancestry is absent, every required transfer must match the current main blob exactly; main_path may point into an archival documentation folder.",
+    "The script protects main, every archive/ ref, Nika branches and all locally checked-out worktree branches. It rechecks local protection and effective push destinations immediately before each push.",
+    "Origin fetch and exactly one effective push URL must identify the expected GitHub owner/repository. Remote URLs and raw Git stderr are never printed. Existing Git authentication must already be configured."
+  ],
+  "snapshot_recorded_at": "2026-10-21T15:40:47.043748+00:00",
+  "snapshot_note": "Remote refs were read during inventory. This is a historical snapshot; refresh expected heads and pin the archive commit before execution.",
+  "release_note": "Pinned backup is an archive-only tree; never merge the archive branch into main. The current release branch is intentionally outside this historical deletion manifest."
+}
