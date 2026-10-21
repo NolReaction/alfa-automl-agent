@@ -1,0 +1,2139 @@
+{
+  "version": 1,
+  "kind": "history_runtime_v1_evidence",
+  "api_calls": 0,
+  "runtime_remote_commit": "7cfa8c98a11e64ee09ab343a5917f2294ccc3e77",
+  "runtime_local_commit": "782d738a5992ea5fb93767c7da5e5e2d7b266504",
+  "runtime_tree": "aef1d8f387f621c7f6d33e84878081b34a1cbf80",
+  "harness_remote_commit": "c5f127223dde0eb935d021a62e2d2fdbb5fbcc55",
+  "harness_local_commit": "41ba4ecf7aa5c034c6684dab9abd1122ff750d64",
+  "harness_tree": "aa5875d747ab04c6d145cf4d16a357304eb54b0f",
+  "resource_observation": {
+    "cgroup_memory_max_bytes": 8589934592,
+    "cgroup_cpu_max": "800000 100000",
+    "configured_child_memory_bytes": 6442450944,
+    "process_inventory_available": false,
+    "peak_rss_measured": false,
+    "cap_enforcement_verified": false
+  },
+  "interpretation": {
+    "comparison": "Equal-walltime native v3 end-to-end, history opt-in weight 0.5",
+    "history_exercise_requires": "history_verified=true, separately from a valid published full refit",
+    "known_public": "Previously studied TRAIN year5 sanity with explicit six keys; separate from synthetic confirmation",
+    "smoke": "Separate protocol-only smoke excluded from this quality report",
+    "decision": "Keep history opt-in; no private-score/platform/three-hour/default-promotion claim"
+  },
+  "groups": {
+    "synthetic": {
+      "directory": "paired_v1",
+      "method_sha256": "66953779a31667094f77b700cff0ab285e900e4225c72f6968100b4ea3f2d729",
+      "manifest_sha256": "9b79fe7512c1ac7855aab990ccd0e76b673660c6e5c5e4c53ddf4698223b4a8f",
+      "source": {
+        "commit": "782d738a5992ea5fb93767c7da5e5e2d7b266504",
+        "source_sha256": "28f7a51ebbc9833367a2de21a64b653b7e2266a068d2926f14589f9f36197c2e",
+        "worktree_dirty": false
+      },
+      "host_source_commit": "41ba4ecf7aa5c034c6684dab9abd1122ff750d64",
+      "method": {
+        "version": 1,
+        "source_sha256": "28f7a51ebbc9833367a2de21a64b653b7e2266a068d2926f14589f9f36197c2e",
+        "harness_sha256": {
+          "experiment_history_runtime.py": "91c0c1a37ae4ad939aa34cbe24a29a92da4675a5fd9d24587fa457a23efb9d70",
+          "history_runtime_cases.py": "e2205a4512cf7f005653615e1985375b2417286e0ad05fce6af8ac7aa3898992",
+          "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+          "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2"
+        },
+        "history_weight": 0.5,
+        "local_only": true,
+        "search_profile": "legacy",
+        "smoke_only": false,
+        "stability_splits": 1,
+        "metric_recipes": false,
+        "budget_seconds_per_trial": 90.0,
+        "memory_mib": 6144,
+        "total_seconds": 1800.0,
+        "development_seeds": [
+          131
+        ],
+        "reserved_seed": 379,
+        "confirmation_cases": [
+          "entity_signal",
+          "colliding_keys"
+        ],
+        "confirmation_seeds": [
+          2203,
+          4001
+        ],
+        "comparison": "Equal walltime native v3 local_only; baseline-match flag, not a pure-effect guarantee",
+        "history_configs": {
+          "entity_signal_131": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "no_history_coverage_131": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "colliding_keys_131": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "iid_regression_131": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "entity_signal_2203": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "entity_signal_4001": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "colliding_keys_2203": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          },
+          "colliding_keys_4001": {
+            "key_columns": [
+              "entity_key"
+            ],
+            "period_column": "period",
+            "numeric_columns": [],
+            "positive_columns": [],
+            "ambiguity_policy": "allow"
+          }
+        }
+      },
+      "environment": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "scikit-learn": "1.5.2",
+        "catboost": "1.2.8",
+        "lightgbm": "4.6.0",
+        "psutil": "6.1.1"
+      },
+      "original_inputs": {},
+      "confirmation_freeze": {
+        "version": 1,
+        "method_sha256": "66953779a31667094f77b700cff0ab285e900e4225c72f6968100b4ea3f2d729",
+        "manifest_sha256": "9b79fe7512c1ac7855aab990ccd0e76b673660c6e5c5e4c53ddf4698223b4a8f",
+        "development_report_sha256": "7a1b5bb4831b09d4a29815dc7179db09e9f25968a5338e4591fb6691fb335339",
+        "frozen_at": "2026-10-21T13:18:46.503766+00:00"
+      },
+      "reports": {
+        "development": {
+          "status": "completed",
+          "started_at": "2026-10-21T13:15:15.863194+00:00",
+          "finished_at": "2026-10-21T13:18:22.783839+00:00",
+          "elapsed_seconds": 186.9202237570007,
+          "report_sha256": "7a1b5bb4831b09d4a29815dc7179db09e9f25968a5338e4591fb6691fb335339",
+          "audit_sha256": "d3f004cba766370692595cbee4e471fdf502ec6ae82c513cf1d710ba980c0189"
+        },
+        "confirmation": {
+          "status": "completed",
+          "started_at": "2026-10-21T13:19:08.887864+00:00",
+          "finished_at": "2026-10-21T13:22:48.443866+00:00",
+          "elapsed_seconds": 219.55559061400163,
+          "report_sha256": "b5e7557de6d4e87b19d95fa3f264bd348a53dc5dbc96347211f86195aab691ea",
+          "audit_sha256": "68443cfa8ce0c5c9b4d8705ea761ea17dcc0efd8e54ae37b08b71b7dc20b816d"
+        }
+      },
+      "coordinator": {
+        "version": 1,
+        "consumed_seconds": 406.47581437100234,
+        "in_progress": null
+      },
+      "pairs": [
+        {
+          "stage": "development",
+          "case": "entity_signal_131",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.4556312066421174,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.3639735745385364,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.09165763210358102,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "development",
+          "case": "no_history_coverage_131",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.1917858152427425,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.1917858152427425,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.0,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "development",
+          "case": "colliding_keys_131",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.04674024658744828,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.04674024658744828,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.0,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "development",
+          "case": "iid_regression_131",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.15818104423726895,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.15818104423726895,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.0,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "confirmation",
+          "case": "entity_signal_2203",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.44519282494361845,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.365332279080717,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.07986054586290142,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "confirmation",
+          "case": "entity_signal_4001",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.4203015007880427,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.38002283510397433,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.04027866568406835,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "confirmation",
+          "case": "colliding_keys_2203",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.05873851226447267,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.05873851226447267,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.0,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        },
+        {
+          "stage": "confirmation",
+          "case": "colliding_keys_4001",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 0.054897720616307356,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 0.054897720616307356,
+            "higher_is_better": false
+          },
+          "signed_improvement": 0.0,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        }
+      ],
+      "trials": [
+        {
+          "stage": "development",
+          "case": "entity_signal_131",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 27.856972290001067,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "2641385d439f75ed91eb672708691d953dff7b8a4c53733e9ba3b530822fbaaf",
+          "split_sha256": "d1c25dc1da6b3af20aad01dfbcf8a2fc304d4083a349ffe7b604ac4ee7445a9d",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.4556312066421174,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "d3b4b26d810a43c9b343472f6434b603e325c0928fa020a1e0fd9fcfe5731ddc",
+            "artifacts": {
+              ".agent_runs/8b2a106662d4463984650c09bd74a32f/run.json": "ee634014241a0e445487ddddbf6ce13048d171a4ca91910d0f2feb6be335483b",
+              "submission.csv": "519bdf901f82c8393c0a184b3e8d136e415caeefd1671672a40b6384b0a5ca07",
+              ".agent_runs/8b2a106662d4463984650c09bd74a32f/last_valid_submission.csv": "519bdf901f82c8393c0a184b3e8d136e415caeefd1671672a40b6384b0a5ca07",
+              ".agent_runs/8b2a106662d4463984650c09bd74a32f/outer_evaluations/baseline/outer_validation_8e4ae6b3e7b242efb8cfaf45eb2c3a70/receipt.json": "8e75557abcb4d0b722fd4c38d131af27201bb59d42efd034f61183fd99a95c58",
+              ".agent_runs/8b2a106662d4463984650c09bd74a32f/full_refit/baseline/full_refit_00857ace480649859250378f6cd49eee/receipt.json": "b880dd16193caaa87b34b993a3b053118f5d960232fd84b8db0891e601b56cc4"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "entity_signal_131",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 26.085371379000208,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "2641385d439f75ed91eb672708691d953dff7b8a4c53733e9ba3b530822fbaaf",
+          "split_sha256": "d1c25dc1da6b3af20aad01dfbcf8a2fc304d4083a349ffe7b604ac4ee7445a9d",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.3639735745385364,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "published_recipe": "candidate",
+          "published_frozen": {
+            "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+            "recipe_hash": "93c3ff08ea2d7161f3ff7c6c4e4a006ff579d2ad403503eece342875acaebb2f"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "improved",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "93c3ff08ea2d7161f3ff7c6c4e4a006ff579d2ad403503eece342875acaebb2f"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": true,
+            "reason": "improved",
+            "metric": {
+              "name": "RMSE",
+              "value": 0.4831490136519767,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "7d456d62bd548af9e847e33a99e2e00b54d8c5f930dc66f3d285b6e365640f6f",
+            "artifacts": {
+              ".agent_runs/07baf1a5ce7043ad8137994e2379c052/run.json": "d2e570adaf4d8f62149b62e159eea46bcd6efb7e912ce1c5cc73070b2699e102",
+              "submission.csv": "fa91478b6f1d7e8b377d129dbe4da64bdf54614a716933adf86808228f0245d3",
+              ".agent_runs/07baf1a5ce7043ad8137994e2379c052/last_valid_submission.csv": "fa91478b6f1d7e8b377d129dbe4da64bdf54614a716933adf86808228f0245d3",
+              ".agent_runs/07baf1a5ce7043ad8137994e2379c052/outer_evaluations/candidate/outer_validation_f2dcc1e4ed92465894fa06ee06bb4084/receipt.json": "3666e7272092e1cffe8e504d2f3d4be9c7f385c99cdac3af98f070089b362786",
+              ".agent_runs/07baf1a5ce7043ad8137994e2379c052/full_refit/candidate/full_refit_0262aedd0a9345fe800804171b5a7ae2/receipt.json": "c251f0497feae6f77f5b88241bf5a62cce21ea30fd5eba83e1e828c6abb87bef",
+              ".agent_runs/07baf1a5ce7043ad8137994e2379c052/inner_evaluations/inner_selection_212e8bb22040449a82deb68f4ab190cd/receipt.json": "d2596ece747962c7a352d372a7ee069d7d7950db6790d8da46167e399d30a6d4"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "no_history_coverage_131",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 27.202124276998802,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "978288abd0dd9ddad4a8f57e10aeb3abdce108b773657914d73e1f8d4b04ccec",
+          "split_sha256": "ae8e351eeac9dcf19d31616e338243dd08526a2d9fcc463c9f7de46769a03f57",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.1917858152427425,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "not_better",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "fdc1010592ac277bf9614c7fd66c880b3c90b946619e0cea887b4fa558e92e55"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": false,
+            "reason": "not_better",
+            "metric": {
+              "name": "RMSE",
+              "value": 0.22094970379823628,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "67c05080240ebf85fc02cb13a3524837ce1c67d170e1f3f739ddbac4b2fcef50",
+            "artifacts": {
+              ".agent_runs/cac83e5b1b234dd89faef6c6a59b9af2/run.json": "7ffc0a7d42be32e64c0ecca8c3a3241e627e3dcec350b98d915fb3a5a076c200",
+              "submission.csv": "99e8b1524f5964a2c5aa70945546d146bdf59aef8727234b6c910d74bc63aac7",
+              ".agent_runs/cac83e5b1b234dd89faef6c6a59b9af2/last_valid_submission.csv": "99e8b1524f5964a2c5aa70945546d146bdf59aef8727234b6c910d74bc63aac7",
+              ".agent_runs/cac83e5b1b234dd89faef6c6a59b9af2/outer_evaluations/baseline/outer_validation_7597561fa6534dbe9e6cb2f29b5a7148/receipt.json": "edc0be0b5d665210d7e020bf87c79efb5d7a39603bf39f55eb07e6a4709628cc",
+              ".agent_runs/cac83e5b1b234dd89faef6c6a59b9af2/full_refit/baseline/full_refit_9547ae6d6daf4e908db98040f43ceb53/receipt.json": "1354a5e36f21eb71235294787f02966b1ed73fccf57462f7053fe6b96d144429",
+              ".agent_runs/cac83e5b1b234dd89faef6c6a59b9af2/inner_evaluations/inner_selection_69d741b235014cbbb48c2eabf6075382/receipt.json": "841f0eed6da375f8e2d15548ac9ac36fde5c2c3bd6b31132703392588d274fad"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "no_history_coverage_131",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 24.533254072999625,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "978288abd0dd9ddad4a8f57e10aeb3abdce108b773657914d73e1f8d4b04ccec",
+          "split_sha256": "ae8e351eeac9dcf19d31616e338243dd08526a2d9fcc463c9f7de46769a03f57",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.1917858152427425,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "49fbd6726a90ad750717145a4966dd177c8dc2cc4dfbfe9db49b021474f31c13",
+            "artifacts": {
+              ".agent_runs/24ddc903d1a34312a05eef1076a56791/run.json": "6bdb57cf34452d7248b9df212f911fb810936523a2af1f80d3335b346708c5d2",
+              "submission.csv": "99e8b1524f5964a2c5aa70945546d146bdf59aef8727234b6c910d74bc63aac7",
+              ".agent_runs/24ddc903d1a34312a05eef1076a56791/last_valid_submission.csv": "99e8b1524f5964a2c5aa70945546d146bdf59aef8727234b6c910d74bc63aac7",
+              ".agent_runs/24ddc903d1a34312a05eef1076a56791/outer_evaluations/baseline/outer_validation_47ba91d88a844fd1be508301c2cdcbaa/receipt.json": "61525e1904f9e4606434cab7858841fde9a5bb5685084ad262d8f041faef6a15",
+              ".agent_runs/24ddc903d1a34312a05eef1076a56791/full_refit/baseline/full_refit_953c48e4cb29408fad2a56087fa31d97/receipt.json": "aa40efc18d537b8f528aaf138c01ba5c90c61c31ccd466dfd587631329ddbbf4"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "colliding_keys_131",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 24.071442168999056,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "66dc1cb2bbb13e676d07e9ee3db0dc1bf7eb9c5d844bb41c8f275cd1cc1bbdb9",
+          "split_sha256": "69aa1d28ebe94b91d5970a286a244f7b99a04f1ccba3d31fd210b2ea4fa3e736",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.04674024658744828,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "1fb0b53815e2d422e4354cdd661872190eed24db82868148047fc387ebb2b3c7",
+            "artifacts": {
+              ".agent_runs/d7a1e5177e4240f78ddbe19671f905f1/run.json": "1d4e7570b26a3fe82a3eb6399fde8e06aa43c3f381e5042f5ec4ea474526c946",
+              "submission.csv": "a3d5d7a46f19325bd62529e39a2a1ec4ebbf64c73582b08527cc9ae5b1e2d198",
+              ".agent_runs/d7a1e5177e4240f78ddbe19671f905f1/last_valid_submission.csv": "a3d5d7a46f19325bd62529e39a2a1ec4ebbf64c73582b08527cc9ae5b1e2d198",
+              ".agent_runs/d7a1e5177e4240f78ddbe19671f905f1/outer_evaluations/baseline/outer_validation_63f9a574b33245cebc116d99a8609f44/receipt.json": "543db0477f5a77e7850dee51b686ebb20f77ad242215114fe7c069386e0ce6d1",
+              ".agent_runs/d7a1e5177e4240f78ddbe19671f905f1/full_refit/baseline/full_refit_f00f5cbf7244409d9fd10b2481961b94/receipt.json": "529c44557f8559cd098ec05fb50da443213d112681c896839656580643569cf4"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "colliding_keys_131",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 17.502128895999704,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "66dc1cb2bbb13e676d07e9ee3db0dc1bf7eb9c5d844bb41c8f275cd1cc1bbdb9",
+          "split_sha256": "69aa1d28ebe94b91d5970a286a244f7b99a04f1ccba3d31fd210b2ea4fa3e736",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.04674024658744828,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "not_better",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "fdc1010592ac277bf9614c7fd66c880b3c90b946619e0cea887b4fa558e92e55"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": false,
+            "reason": "not_better",
+            "metric": {
+              "name": "RMSE",
+              "value": 2.2574278876360734,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "4212805bd0d9adb98dcc9a03b3e7060c5c4293fad93598c660343d9e79cc4a96",
+            "artifacts": {
+              ".agent_runs/22a9d74f43e54ee3b725f5fd3c199df8/run.json": "874d41dcb2ce8e89dcdbf28710916e5e1a313fe95965c4d2478b278a7731b5e2",
+              "submission.csv": "a3d5d7a46f19325bd62529e39a2a1ec4ebbf64c73582b08527cc9ae5b1e2d198",
+              ".agent_runs/22a9d74f43e54ee3b725f5fd3c199df8/last_valid_submission.csv": "a3d5d7a46f19325bd62529e39a2a1ec4ebbf64c73582b08527cc9ae5b1e2d198",
+              ".agent_runs/22a9d74f43e54ee3b725f5fd3c199df8/outer_evaluations/baseline/outer_validation_e25195de05a341559946737dbd697a5d/receipt.json": "c029663a7a843608d44d5d17d295db260c20e184061b88c7fe1c6f1340c1aaf3",
+              ".agent_runs/22a9d74f43e54ee3b725f5fd3c199df8/full_refit/baseline/full_refit_ee6c348cd95449928f4b76e346d5874c/receipt.json": "c1004b3246a98c033e9aa63f081537e0b49c545296aef45096b7e2b468f70325",
+              ".agent_runs/22a9d74f43e54ee3b725f5fd3c199df8/inner_evaluations/inner_selection_aaf1395493264ef1a150878c62679bab/receipt.json": "3d40e5597151bce2e167812b6977e8e0daecb8a9ad8a54565327196ec58f8032"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "iid_regression_131",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 22.026151600000958,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "85df6b1b8a025bba3805093e2e43fe394f94189cbb01fc442dfe926de419a8da",
+          "split_sha256": "c13b025aeaa663caf1bbe248d8468132f1f599f1871aaf6844eb68ea76252243",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.15818104423726895,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": false,
+            "status": "skipped",
+            "reason": "time_validation_required",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": false,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "5945025549ee33da3ba8452bd2bef8321116b06fece67ad5cf9dbaf7a042724b",
+            "artifacts": {
+              ".agent_runs/50d9bf82f3734d28a91aa16d14261aa1/run.json": "0e100b02324449b2f2d77493ac678da88ac901562a39757b7ecd67a311644d77",
+              "submission.csv": "1f40c1eb4065a599b150b11a9898b2f3de43b2e94f375eea2b78b26f90d9fe29",
+              ".agent_runs/50d9bf82f3734d28a91aa16d14261aa1/last_valid_submission.csv": "1f40c1eb4065a599b150b11a9898b2f3de43b2e94f375eea2b78b26f90d9fe29",
+              ".agent_runs/50d9bf82f3734d28a91aa16d14261aa1/outer_evaluations/baseline/outer_validation_24b228be0d2a4395b644933a8c68fab0/receipt.json": "1fdc2f18cd85efab3ef8fd5da2b8ae836bc5b8e7a4d3b8c5168beb31bddc4798",
+              ".agent_runs/50d9bf82f3734d28a91aa16d14261aa1/full_refit/baseline/full_refit_becbf0dbb37b403d80f2c9940cc83a88/receipt.json": "367512a1a09c5c4e6b7525538e79462bce647138942693620ea5ea921b18913d"
+            }
+          }
+        },
+        {
+          "stage": "development",
+          "case": "iid_regression_131",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 16.836254719000863,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "85df6b1b8a025bba3805093e2e43fe394f94189cbb01fc442dfe926de419a8da",
+          "split_sha256": "c13b025aeaa663caf1bbe248d8468132f1f599f1871aaf6844eb68ea76252243",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.15818104423726895,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": false,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "0fdf1a21bcfee4125104d8be1127808f11188ed0070306ab8ced37ea2807edaf",
+            "artifacts": {
+              ".agent_runs/4595f7d7f8cd4d71b978a2a285e0d92f/run.json": "877aa5954a33cc0b2f8efa2b7b10e19d459cb8e20da0cd70f29300e6fd28bfb5",
+              "submission.csv": "1f40c1eb4065a599b150b11a9898b2f3de43b2e94f375eea2b78b26f90d9fe29",
+              ".agent_runs/4595f7d7f8cd4d71b978a2a285e0d92f/last_valid_submission.csv": "1f40c1eb4065a599b150b11a9898b2f3de43b2e94f375eea2b78b26f90d9fe29",
+              ".agent_runs/4595f7d7f8cd4d71b978a2a285e0d92f/outer_evaluations/baseline/outer_validation_c6fb7c5a81e94b45ac1a5aafa6ecf122/receipt.json": "8efe615400f67cb9af08b7d0a48bda7a991f635e60f5ccf2b13ca6f9a3566905",
+              ".agent_runs/4595f7d7f8cd4d71b978a2a285e0d92f/full_refit/baseline/full_refit_73aaf6315ccf4302831276905ad1d2cc/receipt.json": "8dbd5ee58ece8b59fef771049093702cc2490ad1121e7d0375a95bcd03d91102"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "entity_signal_2203",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 26.659057324999594,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "11b239c183dbe9a21d0e9b053de29bbc2ec9c2dfb1ec13474b069ad326ac5790",
+          "split_sha256": "3e5bba5da4fc838e473de5958f7ffee0e22a85a8cc349cca141884b9531b9933",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.44519282494361845,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "e94c796656678bb1ed693d62ff9293d480c94c2ae09311221684db4cee3b65c8",
+            "artifacts": {
+              ".agent_runs/ce4710808f9c44e2a377761a92afff0e/run.json": "d7d28a9c1c6242825db459392b5d3870a1fc8e3d9ab143482218bbc7eece4bb3",
+              "submission.csv": "3bdc904b0a287076ce1997a62293ba9dcbe4ce46f1835bb49d9e0261cc647a87",
+              ".agent_runs/ce4710808f9c44e2a377761a92afff0e/last_valid_submission.csv": "3bdc904b0a287076ce1997a62293ba9dcbe4ce46f1835bb49d9e0261cc647a87",
+              ".agent_runs/ce4710808f9c44e2a377761a92afff0e/outer_evaluations/baseline/outer_validation_8832146770a44ee49b29dae237aa9c8d/receipt.json": "df361ae0f345a8d6d0785973cb7a59d96b0225b8c30695065af87234c60618ee",
+              ".agent_runs/ce4710808f9c44e2a377761a92afff0e/full_refit/baseline/full_refit_93af332e111d4fb9989d1f8630a29196/receipt.json": "497fc5420d9bd12dc808e6062bd8bf98e9922e923f6a40c073a238da64ccbc6c"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "entity_signal_2203",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 31.906273280999812,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "11b239c183dbe9a21d0e9b053de29bbc2ec9c2dfb1ec13474b069ad326ac5790",
+          "split_sha256": "3e5bba5da4fc838e473de5958f7ffee0e22a85a8cc349cca141884b9531b9933",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.365332279080717,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "published_recipe": "candidate",
+          "published_frozen": {
+            "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+            "recipe_hash": "93c3ff08ea2d7161f3ff7c6c4e4a006ff579d2ad403503eece342875acaebb2f"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "improved",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "93c3ff08ea2d7161f3ff7c6c4e4a006ff579d2ad403503eece342875acaebb2f"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": true,
+            "reason": "improved",
+            "metric": {
+              "name": "RMSE",
+              "value": 0.4935167059116428,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "4f6b2723222dac9c8bbc2f42366bccd15c5a5130d294eaef4d2b1f7fb7dbbbf2",
+            "artifacts": {
+              ".agent_runs/ed80d2dad01b4bebbf9884120fe135c8/run.json": "179ec570537856bc921d237279fee42ca66a0a47c691b60e87ec28887e9ffafc",
+              "submission.csv": "9fb36bb6514d6ac0d46711a05dd2715591b7747f6d03c59dfaccce13700d114e",
+              ".agent_runs/ed80d2dad01b4bebbf9884120fe135c8/last_valid_submission.csv": "9fb36bb6514d6ac0d46711a05dd2715591b7747f6d03c59dfaccce13700d114e",
+              ".agent_runs/ed80d2dad01b4bebbf9884120fe135c8/outer_evaluations/candidate/outer_validation_28e222ff4a3046a3b09f53ed9270d67f/receipt.json": "b6ebd251188c1f6607763b52e4ef733d4a22bd5fd374868448046db8dea70797",
+              ".agent_runs/ed80d2dad01b4bebbf9884120fe135c8/full_refit/candidate/full_refit_3be0cce18f264b8eb9c116d22d09e6e8/receipt.json": "187edf5126a4d8dbedb79345355ea179c5a9f3e78bb589bed9454a3aed84189f",
+              ".agent_runs/ed80d2dad01b4bebbf9884120fe135c8/inner_evaluations/inner_selection_514d58786ddc405f9e90dbe9e47241b4/receipt.json": "51eaf24ba7f0d1333305807b1fd139b801c97eb88c69c37cccac3e7e4cc1c35c"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "entity_signal_4001",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 28.093126742000095,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "f2d01d43868e43577b2cc845eaf35fb67af68d4ad5b28eea42c703e93bafe999",
+          "split_sha256": "c09c77330ceaa7952a12b5aae928c9b102f6987cefe9425719577aa5dba9a321",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.38002283510397433,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "published_recipe": "candidate",
+          "published_frozen": {
+            "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+            "recipe_hash": "93c3ff08ea2d7161f3ff7c6c4e4a006ff579d2ad403503eece342875acaebb2f"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "improved",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "93c3ff08ea2d7161f3ff7c6c4e4a006ff579d2ad403503eece342875acaebb2f"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": true,
+            "reason": "improved",
+            "metric": {
+              "name": "RMSE",
+              "value": 0.4806693273905893,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "bb5260c1b6256a822df0f1227f5a9a85088e26754b34cf576ee6c1d77e17fc9a",
+            "artifacts": {
+              ".agent_runs/7ee78f288f254fe988409b4b1ba5fdf9/run.json": "75c7a76ee8d76e352216c568854471e6b40d920d7888481fd7472f1f8bb66e6f",
+              "submission.csv": "ad50a67cbf2ed601355401aa383b08127e68e5a60e6e9610b81ec15861b30e3d",
+              ".agent_runs/7ee78f288f254fe988409b4b1ba5fdf9/last_valid_submission.csv": "ad50a67cbf2ed601355401aa383b08127e68e5a60e6e9610b81ec15861b30e3d",
+              ".agent_runs/7ee78f288f254fe988409b4b1ba5fdf9/outer_evaluations/candidate/outer_validation_2975627efeba41589065f74282040273/receipt.json": "1df9331b23613ea027174a7559a77fb3b1b5d4b109a616a13dce302ef554008c",
+              ".agent_runs/7ee78f288f254fe988409b4b1ba5fdf9/full_refit/candidate/full_refit_4da1eaa349cd4076993a067132c066ef/receipt.json": "620d3859ebece13d226ecda73acbdff6f56001a78db9d14dbd6ab20f0c639894",
+              ".agent_runs/7ee78f288f254fe988409b4b1ba5fdf9/inner_evaluations/inner_selection_22f7ccc36d964f778547c73210a5e39d/receipt.json": "0afd0e5e41e427d8a3635db01a7018b22884e81680f589a088bbb21ccae8ae66"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "entity_signal_4001",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 28.672585410000465,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "f2d01d43868e43577b2cc845eaf35fb67af68d4ad5b28eea42c703e93bafe999",
+          "split_sha256": "c09c77330ceaa7952a12b5aae928c9b102f6987cefe9425719577aa5dba9a321",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.4203015007880427,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "4cf24bcb431aab368cdbc779fac558662b85dda4484babda0ce7c1a1facc5993"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "d70fdfffdbad6560c8372b44a676323f8f19ec82c9e97bae051c0f6d5399304c",
+            "artifacts": {
+              ".agent_runs/dac4bb1a605d419185deb3563e64eeb7/run.json": "ede5ef0864ee94ed6c7fca9121272e3efa03068a06721d487cda4a06c9d08e7a",
+              "submission.csv": "0cac2f1886f56386861d68df9da503559e35c2090bf8d2bb6d7ed5a971639f0e",
+              ".agent_runs/dac4bb1a605d419185deb3563e64eeb7/last_valid_submission.csv": "0cac2f1886f56386861d68df9da503559e35c2090bf8d2bb6d7ed5a971639f0e",
+              ".agent_runs/dac4bb1a605d419185deb3563e64eeb7/outer_evaluations/baseline/outer_validation_91ad376d684e4ee48ea241c8a667324c/receipt.json": "43bd2a58dba74f85922173425dbf6f0779314d0d2a2b58e8b281a76d6e98eef6",
+              ".agent_runs/dac4bb1a605d419185deb3563e64eeb7/full_refit/baseline/full_refit_2d520f54ed18444fae8f244e12b13d50/receipt.json": "4378c10b75f6868cd851f983f973a2a66583333ebe0b5924b518842b61391396"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "colliding_keys_2203",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 26.365715552999973,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "de9dc086e61f4125e4365ffbc0ae73be81898b9e488129d075d87ed45d691f6c",
+          "split_sha256": "752c22240825f6d5b65e5fcccf8cfa9ef579c1fed4018d4e086ba0544cadac12",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.05873851226447267,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "d2e5dae9fcca2c8e730dbfcf34cde58e5aeb114b9571901a3c51b3331090731a",
+            "artifacts": {
+              ".agent_runs/15c4680a1212492aa55f0b7ac4303c96/run.json": "f4ee8dbb28539cf866b8c3d33a77d4543a003e859bf6a1cc18f19317620b6369",
+              "submission.csv": "230d8eb74f07cb2996dbd2f8a0d5b6317dba5fbbd34c6a3874330ea0b9631d44",
+              ".agent_runs/15c4680a1212492aa55f0b7ac4303c96/last_valid_submission.csv": "230d8eb74f07cb2996dbd2f8a0d5b6317dba5fbbd34c6a3874330ea0b9631d44",
+              ".agent_runs/15c4680a1212492aa55f0b7ac4303c96/outer_evaluations/baseline/outer_validation_c2c063e48405409aab6651b7282216dd/receipt.json": "55b9c3c4cd627477d1c6d8322d1ecab4ba84432f1d94e06ff5920e5e7a0bfffe",
+              ".agent_runs/15c4680a1212492aa55f0b7ac4303c96/full_refit/baseline/full_refit_2b0f34c97956426f943b08b7dc8b491b/receipt.json": "c1b0cecfcd0749c6400835a1ad16cf3cc5d9f0dee3071cd33f985b29fc2751f2"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "colliding_keys_2203",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 26.4784263319998,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "de9dc086e61f4125e4365ffbc0ae73be81898b9e488129d075d87ed45d691f6c",
+          "split_sha256": "752c22240825f6d5b65e5fcccf8cfa9ef579c1fed4018d4e086ba0544cadac12",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.05873851226447267,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "not_better",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "fdc1010592ac277bf9614c7fd66c880b3c90b946619e0cea887b4fa558e92e55"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": false,
+            "reason": "not_better",
+            "metric": {
+              "name": "RMSE",
+              "value": 2.3418087405976493,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "7ac3948cce993eb20c4e90099cf06ab8267cbfc711c5e32262a6b9c973029c22",
+            "artifacts": {
+              ".agent_runs/d567bf57c2cb4affb510204b8f67273e/run.json": "5542dbcfcb45ed7a45815829a3db5a3dd34350e42bc51105bf194e2113cd1ec7",
+              "submission.csv": "230d8eb74f07cb2996dbd2f8a0d5b6317dba5fbbd34c6a3874330ea0b9631d44",
+              ".agent_runs/d567bf57c2cb4affb510204b8f67273e/last_valid_submission.csv": "230d8eb74f07cb2996dbd2f8a0d5b6317dba5fbbd34c6a3874330ea0b9631d44",
+              ".agent_runs/d567bf57c2cb4affb510204b8f67273e/outer_evaluations/baseline/outer_validation_3f149e09d8c345fea73b53c9585ace3a/receipt.json": "81eecec428378cf4edcf8a660feae2e78c7ddccc7d8744c2d868373a46e164fb",
+              ".agent_runs/d567bf57c2cb4affb510204b8f67273e/full_refit/baseline/full_refit_b7079bf4ab2a42bbac5b37da3bdf7b2d/receipt.json": "fa8291dd6113a9b6530604501c7e6fa288584ba33f7b78f9f56c08f4442d2aac",
+              ".agent_runs/d567bf57c2cb4affb510204b8f67273e/inner_evaluations/inner_selection_67cd524c3e634e6c88e3292c8e0615d8/receipt.json": "d39657731c872e825882f16746c7c9b9f5817750018f600007e1b9d65bbcf01f"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "colliding_keys_4001",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 26.322538974000054,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "030cae7fa0fc5c868767c9a4f23be268c45c63457d7bd9ffdf1a698bacfd1806",
+          "split_sha256": "c7653a82761391cd043a8e46e5a5b3f422f41612beabc3ff3486091f29b7dcc6",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.054897720616307356,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "not_better",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "fdc1010592ac277bf9614c7fd66c880b3c90b946619e0cea887b4fa558e92e55"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": false,
+            "reason": "not_better",
+            "metric": {
+              "name": "RMSE",
+              "value": 2.4452808806445243,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "e294b646e7a0c1d7dd03e8a5c41c1486365017bc8a22d544f636881c930f14b0",
+            "artifacts": {
+              ".agent_runs/7b2a59b23cc24545bf524e4fa6a677f0/run.json": "74b5763e42d85f6b53f030f6980d600db21723c851557f80f22e338161a61133",
+              "submission.csv": "81f0187ba2d3f653e4d561cddc9ed2378a8270b2db824bef8120df5e62bb8262",
+              ".agent_runs/7b2a59b23cc24545bf524e4fa6a677f0/last_valid_submission.csv": "81f0187ba2d3f653e4d561cddc9ed2378a8270b2db824bef8120df5e62bb8262",
+              ".agent_runs/7b2a59b23cc24545bf524e4fa6a677f0/outer_evaluations/baseline/outer_validation_4135262b4d094634b1da0a21f1a89700/receipt.json": "af1fc36f44a0204b44978f575d751fbb3545047c384028433344d74f6d61c1b9",
+              ".agent_runs/7b2a59b23cc24545bf524e4fa6a677f0/full_refit/baseline/full_refit_98d655b5005c47eabd8be8b3ef980cb1/receipt.json": "4cdb3b32191313b9d3c6282e8195e40ecec6f2ac8043854e03e1373f50c15df0",
+              ".agent_runs/7b2a59b23cc24545bf524e4fa6a677f0/inner_evaluations/inner_selection_bfdbd1c2a96d4fb6ae0a1b1b94ccf85e/receipt.json": "8e45969375c98d2bcc439ed3a26e87e439ee2b0e0ab216ed30208ce3635b6cf8"
+            }
+          }
+        },
+        {
+          "stage": "confirmation",
+          "case": "colliding_keys_4001",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 24.191336014000626,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "030cae7fa0fc5c868767c9a4f23be268c45c63457d7bd9ffdf1a698bacfd1806",
+          "split_sha256": "c7653a82761391cd043a8e46e5a5b3f422f41612beabc3ff3486091f29b7dcc6",
+          "metric": {
+            "name": "RMSE",
+            "value": 0.054897720616307356,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "33850ee362dedc9c7ba39af469427cd441c57bc7c1ffabfd2ab14e295e7e7bb4"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "de05558219ac55b5407f82eeb3b64270fb8579deaff0bc75af8559e2b5617d1c",
+            "artifacts": {
+              ".agent_runs/c349e8c716d4490fafe8bd440847a756/run.json": "603d5e7bcd2e7609b18fbf0a9c2d3a929940bf871f049ba54fb13d551b210aee",
+              "submission.csv": "81f0187ba2d3f653e4d561cddc9ed2378a8270b2db824bef8120df5e62bb8262",
+              ".agent_runs/c349e8c716d4490fafe8bd440847a756/last_valid_submission.csv": "81f0187ba2d3f653e4d561cddc9ed2378a8270b2db824bef8120df5e62bb8262",
+              ".agent_runs/c349e8c716d4490fafe8bd440847a756/outer_evaluations/baseline/outer_validation_3904770595274b2d8ce481075173d833/receipt.json": "debf69235ac574ce41ec2468d2d9518bae4995e1fd1d0dfb97bd2f8979c664c8",
+              ".agent_runs/c349e8c716d4490fafe8bd440847a756/full_refit/baseline/full_refit_05bb8f6f995f4eae8aaedb2a4aa140b1/receipt.json": "2aff17ca33e3402d97d6acebdc60072ef671ba9f3c00fb654ba29d3554dbda78"
+            }
+          }
+        }
+      ]
+    },
+    "known_public_sanity": {
+      "directory": "public_sanity_v1",
+      "method_sha256": "fd6e733167e4faaacec47f88a6c699243d8eae1eb452d713ea2a3fa22855c4f7",
+      "manifest_sha256": "4ab082dc9ef14a9aeceda14a67ad45538df203cd7af69af05a8bfd50dfb56d26",
+      "source": {
+        "commit": "782d738a5992ea5fb93767c7da5e5e2d7b266504",
+        "source_sha256": "28f7a51ebbc9833367a2de21a64b653b7e2266a068d2926f14589f9f36197c2e",
+        "worktree_dirty": false
+      },
+      "host_source_commit": "41ba4ecf7aa5c034c6684dab9abd1122ff750d64",
+      "method": {
+        "version": 1,
+        "source_sha256": "28f7a51ebbc9833367a2de21a64b653b7e2266a068d2926f14589f9f36197c2e",
+        "harness_sha256": {
+          "experiment_history_runtime.py": "91c0c1a37ae4ad939aa34cbe24a29a92da4675a5fd9d24587fa457a23efb9d70",
+          "history_runtime_cases.py": "e2205a4512cf7f005653615e1985375b2417286e0ad05fce6af8ac7aa3898992",
+          "benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+          "benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2"
+        },
+        "history_weight": 0.5,
+        "local_only": true,
+        "search_profile": "legacy",
+        "smoke_only": false,
+        "stability_splits": 1,
+        "metric_recipes": false,
+        "budget_seconds_per_trial": 300.0,
+        "memory_mib": 6144,
+        "total_seconds": 700.0,
+        "development_seeds": [
+          131
+        ],
+        "reserved_seed": 379,
+        "confirmation_cases": [
+          "entity_signal",
+          "colliding_keys"
+        ],
+        "confirmation_seeds": [
+          2203,
+          4001
+        ],
+        "comparison": "Equal walltime native v3 local_only; baseline-match flag, not a pure-effect guarantee",
+        "history_configs": {
+          "known_public_year5_0": {
+            "key_columns": [
+              "State_Factor",
+              "building_class",
+              "facility_type",
+              "floor_area",
+              "year_built",
+              "ELEVATION"
+            ],
+            "period_column": "Year_Factor",
+            "numeric_columns": [
+              "floor_area",
+              "year_built",
+              "ELEVATION"
+            ],
+            "positive_columns": [
+              "year_built"
+            ],
+            "ambiguity_policy": "allow"
+          }
+        }
+      },
+      "environment": {
+        "python": "3.12.14",
+        "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "scikit-learn": "1.5.2",
+        "catboost": "1.2.8",
+        "lightgbm": "4.6.0",
+        "psutil": "6.1.1"
+      },
+      "original_inputs": {
+        "/workspace/scratch/271f408d330f/alfa-public-data/regression/task.md": "33f743ead4840336856cb9db8e25867f44512231beebff927326e8580e14d9d0",
+        "/workspace/scratch/271f408d330f/alfa-public-data/regression/regression/participants/data_dictionary.csv": "ffd7a8574fa4b203c43915e26a53e4072637c0dce8f1e6e7bcf93374a89a26a3",
+        "/workspace/scratch/271f408d330f/alfa-public-data/regression/regression/participants/sample_submission.csv": "0016b18d58c47bbbe842556b4957ba215b3ad50121c9923260537d936a09eae1",
+        "/workspace/scratch/271f408d330f/alfa-public-data/regression/regression/participants/test.csv": "a7c64db92a07e1a5b1e7f637bdd434da7a5e98a1676c854ec6a645c9e5827095",
+        "/workspace/scratch/271f408d330f/alfa-public-data/regression/regression/participants/train.csv": "096dac951cf44fade5417ddd0465c41beee3009663dbea34e8d464a4d3c7f775"
+      },
+      "confirmation_freeze": null,
+      "reports": {
+        "public_sanity": {
+          "status": "completed",
+          "started_at": "2026-10-21T13:23:46.272432+00:00",
+          "finished_at": "2026-10-21T13:27:08.606867+00:00",
+          "elapsed_seconds": 202.3339762960004,
+          "report_sha256": "99b6aa877ffc26b3cbccc388b7ebda61c20fddbfaa424fd1595f402109c76fc8",
+          "audit_sha256": "836421f4670cf02d3470fcd0b64a5adc5210b275863c03e04ea31880c2403f8a"
+        }
+      },
+      "coordinator": {
+        "version": 1,
+        "consumed_seconds": 202.3339762960004,
+        "in_progress": null
+      },
+      "pairs": [
+        {
+          "stage": "public_sanity",
+          "case": "known_public_year5_0",
+          "comparable_end_to_end": true,
+          "control": {
+            "name": "RMSE",
+            "value": 47.67845830667366,
+            "higher_is_better": false
+          },
+          "history": {
+            "name": "RMSE",
+            "value": 45.94466410541874,
+            "higher_is_better": false
+          },
+          "signed_improvement": 1.7337942012549235,
+          "baseline_recipe_match": true,
+          "effect_scope": "Equal-walltime end-to-end; differing local admissions may also contribute"
+        }
+      ],
+      "trials": [
+        {
+          "stage": "public_sanity",
+          "case": "known_public_year5_0",
+          "arm": "control",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 86.09817594199922,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "44188a60307fcc7cb25739014b8f45e39e5a96ade182ac44f1b2e5006550e4ba",
+          "split_sha256": "5fecce061516268793df6d0bcd8f514c5245b98462d172d6041e0ff32a45d474",
+          "metric": {
+            "name": "RMSE",
+            "value": 47.67845830667366,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "a3d1672f9c741034e0af472ea8788aaa4fa9ab85ba656644c420a21f9c750e32"
+          },
+          "published_recipe": "baseline",
+          "published_frozen": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "a3d1672f9c741034e0af472ea8788aaa4fa9ab85ba656644c420a21f9c750e32"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": false,
+            "active": false,
+            "status": "disabled",
+            "reason": "not_configured",
+            "attempted": 0,
+            "baseline": null,
+            "candidate": null
+          },
+          "history_verified": false,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": null,
+            "accepted": null,
+            "reason": null,
+            "metric": null
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 22,
+            "artifact_manifest_sha256": "4d2e0e70c1c2588e4b4a9bda0949abd62448bd6921597c48dccf7fe660aa1f04",
+            "artifacts": {
+              ".agent_runs/8545f73ab40446668f5843f95a4511b0/run.json": "e7982746b5593b1d27071bbc8d38f65cf4c8809da1c39abbae456c169138c41e",
+              "submission.csv": "58c0e5f448420f2939be5c494a95a870d5e70e2aecde7a0b3748e9071baf9dfa",
+              ".agent_runs/8545f73ab40446668f5843f95a4511b0/last_valid_submission.csv": "58c0e5f448420f2939be5c494a95a870d5e70e2aecde7a0b3748e9071baf9dfa",
+              ".agent_runs/8545f73ab40446668f5843f95a4511b0/outer_evaluations/baseline/outer_validation_58bc97e5391a4508b199b93b7cdb6dc2/receipt.json": "c1aade485bbec612c1eeeaf3ccde3d37ef74b1bce15655e970925bacbe0dea3d",
+              ".agent_runs/8545f73ab40446668f5843f95a4511b0/full_refit/baseline/full_refit_429f43c910164a5b91158ab7aea8711b/receipt.json": "66de1fdf6fde1bb763528c7c189272edbbd734dad69db67d04d537f89e5c8f8a"
+            }
+          }
+        },
+        {
+          "stage": "public_sanity",
+          "case": "known_public_year5_0",
+          "arm": "history",
+          "status": "completed",
+          "verified": true,
+          "elapsed_seconds": 106.53097369600073,
+          "execution": {
+            "exit_code": 0,
+            "timed_out": false,
+            "memory_limit_exceeded": false,
+            "resources": {
+              "available": false,
+              "peak_rss_bytes": null,
+              "cpu_seconds": null,
+              "memory_limit_bytes": 6442450944,
+              "unavailable_reason": "RuntimeError: process inspection unavailable",
+              "sample_count": 0,
+              "tracked_processes": 0,
+              "cleanup_complete": null
+            }
+          },
+          "input_sha256": "44188a60307fcc7cb25739014b8f45e39e5a96ade182ac44f1b2e5006550e4ba",
+          "split_sha256": "5fecce061516268793df6d0bcd8f514c5245b98462d172d6041e0ff32a45d474",
+          "metric": {
+            "name": "RMSE",
+            "value": 45.94466410541874,
+            "higher_is_better": false
+          },
+          "baseline": {
+            "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+            "recipe_hash": "a3d1672f9c741034e0af472ea8788aaa4fa9ab85ba656644c420a21f9c750e32"
+          },
+          "published_recipe": "candidate",
+          "published_frozen": {
+            "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+            "recipe_hash": "82f2e0cd1b886a42e235fcda9e95b50d54be8ad9f74594c8d9b09f4d4e16cd2f"
+          },
+          "api": {
+            "attempts": 0,
+            "responses": 0,
+            "usage_reported_responses": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "history": {
+            "requested": true,
+            "active": true,
+            "status": "completed",
+            "reason": "improved",
+            "attempted": 1,
+            "baseline": {
+              "code_hash": "e06dbce5990fd68cfff61da62a46a1d0883da66897e38460ac6e9546ba1605cb",
+              "recipe_hash": "a3d1672f9c741034e0af472ea8788aaa4fa9ab85ba656644c420a21f9c750e32"
+            },
+            "candidate": {
+              "code_hash": "3f3200e5bf12dd7f8a9fef27c5d468ce2ad7438b63ef7e9ba435bf5e7f7aff95",
+              "recipe_hash": "82f2e0cd1b886a42e235fcda9e95b50d54be8ad9f74594c8d9b09f4d4e16cd2f"
+            }
+          },
+          "history_verified": true,
+          "history_expected_eligible": true,
+          "history_feedback": {
+            "verified": true,
+            "accepted": true,
+            "reason": "improved",
+            "metric": {
+              "name": "RMSE",
+              "value": 53.20405762588184,
+              "higher_is_better": false
+            }
+          },
+          "local": {
+            "status": "completed",
+            "reason": "patience",
+            "attempted": 4,
+            "verified": 4,
+            "improvements": 0,
+            "failed": 0
+          },
+          "full_refit_verified": true,
+          "final_reason": "local_only",
+          "proof": {
+            "artifact_count": 29,
+            "artifact_manifest_sha256": "0f63033043fee631db76f187e62ff93a7c3ef389946f156367611a2606d47cbf",
+            "artifacts": {
+              ".agent_runs/1a030b7931724b5db82262bcb48e45bf/run.json": "72f27939d4861f734b8ad8fa9db4788bd037fd2d67f3bef91b79be6c0a5202dc",
+              "submission.csv": "704dbbdf522f6bf29af9ff4b568510ddaccc420c34dab48170ffaef872563b7d",
+              ".agent_runs/1a030b7931724b5db82262bcb48e45bf/last_valid_submission.csv": "704dbbdf522f6bf29af9ff4b568510ddaccc420c34dab48170ffaef872563b7d",
+              ".agent_runs/1a030b7931724b5db82262bcb48e45bf/outer_evaluations/candidate/outer_validation_54fb93ad0e884f4aba50952b525ae104/receipt.json": "e7da4109d0734eab5ff3ca254bd65586493a1080b85af429314620458590cc1d",
+              ".agent_runs/1a030b7931724b5db82262bcb48e45bf/full_refit/candidate/full_refit_f4eeace3fbc24348a6252366af33115e/receipt.json": "faac3441f0a57e8001ad8acef36240667815605e62096eb3fd5b98dcc803bc9e",
+              ".agent_runs/1a030b7931724b5db82262bcb48e45bf/inner_evaluations/inner_selection_cdc6e5168e7b430eb1adf14763b57e4d/receipt.json": "a9a9a0cfd0b9ce7828214c32e8cc530b5dfb794ed034c0a5e375fcff88e33803"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "native_ci": {
+    "head_sha": "c5f127223dde0eb935d021a62e2d2fdbb5fbcc55",
+    "all_jobs_successful": true,
+    "core_tests_per_job": 747,
+    "app_tests_per_job": 227,
+    "runs": [
+      {
+        "event": "push",
+        "id": 39606295762,
+        "url": "https://github.com/NolReaction/alfa-automl-agent/actions/runs/39606295762",
+        "jobs": [
+          {
+            "id": 119243231937,
+            "os": "windows-latest",
+            "conclusion": "success"
+          },
+          {
+            "id": 119243232151,
+            "os": "ubuntu-latest",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "event": "pull_request",
+        "id": 39606302370,
+        "url": "https://github.com/NolReaction/alfa-automl-agent/actions/runs/39606302370",
+        "jobs": [
+          {
+            "id": 119243255301,
+            "os": "ubuntu-latest",
+            "conclusion": "success"
+          },
+          {
+            "id": 119243255661,
+            "os": "windows-latest",
+            "conclusion": "success"
+          }
+        ]
+      }
+    ],
+    "additional_steps": [
+      "Windows launcher verification",
+      "temporary contest archive build"
+    ]
+  },
+  "independent_review": {
+    "source_contract": "no blockers",
+    "development_reaudit": "8/8 verified",
+    "confirmation_reaudit": "8/8 verified",
+    "known_public_reaudit": "2/2 verified",
+    "public_original_input_hashes": "5/5 unchanged",
+    "smoke_reaudit": "2/2 verified; excluded from quality evidence; startup recipes mismatched"
+  },
+  "raw_evidence": {
+    "filename": "history_runtime_evidence_20261021.tar.gz",
+    "bytes": 15877113,
+    "sha256": "360c136df61291f183ad59054889d933af19706526ed12692ba24fd2279c7110",
+    "files": 6484,
+    "unique_files": 2133,
+    "original_bytes": 1723721991,
+    "unique_bytes": 119710996,
+    "validated": true,
+    "format": "Standard tar.gz with hardlinks for byte-identical files",
+    "scope": "Complete smoke, synthetic and known-public run artifacts; immutable receipts, CSVs and sealed plans. Repository checkout is not included.",
+    "portability": "Saved manifest retains original absolute source/task paths. A new experiment uses the documented prepare/run commands and pinned source; no claim that the original sealed manifest can be silently rebased."
+  }
+}
