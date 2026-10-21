@@ -1,4 +1,4 @@
-"""Platform auto mode follows only its environment; explicit offline stays offline."""
+"""Mode selection isolated from search policy; adaptive defaults have their own suite."""
 
 from contextlib import redirect_stderr, redirect_stdout
 import io
@@ -31,7 +31,8 @@ class ModeTests(unittest.TestCase):
 
     def invoke(self, arguments):
         output, errors = io.StringIO(), io.StringIO()
-        with patch("sys.argv", ["solution.py", *arguments]), redirect_stdout(output), redirect_stderr(errors):
+        with patch("sys.argv", ["solution.py", "--research-search", "legacy", *arguments]), \
+                redirect_stdout(output), redirect_stderr(errors):
             status = solution.main()
         return status, output.getvalue(), errors.getvalue()
 

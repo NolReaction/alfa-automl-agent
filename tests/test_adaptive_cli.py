@@ -15,11 +15,13 @@ from tests.test_research import make_regression
 
 
 class AdaptiveCliTests(unittest.TestCase):
-    def run_offline(self, *arguments, unsupported=False):
+    def run_offline(self, *arguments, unsupported=False, task_text=None):
         with tempfile.TemporaryDirectory() as directory:
             task = make_regression(Path(directory))
             if unsupported:
                 task.write_text("Metric: AUCPR\nUse train.csv and test.csv; write submission.csv.", encoding="utf-8")
+            if task_text is not None:
+                task.write_text(task_text, encoding="utf-8")
             with patch.dict(os.environ, {}, clear=True), \
                     patch("sys.argv", ["solution.py", str(task), "--mode", "offline", *arguments]), \
                     patch.object(solution, "_prepare_emergency", return_value=None), \
@@ -53,6 +55,14 @@ class AdaptiveCliTests(unittest.TestCase):
 
     def test_unknown_metric_is_not_sent_to_the_v3_adaptive_protocol(self):
         self.assertNotIn("adaptive_search", self.run_offline("--time-budget", "360", unsupported=True)["quality_options"])
+
+    def test_missing_or_conflicting_metric_does_not_block_the_existing_solver_route(self):
+        # Selection of an optional coordinator is not task validation. Legacy
+        # parsing and output acceptance remain responsible for the task itself.
+        for task_text in ("Research this task", "Primary metric: RMSE\nPrimary metric: MAE"):
+            with self.subTest(task_text=task_text):
+                options = self.run_offline("--time-budget", "360", task_text=task_text)
+                self.assertNotIn("adaptive_search", options["quality_options"])
 
     def test_adaptive_offline_dispatches_to_local_v3_without_api_client(self):
         with tempfile.TemporaryDirectory() as directory:

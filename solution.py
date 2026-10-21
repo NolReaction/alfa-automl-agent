@@ -212,10 +212,11 @@ def main() -> int:
 
             try:
                 parse_task_metric(task_path.read_text(encoding="utf-8-sig"))
-            except ValueError as error:
-                if "Unsupported or unrecognized primary metric" not in str(error):
-                    raise
-                print("Adaptive search unavailable for this metric; retaining the legacy solver.", flush=True)
+            except ValueError:
+                # Optional routing must not add an entry-point requirement to
+                # legacy research. Its own parser/validator remains responsible
+                # for unsupported, missing or conflicting task declarations.
+                print("Adaptive search unavailable for this task metric; retaining the legacy solver.", flush=True)
             else:
                 quality_options["adaptive_search"] = True
         deadline = time.monotonic() + time_budget

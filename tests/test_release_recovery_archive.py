@@ -1,4 +1,8 @@
-"""The exact platform CLI recovers using only root files from the release ZIP."""
+"""The default CLI recovers using only root files from the release ZIP.
+
+Only the optional continuation trial count is injected in the child. Parser
+defaults, SDK transport, candidate fitting and publication remain native.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,26 @@ from validation import validate_predictions
 
 
 PLACEHOLDER_KEY = "local-release-recovery-placeholder"
+LOCAL_TRIAL_CAP = 2
+
+# Exercise the unmodified bundled CLI with its real 10500-second default and
+# adaptive selection, without repeating the full 64-fit quality benchmark.
+# This explicit test-only cap changes no archived source or clock/deadline;
+# every admitted trial and every outer/full-data refit still runs normally.
+BOUNDED_DEFAULT_CLI = f"""import runpy
+import sys
+import solution
+from agent import offline_research
+
+original = offline_research.run_deadline_continuation
+def bounded_continuation(*args, **kwargs):
+    assert kwargs['max_trials'] == 64
+    kwargs['max_trials'] = {LOCAL_TRIAL_CAP}
+    return original(*args, **kwargs)
+offline_research.run_deadline_continuation = bounded_continuation
+sys.argv = ['solution.py', 'task.md']
+runpy.run_path('solution.py', run_name='__main__')
+"""
 
 
 def _sha256(content):
@@ -69,7 +93,7 @@ class ReleaseRecoveryArchiveTests(unittest.TestCase):
         exceeded = False
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             process = subprocess.Popen(
-                [sys.executable, "solution.py", "task.md"],
+                [sys.executable, "-c", BOUNDED_DEFAULT_CLI],
                 cwd=task.parent, env=environment, stdin=subprocess.DEVNULL,
                 stdout=stdout, stderr=stderr, start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
@@ -140,6 +164,61 @@ class ReleaseRecoveryArchiveTests(unittest.TestCase):
         final_error = sum((float(row["outcome"]) - value) ** 2 for row, value in zip(rows, actual))
         prior_error = sum((float(row["outcome"]) - value) ** 2 for row, value in zip(prior_rows, actual))
         self.assertLess(final_error, prior_error)
+
+    def assert_adaptive_publication(self, task, report_path, report):
+        self.assertEqual(report["research_protocol_version"], 3)
+        self.assertEqual(report["status"], "completed")
+        self.assertGreater(report["time_budget_seconds"], 10000)
+        self.assertLessEqual(report["time_budget_seconds"], 10500)
+        self.assertTrue(report["quality_options"]["adaptive_search"])
+        self.assertTrue(report["coordinator"]["requested"])
+        self.assertTrue(report["coordinator"]["active"])
+        self.assertEqual(report["coordinator"]["local_trial_limit"], 64)
+        local = report["local_research"]
+        self.assertEqual(local["policy"], "deadline_adaptive")
+        self.assertEqual(local["status"], "completed")
+        self.assertEqual(local["reason"], "trial_limit")
+        self.assertEqual(local["max_trials"], LOCAL_TRIAL_CAP)
+        self.assertEqual(local["attempted"], LOCAL_TRIAL_CAP)
+        self.assertEqual(len(local["trials"]), LOCAL_TRIAL_CAP)
+        self.assertGreaterEqual(local["verified"], 1)
+        self.assertEqual(local["api_requests"], 0)
+        self.assertTrue(report["research_stop"]["local_continuation_requested"])
+        self.assertTrue(all(item["status"] == "completed" for item in report["stages"]))
+        self.assertEqual(report["baseline_search"]["status"], "searched")
+        self.assertTrue(report["publication"]["new_result_published"])
+        self.assertEqual(report["publication"]["reason"], report["reason"])
+        self.assertTrue(report["output_check"]["valid"])
+        self.assertEqual(report["best_metric_provenance"]["scope"], "final_check")
+        self.assertIsNotNone(report["evaluations"]["final_check"]["baseline"])
+        # Startup AutoML is still part of v3; it is not the legacy offline
+        # solver publishing directly from an automl_report/checkpoint pair.
+        self.assertTrue((report_path.parent / "startup" / "automl_report.json").is_file())
+        self.assertFalse((report_path.parent / "automl_report.json").exists())
+        receipts = report["candidate_receipts"]
+        outer_path, refit_path = Path(receipts["outer"]), Path(receipts["refit"])
+        self.assertTrue(outer_path.resolve().is_relative_to(report_path.parent / "outer_evaluations"))
+        self.assertTrue(refit_path.resolve().is_relative_to(report_path.parent / "full_refit"))
+        outer = json.loads(outer_path.read_text(encoding="utf-8"))
+        refit = json.loads(refit_path.read_text(encoding="utf-8"))
+        self.assertEqual(outer["phase"], "outer_validation")
+        self.assertEqual(refit["phase"], "full_refit")
+        final_bytes = (task.parent / "submission.csv").read_bytes()
+        self.assertEqual(refit["output_hash"], _sha256(final_bytes))
+        self.assertEqual((report_path.parent / "last_valid_submission.csv").read_bytes(), final_bytes)
+        source = task.parent / "regression" / "participants"
+        self.assertEqual(_csv_rows(refit_path.parent / "fit.csv"), _csv_rows(source / "train.csv"))
+        self.assertEqual(_csv_rows(refit_path.parent / "predict.csv"), _csv_rows(source / "test.csv"))
+        for name, filename in (("code_hash", "candidate.py"), ("recipe_hash", "recipe.json")):
+            self.assertEqual(refit[name], _sha256((refit_path.parent / filename).read_bytes()))
+            self.assertEqual(outer[name], refit[name])
+            self.assertEqual(refit[name], receipts[name])
+        inner_paths = list((report_path.parent / "inner_evaluations").glob("*/receipt.json"))
+        self.assertGreaterEqual(len(inner_paths), 1 + local["verified"])
+        for path in inner_paths:
+            inner = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(inner["phase"], "inner_selection")
+            self.assertEqual(inner["output_hash"], _sha256((path.parent / "predictions.csv").read_bytes()))
 
     def test_default_cli_retries_local_503_once_then_finishes_verified_full_refit(self):
         requests, early_publication = [], []
@@ -225,32 +304,12 @@ class ReleaseRecoveryArchiveTests(unittest.TestCase):
             reports = list((task.parent / ".agent_runs").glob("*/run.json"))
             self.assertEqual(len(reports), 1)
             report = json.loads(reports[0].read_text(encoding="utf-8"))
-            self.assertEqual(report["research_protocol_version"], 3)
-            self.assertEqual(report["status"], "fallback")
+            self.assert_adaptive_publication(task, reports[0], report)
+            self.assertNotEqual(report.get("mode"), "local_only")
             self.assertEqual(report["reason"], "api_error")
             self.assertEqual(report["api"]["attempts"], 2)
             self.assertEqual(report["api"]["responses"], 0)
             self.assertEqual(report["api_recovery"], {"maximum_retries": 1, "retries": 1})
-            self.assertTrue(all(item["status"] == "completed" for item in report["stages"]))
-            self.assertEqual(report["baseline_search"]["status"], "searched")
-            self.assertGreaterEqual(report["local_research"]["verified"], 1)
-            self.assertTrue(report["publication"]["new_result_published"])
-            receipts = report["candidate_receipts"]
-            outer_path, refit_path = Path(receipts["outer"]), Path(receipts["refit"])
-            self.assertTrue(outer_path.resolve().is_relative_to(reports[0].parent / "outer_evaluations"))
-            self.assertTrue(refit_path.resolve().is_relative_to(reports[0].parent / "full_refit"))
-            outer = json.loads(outer_path.read_text(encoding="utf-8"))
-            refit = json.loads(refit_path.read_text(encoding="utf-8"))
-            self.assertEqual(outer["phase"], "outer_validation")
-            self.assertEqual(refit["phase"], "full_refit")
-            self.assertEqual(refit["output_hash"], _sha256((task.parent / "submission.csv").read_bytes()))
-            source = task.parent / "regression" / "participants"
-            self.assertEqual(_csv_rows(refit_path.parent / "fit.csv"), _csv_rows(source / "train.csv"))
-            self.assertEqual(_csv_rows(refit_path.parent / "predict.csv"), _csv_rows(source / "test.csv"))
-            self.assertEqual(refit["code_hash"], _sha256((refit_path.parent / "candidate.py").read_bytes()))
-            for name in ("code_hash", "recipe_hash"):
-                self.assertEqual(outer[name], refit[name])
-                self.assertEqual(refit[name], receipts[name])
 
     def test_default_cli_uses_offline_training_when_sdk_constructor_rejects_base_url(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -260,18 +319,20 @@ class ReleaseRecoveryArchiveTests(unittest.TestCase):
             result = self.execute(task, self.environment("http://127.0.0.1:not-a-port/v1"))
             self.assertIn("API client unavailable; starting offline fallback", result.stderr)
             self.assertIn("API calls: 0", result.stdout)
-            self.assertEqual(list((task.parent / ".agent_runs").glob("*/run.json")), [])
             prior = self.assert_emergency_checkpoint(task)
             self.assert_final_predictions_improve_prior(task, prior)
             self.assert_originals_unchanged(task, originals)
-            paths = list((task.parent / ".agent_runs").glob("*/automl_report.json"))
+            paths = list((task.parent / ".agent_runs").glob("*/run.json"))
             self.assertEqual(len(paths), 1)
             report = json.loads(paths[0].read_text(encoding="utf-8"))
-            self.assertTrue(report["output_valid"])
-            self.assertEqual(report["api"], {"used": False, "calls": 0})
-            self.assertEqual(report["search"]["phase"], "finished")
-            pointer = json.loads((paths[0].parent / "checkpoint.json").read_text(encoding="utf-8"))
-            self.assertEqual(pointer["submission_sha256"], _sha256((task.parent / "submission.csv").read_bytes()))
+            self.assert_adaptive_publication(task, paths[0], report)
+            self.assertEqual(report["mode"], "local_only")
+            self.assertEqual(report["reason"], "local_only")
+            for field in ("attempts", "responses", "usage_reported_responses", "total_tokens"):
+                self.assertEqual(report["api"][field], 0)
+            self.assertEqual(report["api_recovery"], {"maximum_retries": 1, "retries": 0})
+            self.assertFalse(any(event["kind"] in {"api_error", "api_retry"} for event in report["events"]))
+            self.assertEqual(list((task.parent / ".agent_runs").glob("*/automl_report.json")), [])
 
 
 if __name__ == "__main__":
