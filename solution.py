@@ -75,8 +75,8 @@ def _remaining(deadline: float) -> float:
 
 
 def _offline_solution(task_path, *, deadline, validation, quality_options):
-    if quality_options.get("history_config") is not None:
-        # Explicit history uses the same v3 INNER/outer/refit protocol as LLM
+    if quality_options.get("history_config") is not None or quality_options.get("history_auto"):
+        # History uses the same v3 INNER/outer/refit protocol as LLM
         # research, with no client construction or paid requests.
         if validation != {"strategy": "auto"}:
             raise ValueError("Explicit history uses v3 auto validation; validation overrides are unavailable.")
@@ -148,6 +148,8 @@ def main() -> int:
     parser.add_argument("--metric-recipes", action="store_true",
                         help="Experimentally add metric-aware regression recipes to startup AutoML")
     parser.add_argument("--history-config", help="Experimental inline JSON or @JSON-file key/period configuration; time regression only")
+    parser.add_argument("--history-auto", action="store_true",
+                        help="Experimentally discover one history schema from INNER-fit features; fixed weight 0.5")
     parser.add_argument("--history-weight", type=float, default=None,
                         help="Fixed history blend weight in [0,1], default 0.5; requires --history-config")
     args = parser.parse_args()
@@ -167,6 +169,12 @@ def main() -> int:
             quality_options["metric_recipes"] = True
         if args.search_profile != "legacy":
             quality_options["search_profile"] = args.search_profile
+        if args.history_auto:
+            if args.history_config is not None or args.history_weight is not None:
+                raise ValueError("--history-auto cannot be combined with --history-config or --history-weight")
+            if args.validation is not None or args.time_column is not None:
+                raise ValueError("Automatic history uses v3 auto validation; omit --validation and --time-column.")
+            quality_options["history_auto"] = True
         if args.history_config is not None:
             from agent.history_runtime import normalize_history_options
             raw_config = args.history_config

@@ -816,7 +816,7 @@ def _recover_after_unexpected_error(state):
 
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False, search_profile="legacy",
-                 history_config=None, history_weight=0.5, local_only=False):
+                 history_config=None, history_weight=0.5, local_only=False, history_auto=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -826,6 +826,10 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("Unknown research search profile")
     if type(local_only) is not bool:
         raise ValueError("local_only must be a boolean")
+    if type(history_auto) is not bool:
+        raise ValueError("history_auto must be a boolean")
+    if history_auto and (history_config is not None or history_weight != 0.5):
+        raise ValueError("Automatic history uses its own config and fixed weight 0.5")
     from agent.history_runtime import normalize_history_options
     history_options = normalize_history_options(history_config, history_weight)
     state = V3State(Path(task_path).resolve(), max_steps, time_budget)
@@ -833,6 +837,8 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         "metric_recipes": metric_recipes, "search_profile": search_profile}
     if history_options is not None:
         state.report["quality_options"].update(history_options)
+    if history_auto:
+        state.report["quality_options"]["history_auto"] = True
     if local_only:
         state.report["mode"] = "local_only"
     try:
@@ -854,6 +860,9 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         state.report["evaluations"]["selection"] = {
             "metric": state.best_inner, "scope": "inner_selection", "split": state.gate.inner_split}
         state.transition("inner_research")
+        if history_auto:
+            from agent.history_discovery_host import discover_history_options
+            history_options = discover_history_options(state)
         research_configured_history(state, history_options)
         if not state.gate.held_rows:
             state.report["stages"][1].update(status="skipped", reason=state.gate.inner_unavailable_reason)
