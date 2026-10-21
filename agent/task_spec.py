@@ -17,17 +17,36 @@ import re
 import numpy as np
 import pandas as pd
 
-from agent.metrics import MetricSpec, get_metric, infer_positive_class, label_values, probability_matrix, score_predictions
+from agent.metrics import (MetricSpec, _real_numeric_array, get_metric, infer_positive_class,
+                           label_values, probability_matrix, score_predictions)
 from agent.task_contract import _DECLARATION, _description_lines, parse_task_metric
 from offline_baseline import find_data, load_data, read_csv
 
 
 def _declaration(text: str, label: str) -> str | None:
     values = []
-    for line in _description_lines(text):
-        match = re.match(rf"(?:{label})\s*[:=—–]\s*(.+)$", line, re.IGNORECASE)
-        if match:
-            values.append(match[1].strip())
+    # Markdown may decorate the field name, but literal JSON/CSV values may
+    # themselves contain underscores, backticks or stars. Never normalize them.
+    for line in _description_lines(text, preserve_values=True):
+        separator = re.search(r"[:=—–]", line)
+        if separator is None:
+            continue
+        prefix, value = line[:separator.start()], line[separator.end():].strip()
+        plain_prefix = prefix.replace("**", "").replace("__", "").replace("`", "").strip()
+        if re.fullmatch(label, plain_prefix, re.IGNORECASE) is None:
+            continue
+        for marker in ("**", "__", "`"):
+            if prefix.count(marker) % 2:
+                if value.startswith(marker):
+                    value = value[len(marker):].strip()
+                elif value.endswith(marker):
+                    value = value[:-len(marker)].strip()
+        for marker in ("**", "__", "`"):
+            if value.startswith(marker) and value.endswith(marker) and len(value) > 2 * len(marker):
+                value = value[len(marker):-len(marker)].strip()
+                break
+        if value:
+            values.append(value)
     if len(set(values)) > 1:
         raise ValueError("Conflicting task declarations")
     return values[0] if values else None
@@ -70,7 +89,10 @@ def _auc_declaration(text: str) -> str:
         if matched is None:
             continue
         value = matched["value"].strip(":=—–- ")
-        values.append(value or next((item for item in lines[index + 1:] if item), ""))
+        value = value or next((item for item in lines[index + 1:] if item), "")
+        # Match the primary metric parser's sentence boundary. Secondary
+        # explanations/examples cannot supply or contradict required averaging.
+        values.append(value.split(".", 1)[0])
     return " ".join(values)
 
 
@@ -181,6 +203,12 @@ class TaskSpec:
             for column, label in self.probability_columns:
                 output[column] = matrix[:, self.classes.index(label)]
         else:
+            if self.prediction_kind == "regression":
+                # Validate before NumPy/DataFrame promotion can turn a mixed
+                # [True, 0.5] input into indistinguishable real numbers.
+                numeric = _real_numeric_array(predictions, name="Regression predictions")
+                if not np.isfinite(numeric).all():
+                    raise ValueError("Regression predictions must be finite numbers")
             values = (label_values(predictions, name="Predicted labels")
                       if self.prediction_kind == "labels" else np.asarray(predictions))
             if values.ndim == 2 and values.shape[1] == 1:
@@ -209,7 +237,8 @@ class TaskSpec:
             if not set(values) <= set(self.classes):
                 raise ValueError("Submission contains an unknown or empty class label")
         else:
-            values = pd.to_numeric(frame[self.target_column], errors="coerce").to_numpy(dtype=float)
+            values = _real_numeric_array(frame[self.target_column].to_numpy(),
+                                         name="Regression predictions")
             if not np.isfinite(values).all():
                 raise ValueError("Regression predictions must be finite numbers")
 
@@ -230,6 +259,10 @@ class TaskSpec:
                 for index, label in enumerate(self.classes):
                     output[f"probability:{label}"] = matrix[:, index]
         else:
+            if self.prediction_kind == "regression":
+                numeric = _real_numeric_array(predictions, name="Regression holdout predictions")
+                if not np.isfinite(numeric).all():
+                    raise ValueError("Regression holdout predictions must be finite numbers")
             values = (label_values(predictions, name="Predicted labels")
                       if self.prediction_kind == "labels" else np.asarray(predictions))
             if values.ndim == 2 and values.shape[1] == 1:
@@ -277,7 +310,7 @@ def load_task(task_path: Path) -> TaskSpec:
                 positive = inferred
             if positive is None:
                 raise ValueError("Single probability output requires an explicit Positive class declaration")
-            if output[0] in classes and output[0] != positive:
+            if output[0] != target and output[0] in classes and output[0] != positive:
                 raise ValueError("Probability output column conflicts with the positive class")
             probability_columns = ((output[0], positive),)
         elif len(output) == len(classes) and set(output) == set(classes):
