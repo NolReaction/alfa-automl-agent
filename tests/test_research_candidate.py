@@ -297,7 +297,7 @@ class ResearchCandidateTests(unittest.TestCase):
                 with patch("agent.research_candidate.time.monotonic", side_effect=lambda: clock["now"]), \
                         patch.object(pd.DataFrame, "to_csv", prepare), \
                         patch("agent.research_candidate.run_python") as child:
-                    with self.assertRaisesRegex(TimeoutError, "input preparation"):
+                    with self.assertRaisesRegex(TimeoutError, "(?:input|context) preparation"):
                         run_candidate(candidate, spec=spec, fit_frame=fit, predict_frame=predict,
                                       output_dir=root / "executions", phase="outer_validation",
                                       timeout=10, deadline=deadline)

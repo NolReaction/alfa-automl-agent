@@ -311,6 +311,8 @@ def run_candidate(candidate: FrozenCandidate, *, spec: TaskSpec, fit_frame,
         "categorical": list(spec.categorical), "classes": list(spec.classes),
         "positive_class": spec.positive_class, "metric": spec.metric.to_dict(),
         "task_type": spec.metric.task_type, "prediction_kind": spec.prediction_kind,
+        "deadline_monotonic": expires,
+        "time_budget_seconds": remaining("context preparation"),
         "task_spec": local_spec,
     }
     # Context can exceed the recipe limit when a task has many feature names.

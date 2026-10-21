@@ -19,6 +19,8 @@ from agent.model_config import validate_model_config
 
 
 MAX_LOCAL_TRIALS = 12
+MAX_DEADLINE_TRIALS = 96
+MAX_DEADLINE_INSPECTIONS = 512
 MAX_INSPECTED_RECIPES = 256
 MAX_RECIPE_BYTES = 64 * 1024
 
@@ -237,4 +239,171 @@ def run_local_continuation(state, recipes, *, evaluate, seen=(), code_hash,
         state.save()
         if no_improvement >= patience:
             return finish("completed", "patience")
+    return finish("completed", "trial_limit" if report["attempted"] >= max_trials else "inspection_limit")
+
+
+def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), code_hash,
+                              after_warmup=None, max_trials=64, min_timeout=2.0,
+                              max_inspected=MAX_DEADLINE_INSPECTIONS, family_failure_limit=3):
+    """Use a long run's spare budget without a global no-improvement stop.
+
+    Legacy presets form the warmup; a bounded proposer supplies new ordinary
+    recipes afterwards. Failed families are isolated, while a verified but
+    non-improving trial never closes other families. Only the caller's normal
+    INNER evaluator can accept a recipe. Optional custom-source trials have
+    their own small cap and run between warmup and adaptive proposals.
+    """
+    max_trials = _count(max_trials, "max_trials", MAX_DEADLINE_TRIALS)
+    max_inspected = _count(max_inspected, "max_inspected", MAX_DEADLINE_INSPECTIONS)
+    family_failure_limit = _count(family_failure_limit, "family_failure_limit", 10)
+    if (type(min_timeout) not in {int, float} or not math.isfinite(min_timeout)
+            or not 0 < min_timeout <= 1800 or not callable(evaluate)
+            or (after_warmup is not None and not callable(after_warmup))):
+        raise ValueError("Deadline continuation requires a finite timeout and evaluators")
+    if adaptive is not None and not all(callable(getattr(adaptive, name, None))
+                                        for name in ("suggest", "observe", "report")):
+        raise ValueError("Adaptive proposer must implement suggest, observe and report")
+    canonical_recipe_key({}, code_hash)
+
+    def remaining():
+        value = state.remaining() if callable(getattr(state, "remaining", None)) else None
+        return max(0.0, float(value)) if type(value) in {int, float} and math.isfinite(value) else None
+
+    report = {"version": 2, "origin": "host_local", "scope": "inner_selection", "api_requests": 0,
+              "policy": "deadline_adaptive", "status": "running", "reason": None,
+              "max_trials": max_trials, "max_inspected": max_inspected,
+              "family_failure_limit": family_failure_limit, "attempted": 0,
+              "verified": 0, "improvements": 0, "failed": 0, "duplicates": 0,
+              "invalid_recipes": 0, "inspected": 0, "warmup_attempted": 0,
+              "adaptive_attempted": 0, "blocked_families": [], "trials": [],
+              "started_remaining_seconds": remaining(), "extension_hook_called": False}
+    state.report["local_research"] = report
+
+    def finish(status, reason, *, error=None):
+        report.update(status=status, reason=reason, ended_remaining_seconds=remaining())
+        if error is not None:
+            report["coordinator_error_type"] = type(error).__name__
+        if adaptive is not None:
+            try:
+                report["adaptive"] = adaptive.report()
+            except (OSError, ValueError, RuntimeError, TypeError):
+                report["adaptive"] = {"status": "report_unavailable"}
+        state.save()
+        return report
+
+    if state.dialogue_closed or state.report.get("stage") != "inner_research":
+        return finish("skipped", "research_closed")
+    if state.gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed") is False:
+        return finish("skipped", "task_semantics_unavailable")
+    if not len(state.gate.held_rows):
+        return finish("skipped", "inner_validation_unavailable")
+    if state.baseline is None:
+        return finish("skipped", "baseline_unavailable")
+    baseline_identity = _baseline_identity(state)
+    _guard(state, baseline_identity)
+    known = set()
+    for record in islice(seen, MAX_DEADLINE_INSPECTIONS):
+        try:
+            known.add(canonical_recipe_key(record["recipe"], record["code_hash"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    iterator, phase, failures, blocked = iter(recipes), "warmup", {}, set()
+
+    def observe(item, feedback):
+        if phase == "adaptive":
+            try:
+                adaptive.observe(deepcopy(item), deepcopy(feedback))
+            except (OSError, ValueError, RuntimeError, TypeError) as error:
+                _guard(state, baseline_identity)
+                return error
+        _guard(state, baseline_identity)
+        return None
+
+    while report["attempted"] < max_trials and report["inspected"] < max_inspected:
+        _guard(state, baseline_identity)
+        if state.research_timeout() <= min_timeout:
+            return finish("completed", "finalization_reserve")
+        if phase == "warmup":
+            try:
+                item = next(iterator)
+            except StopIteration:
+                if after_warmup is not None:
+                    report["extension_hook_called"] = True
+                    try:
+                        after_warmup()
+                    except (OSError, ValueError, RuntimeError, ImportError) as error:
+                        _guard(state, baseline_identity)
+                        report["extension_hook_error_type"] = type(error).__name__
+                    _guard(state, baseline_identity)
+                phase = "adaptive"
+                continue
+        else:
+            if adaptive is None:
+                return finish("completed", "adaptive_unavailable")
+            try:
+                item = adaptive.suggest()
+            except (OSError, ValueError, RuntimeError, TypeError, ImportError) as error:
+                _guard(state, baseline_identity)
+                return finish("completed", "adaptive_unavailable", error=error)
+            _guard(state, baseline_identity)
+            if item is None:
+                return finish("completed", "queue_exhausted")
+        report["inspected"] += 1
+        try:
+            key = canonical_recipe_key(item, code_hash)
+        except (TypeError, ValueError) as error:
+            report["invalid_recipes"] += 1
+            observed = observe(item, {"verified": False, "accepted": False, "reason": "invalid_recipe"})
+            if observed:
+                return finish("completed", "adaptive_feedback_unavailable", error=observed)
+            continue
+        family = str(item.get("action", "custom"))[:120]
+        skip = "duplicate" if key in known else "family_blocked" if family in blocked else None
+        if skip:
+            report["duplicates"] += int(skip == "duplicate")
+            observed = observe(item, {"verified": False, "accepted": False, "reason": skip})
+            if observed:
+                return finish("completed", "adaptive_feedback_unavailable", error=observed)
+            continue
+        if state.research_timeout() <= min_timeout:
+            observed = observe(item, {"verified": False, "accepted": False, "reason": "insufficient_budget"})
+            if observed:
+                return finish("completed", "adaptive_feedback_unavailable", error=observed)
+            return finish("completed", "finalization_reserve")
+        known.add(key)
+        report["attempted"] += 1
+        report[phase + "_attempted"] += 1
+        state.report["local_experiments"] = state.report.get("local_experiments", 0) + 1
+        state.save()
+        error_type = None
+        try:
+            feedback = evaluate(deepcopy(item))
+            if not isinstance(feedback, dict):
+                raise ValueError("Local evaluator returned invalid host feedback")
+            verified = feedback.get("verified") is True
+            accepted = verified and feedback.get("accepted") is True
+        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+            verified, accepted = False, False
+            error_type = type(error).__name__
+            feedback = {"verified": False, "accepted": False, "reason": "candidate_execution_failed"}
+        _guard(state, baseline_identity)
+        observed = observe(item, feedback)
+        report["verified"] += int(verified)
+        report["improvements"] += int(accepted)
+        report["failed"] += int(not verified)
+        failures[family] = 0 if verified else failures.get(family, 0) + 1
+        if failures[family] >= family_failure_limit:
+            blocked.add(family)
+            report["blocked_families"] = sorted(blocked)
+        reason = feedback.get("reason")
+        reason = reason if reason in {"improved", "not_better", "refit_budget",
+            "candidate_execution_failed", "execution_failed"} else "host_rejected"
+        entry = {"index": report["attempted"], "phase": phase, "identity": key, "family": family,
+                 "verified": verified, "accepted": accepted, "reason": reason}
+        if error_type:
+            entry["error_type"] = error_type
+        report["trials"].append(entry)
+        state.save()
+        if observed:
+            return finish("completed", "adaptive_feedback_unavailable", error=observed)
     return finish("completed", "trial_limit" if report["attempted"] >= max_trials else "inspection_limit")

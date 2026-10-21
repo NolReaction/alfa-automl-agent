@@ -21,7 +21,7 @@ from agent.features import normalize_feature_config
 from agent.llm import ROOT, TOOL, get_model, safe_error_details, safe_error_message
 from agent.model_config import ACTIONS, make_model_config
 from agent.research import RunState, checked_completion, record_usage
-from agent.research_budget import BudgetPolicy
+from agent.research_budget import ADAPTIVE_RESERVE_MIN_BUDGET, BudgetPolicy
 from agent.inner_feedback import inner_feedback
 from agent.research_candidate import (
     CANDIDATE_NAME, RECIPE_NAME, CandidateExecutionError, freeze_candidate, run_candidate,
@@ -41,6 +41,8 @@ MAX_COMPLETION_TOKENS = 8192
 LOCAL_CONTINUATION_REASONS = frozenset({
     "api_error", "truncated_response", "context_budget", "step_limit", "repeated_failures",
 })
+ADAPTIVE_CONTINUATION_REASONS = LOCAL_CONTINUATION_REASONS | {"model_finished", "time_limit"}
+MAX_LOCAL_FROZEN_ATTEMPTS = 70  # 64 ordinary trials plus six custom-source trials.
 SYSTEM_V3 = """You are an autonomous ML researcher using run_python.
 Read task.md and research_validation.json in the working directory. Only the
 approved outer-fit training view is available for research. All validation
@@ -129,7 +131,9 @@ def _recipe_from_report(report, task_type):
 
 
 class V3State(RunState):
-    def __init__(self, task_path, max_steps, time_budget):
+    def __init__(self, task_path, max_steps, time_budget, *, adaptive_search=False):
+        if type(adaptive_search) is not bool:
+            raise ValueError("adaptive_search must be a boolean")
         super().__init__(task_path, max_steps, time_budget)
         self._accepted_backup_hash = None
         self.gate = None
@@ -139,7 +143,8 @@ class V3State(RunState):
         self.best_inner = None
         self.dialogue_closed = False
         self.tried_recipes = []
-        self.budget = BudgetPolicy(time_budget, started=self.started)
+        self.adaptive_search = adaptive_search and time_budget > ADAPTIVE_RESERVE_MIN_BUDGET
+        self.budget = BudgetPolicy(time_budget, started=self.started, adaptive_reserve=self.adaptive_search)
         self.report.update(research_protocol_version=3, stage="preparation",
             stages=[{"id": item, "status": "pending"} for item in STAGES],
             evaluations={"selection": None, "final_check": None},
@@ -354,8 +359,19 @@ def _consider(state):
     return _assess_candidate(state, candidate, hypothesis, origin="llm")
 
 
+def _track_local_candidate(state, candidate):
+    """Retain bounded frozen identities until optional research has been guarded."""
+    attempts = getattr(state, "_local_frozen_attempts", None)
+    if attempts is not None and not any(item is candidate for item in attempts):
+        if len(attempts) >= MAX_LOCAL_FROZEN_ATTEMPTS:
+            raise RuntimeError("Local research exceeded its frozen-attempt limit")
+        attempts.append(candidate)
+
+
 def _assess_candidate(state, candidate, hypothesis, *, origin):
     """One host-scored inner trial, shared by LLM and bounded local search."""
+    _track_local_candidate(state, candidate)
+    assessment_started = time.monotonic()
     gate, recipe = state.gate, candidate.recipe
     state.tried_recipes.append({"recipe": recipe, "code_hash": candidate.code_hash})
     result = state.measure_inner(candidate)
@@ -388,6 +404,9 @@ def _assess_candidate(state, candidate, hypothesis, *, origin):
         # Optional detail cannot undo a valid host-scored trial.
         feedback["diagnostics"] = {"scope": "inner_selection", "available": False,
                                    "reason": safe_error_message(error)}
+    elapsed = time.monotonic() - assessment_started
+    if math.isfinite(elapsed) and elapsed > 0:
+        feedback["elapsed_seconds"] = elapsed
     return feedback
 
 
@@ -473,8 +492,66 @@ def research_configured_history(state, options):
 
 
 def continue_locally(state):
+    """Optional research may fail; retained recipe integrity may not fail.
+
+    Planning, proposal and presentation errors must not bypass the normal
+    outer/refit publication stages. This boundary intentionally excludes
+    finalization and BaseException. Every integrity check remains outside the
+    optional-operation catch, including when that operation raised an error.
+    """
+    baseline = state.baseline
+    identity = (baseline.code_hash, baseline.recipe_hash) if baseline is not None else None
+
+    def integrity():
+        try:
+            if getattr(state, "_local_integrity_failed", False):
+                raise RuntimeError("Local research integrity previously failed")
+            if state.dialogue_closed or state.report.get("stage") != "inner_research":
+                raise RuntimeError("Local research is terminal after candidate freeze")
+            state.check_source()
+            state.gate.check_inputs()
+            if state.baseline is not baseline or (baseline is not None
+                    and (baseline.code_hash, baseline.recipe_hash) != identity):
+                raise RuntimeError("Local research changed its frozen recovery baseline")
+            if baseline is not None:
+                baseline.verify()
+            if state.selected_candidate is not None:
+                state.selected_candidate.verify()
+            for candidate in getattr(state, "_local_frozen_attempts", ()):
+                candidate.verify()
+        except Exception:
+            # A later passing verifier cannot erase a known protocol breach.
+            # This marker is host memory only and is not supplied to workers.
+            state._local_integrity_failed = True
+            raise
+
+    integrity()
+    if getattr(state, "_local_frozen_attempts", None) is not None:
+        state._local_integrity_failed = True
+        raise RuntimeError("Local continuation cannot be re-entered")
+    state._local_frozen_attempts = []
+    error_type = None
+    try:
+        result = _continue_locally(state)
+    except Exception as error:
+        error_type = type(error).__name__
+    integrity()
+    del state._local_frozen_attempts
+    if error_type is None:
+        return result
+    report = state.report.get("local_research")
+    report = report if isinstance(report, dict) else {
+        "origin": "host_local", "scope": "inner_selection", "api_requests": 0, "attempted": 0}
+    report.update(status="interrupted", reason="optional_search_error", error_type=error_type,
+                  finalization_requested=True)
+    state.report["local_research"] = report
+    state.event("local_research_interrupted", error_type=error_type, finalization_requested=True)
+    return report
+
+
+def _continue_locally(state):
     """Use spare CPU after dialogue stops without reopening its frozen baseline."""
-    from agent.offline_research import run_local_continuation, startup_seen
+    from agent.offline_research import run_deadline_continuation, run_local_continuation, startup_seen
     if state.dialogue_closed or state.report.get("stage") != "inner_research":
         raise RuntimeError("Local research is terminal after candidate freeze")
     gate = state.gate
@@ -505,12 +582,32 @@ def continue_locally(state):
 
     def evaluate(recipe):
         frozen = freeze_candidate(source, recipe, state.run_dir / "local_candidates" / uuid4().hex)
+        _track_local_candidate(state, frozen)
+        label = recipe.get("label")
+        if not isinstance(label, str) or not label.strip():
+            label = recipe.get("action")
+        if not isinstance(label, str) or not label.strip():
+            label = "fixed blend" if recipe.get("components") else "local model"
         feedback = _assess_candidate(state, frozen,
             {"hypothesis": "Bounded host-local alternative after research dialogue stopped: "
-             + recipe["label"]}, origin="local")
+             + label.strip()[:160]}, origin="local")
         state.event("local_experiment", result=feedback)
         return feedback
 
+    if getattr(state, "adaptive_search", False):
+        try:
+            from agent.adaptive_search import AdaptiveSearch
+            adaptive = AdaptiveSearch(gate.spec.classification, gate.spec.metric.name, max_trials=64)
+        except (ImportError, OSError, ValueError, RuntimeError) as error:
+            adaptive = None
+            state.event("adaptive_search_unavailable", error_type=type(error).__name__)
+
+        def extensions():
+            from agent.research_extensions import run_research_extensions
+            return run_research_extensions(state, _assess_candidate, max_trials=6)
+
+        return run_deadline_continuation(state, recipes, adaptive=adaptive, evaluate=evaluate,
+            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64)
     return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
 
@@ -717,39 +814,32 @@ def finalize(state, reason):
                                   "recipe": state.report.get("published_recipe"), "reason": reason}
     state.report["time_allocation"] = state.budget.report(state.finalization_plan())
     status = "completed" if ((reason == "model_finished" and state.report["successful_experiments"])
-                              or (reason == "local_only" and published)) else "fallback"
+                              or (reason == "local_only" and published)
+                              or (getattr(state, "adaptive_search", False) and published)) else "fallback"
     return state.finish(status, reason)
 
 
 def _retryable_api_error(error):
-    """Retry transport/server overload once, never explicit account exhaustion.
+    from agent.gateways import retryable_api_error
 
-    Only SDK exception types, status and structured code/type fields participate;
-    a provider's free-form message is neither parsed nor copied into prompts.
-    """
-    from openai import APIConnectionError, APIStatusError
-
-    fields = [getattr(error, name, None) for name in ("code", "type")]
-    body = getattr(error, "body", None)
-    if isinstance(body, dict):
-        fields.extend(body.get(name) for name in ("code", "type"))
-        nested = body.get("error")
-        if isinstance(nested, dict):
-            fields.extend(nested.get(name) for name in ("code", "type"))
-    exhausted = ("quota", "balance", "billing", "budget", "credit", "fund", "payment")
-    if any(isinstance(value, str) and any(word in value.lower() for word in exhausted)
-           for value in fields):
-        return False
-    if isinstance(error, APIConnectionError):
-        return True
-    return (isinstance(error, APIStatusError)
-            and (error.status_code == 429 or 500 <= error.status_code <= 599))
+    return retryable_api_error(error)
 
 
 def _request_completion(state, client, messages):
     """Charge every actual request to the original guards, including one retry."""
+    from agent.gateways import client_gateways, request_options
+
     pending_retry = False
     recovery = state.report["api_recovery"]
+    routes = client_gateways(client)
+    route_index = getattr(state, "_gateway_route_index", 0)
+    if not 0 <= route_index < max(1, len(routes)):
+        route_index = 0
+    gateway_report = state.report.setdefault("api_gateway", {
+        "policy": "official_alternative_first" if len(routes) == 2 else "configured_only",
+        "active": routes[route_index][0] if routes else "embedded_client",
+        "attempts": {}, "switches": 0,
+    })
     while True:
         request_messages = [*messages, {"role": "user", "content":
             "Current host budget: " + json.dumps(state.budget_context(), ensure_ascii=False, allow_nan=False)}]
@@ -762,18 +852,28 @@ def _request_completion(state, client, messages):
                 state.event("api_retry_skipped", reason=blocked)
             return None, "api_error" if pending_retry else blocked
         state.report["api"]["attempts"] += 1
+        route = routes[route_index] if routes else None
+        route_name = route[0] if route is not None else "embedded_client"
+        if gateway_report["active"] != route_name:
+            gateway_report["switches"] += 1
+            state.event("api_gateway_failover", source=gateway_report["active"], destination=route_name)
+        gateway_report["active"] = route_name
+        gateway_report["attempts"][route_name] = gateway_report["attempts"].get(route_name, 0) + 1
         if pending_retry:
             recovery["retries"] += 1
             state.event("api_retry", attempt=state.report["api"]["attempts"],
                         retry_number=recovery["retries"])
         state.save()
         try:
-            response = client.with_options(timeout=timeout).chat.completions.create(
+            response = client.with_options(**request_options(timeout, route)).chat.completions.create(
                 model=get_model(), messages=state.clean(request_messages), tools=[TOOL],
                 parallel_tool_calls=False, max_tokens=MAX_COMPLETION_TOKENS)
         except Exception as error:
             state.event("api_error", error=safe_error_message(error), details=safe_error_details(error))
             if not pending_retry and recovery["retries"] < MAX_API_RETRIES and _retryable_api_error(error):
+                if len(routes) == 2:
+                    route_index = 1 - route_index
+                    state._gateway_route_index = route_index
                 pending_retry = True
                 continue
             return None, "api_error"
@@ -793,6 +893,8 @@ def _request_completion(state, client, messages):
 
 def _recover_after_unexpected_error(state):
     """Restore only an accepted checkpoint after rechecking every integrity gate."""
+    if getattr(state, "_local_integrity_failed", False):
+        raise RuntimeError("Local research integrity failed; checkpoint recovery cancelled")
     state.check_source()
     if state.gate is None:
         return None
@@ -800,6 +902,8 @@ def _recover_after_unexpected_error(state):
     for candidate in (state.baseline, state.selected_candidate):
         if candidate is not None:
             candidate.verify()
+    for candidate in getattr(state, "_local_frozen_attempts", ()):
+        candidate.verify()
     if state._accepted_backup_hash is None or not state.recover():
         return None
     state.report["recovery"] = {"status": "restored", "kind": "accepted_checkpoint",
@@ -816,7 +920,8 @@ def _recover_after_unexpected_error(state):
 
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False, search_profile="legacy",
-                 history_config=None, history_weight=0.5, local_only=False, history_auto=False):
+                 history_config=None, history_weight=0.5, local_only=False, history_auto=False,
+                 adaptive_search=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -828,17 +933,27 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("local_only must be a boolean")
     if type(history_auto) is not bool:
         raise ValueError("history_auto must be a boolean")
+    if type(adaptive_search) is not bool:
+        raise ValueError("adaptive_search must be a boolean")
     if history_auto and (history_config is not None or history_weight != 0.5):
         raise ValueError("Automatic history uses its own config and fixed weight 0.5")
     from agent.history_runtime import normalize_history_options
     history_options = normalize_history_options(history_config, history_weight)
-    state = V3State(Path(task_path).resolve(), max_steps, time_budget)
+    state = (V3State(Path(task_path).resolve(), max_steps, time_budget, adaptive_search=True)
+             if adaptive_search else V3State(Path(task_path).resolve(), max_steps, time_budget))
     state.report["quality_options"] = {"stability_splits": stability_splits,
         "metric_recipes": metric_recipes, "search_profile": search_profile}
     if history_options is not None:
         state.report["quality_options"].update(history_options)
     if history_auto:
         state.report["quality_options"]["history_auto"] = True
+    if adaptive_search:
+        state.report["quality_options"]["adaptive_search"] = True
+        state.report["coordinator"] = {"version": 2, "requested": True, "active": state.adaptive_search,
+            "reason": "enabled" if state.adaptive_search else "short_budget",
+            "minimum_long_budget_seconds": ADAPTIVE_RESERVE_MIN_BUDGET,
+            "local_trial_limit": 64, "extension_trial_limit": 6,
+            "api_request_limit": max_steps}
     if local_only:
         state.report["mode"] = "local_only"
     try:
@@ -948,11 +1063,13 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
             if state.ledger.failure_streak >= 3:
                 reason = "repeated_failures"
                 break
+        continuation_reasons = (ADAPTIVE_CONTINUATION_REASONS if state.adaptive_search
+                                else LOCAL_CONTINUATION_REASONS)
         state.report["research_stop"] = {
-            "reason": reason, "local_continuation_requested": reason in LOCAL_CONTINUATION_REASONS,
+            "reason": reason, "local_continuation_requested": reason in continuation_reasons,
         }
         state.save()
-        if reason in LOCAL_CONTINUATION_REASONS:
+        if reason in continuation_reasons:
             continue_locally(state)
         if stability_splits > 1:
             from agent.research_stability import verify_research_finalists

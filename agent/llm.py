@@ -212,20 +212,37 @@ def safe_error_message(error: Exception) -> str:
 def make_client():
     require_api_settings()
     from openai import OpenAI
+    import httpx
+    from agent.gateways import CONNECT_TIMEOUT_SECONDS, configured_gateways
+
+    routes = configured_gateways(os.environ["OPENAI_BASE_URL"])
 
     return OpenAI(
         api_key=os.environ["OPENAI_API_KEY"],
-        base_url=os.environ["OPENAI_BASE_URL"],
-        timeout=60, max_retries=0,
+        base_url=routes[0][1],
+        timeout=(httpx.Timeout(60, connect=CONNECT_TIMEOUT_SECONDS)
+                 if routes[0][0] != "custom" else 60), max_retries=0,
     )
 
 
 def check_api() -> None:
+    from agent.gateways import client_gateways, request_options, retryable_api_error
+
     with make_client() as client:
-        response = client.chat.completions.create(
-            model=get_model(),
-            messages=[{"role": "user", "content": "Reply with OK."}],
-            max_tokens=64,
-        )
+        routes = client_gateways(client) or (None,)
+        for index, route in enumerate(routes):
+            try:
+                request_client = client if route is None else client.with_options(**request_options(30, route))
+                response = request_client.chat.completions.create(
+                    model=get_model(),
+                    messages=[{"role": "user", "content": "Reply with OK."}],
+                    max_tokens=64,
+                )
+                if route is not None:
+                    print("API gateway:", route[0])
+                break
+            except Exception as error:
+                if index + 1 == len(routes) or not retryable_api_error(error):
+                    raise
     print("API connection successful.")
     print("Reply:", response.choices[0].message.content or "(empty response)")
