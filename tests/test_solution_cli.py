@@ -47,7 +47,7 @@ class ModeTests(unittest.TestCase):
                     patch.object(solution, "load_local_env", side_effect=AssertionError("Unexpected credentials")):
                 status, output, errors = self.invoke([str(task), "--mode", "offline"])
             self.assertEqual(status, 0, errors)
-            self.assert_budgeted_call(offline, task, budget=600, validation={"strategy": "auto"})
+            self.assert_budgeted_call(offline, task, budget=10500, validation={"strategy": "auto"})
             self.assertIn("API calls: 0", output)
 
     def test_auto_without_api_uses_offline_without_reading_local_dotenv(self):
@@ -64,7 +64,7 @@ class ModeTests(unittest.TestCase):
                         patch.object(solution, "load_local_env", side_effect=AssertionError("Unexpected dotenv")):
                     status, output, errors = self.invoke([str(task)])
                 self.assertEqual(status, 0, errors)
-                self.assert_budgeted_call(offline, task, budget=600, validation={"strategy": "auto"})
+                self.assert_budgeted_call(offline, task, budget=10500, validation={"strategy": "auto"})
                 self.assertIn("API calls: 0", output)
 
     def test_auto_with_complete_platform_environment_starts_research_without_dotenv(self):
@@ -124,7 +124,7 @@ class ModeTests(unittest.TestCase):
                     self.assertIn(missing, output)
                     self.assertNotIn(PLATFORM_ENV["OPENAI_API_KEY"], errors + output)
                     client.assert_not_called()
-                    self.assert_budgeted_call(offline, task, budget=600, validation={"strategy": "auto"})
+                    self.assert_budgeted_call(offline, task, budget=10500, validation={"strategy": "auto"})
 
     def test_explicit_llm_preserves_research_and_default_time_budget(self):
         with tempfile.TemporaryDirectory() as directory:
