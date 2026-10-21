@@ -33,6 +33,7 @@ from validation import validate_predictions
 
 SEED = 42
 VALIDATION_FRACTION = 0.2
+_LEGACY_CATEGORY_ESCAPE = "__ALFA_LEGACY_VALUE__"
 
 
 def csv_header(path: Path) -> list[str]:
@@ -48,7 +49,20 @@ def csv_header(path: Path) -> list[str]:
 
 
 def read_csv(path: Path) -> pd.DataFrame:
-    csv_header(path)
+    header = csv_header(path)
+    # pandas may silently reinterpret an over-wide first record as an index,
+    # shifting the declared ID/feature columns, or fill omitted trailing fields.
+    # Validate records with the same strict CSV dialect used by the standalone
+    # output validator before invoking its faster tabular reader. Explicit empty
+    # fields remain valid missing values; absent fields and blank records do not.
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream, strict=True)
+        next(reader)
+        for number, row in enumerate(reader, start=2):
+            if len(row) != len(header):
+                raise ValueError(
+                    f"{path.name}: record {number} has {len(row)} fields; expected {len(header)}"
+                )
     # Preserve IDs such as 001 and class labels such as NA exactly as written.
     return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
 
@@ -146,7 +160,17 @@ def prepare_features(frame, features, numeric, categorical):
     for name in numeric:
         result[name] = pd.to_numeric(result[name], errors="coerce").replace([np.inf, -np.inf], np.nan)
     for name in categorical:
-        result[name] = result[name].replace("", np.nan)
+        # An all-empty string column must remain categorical. pandas.replace
+        # otherwise downcasts it to float64, after which a string imputer fill
+        # value cannot be used even though the declared category is supported.
+        values = result[name].astype(object)
+        # Escape the imputer's generated token and the escape namespace itself
+        # injectively. Genuine "__MISSING__" must differ from an empty CSV cell.
+        values = values.map(lambda value: _LEGACY_CATEGORY_ESCAPE + value
+                            if isinstance(value, str) and (
+                                value == "__MISSING__" or value.startswith(_LEGACY_CATEGORY_ESCAPE))
+                            else value)
+        result[name] = values.where(values.ne(""), np.nan)
     return result
 
 

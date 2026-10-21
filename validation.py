@@ -29,6 +29,13 @@ def _rows(header: list[str], reader, filename: str):
         yield dict(zip(header, row))
 
 
+def _check_test_ids(values: list[str]) -> None:
+    if not values:
+        raise ValueError("test.csv must contain at least one row")
+    if any(not value.strip() for value in values) or len(set(values)) != len(values):
+        raise ValueError("test.csv: IDs must be non-empty and unique")
+
+
 def validate_predictions(task_dir: Path, *, spec=None) -> dict:
     """Check submission.csv against the task's template, IDs and target metadata.
 
@@ -49,7 +56,13 @@ def validate_predictions(task_dir: Path, *, spec=None) -> dict:
             from offline_baseline import read_csv
 
             frame = read_csv(task_dir / "submission.csv")
-            expected_ids = read_csv(Path(spec.data_dir) / "test.csv")[spec.id_column].tolist()
+            test = read_csv(Path(spec.data_dir) / "test.csv")
+            if spec.id_column not in test.columns:
+                raise ValueError("test.csv is missing the ID column")
+            if set(test.columns) != {spec.id_column, *spec.features}:
+                raise ValueError("test.csv columns differ from the task specification")
+            expected_ids = test[spec.id_column].tolist()
+            _check_test_ids(expected_ids)
             spec.validate_frame(frame, expected_ids)
             return {"valid": True, "errors": []}
         samples = [
@@ -66,12 +79,21 @@ def validate_predictions(task_dir: Path, *, spec=None) -> dict:
         with _csv_file(samples[0]) as (expected_header, _):
             pass
         with _csv_file(data_dir / "data_dictionary.csv") as (header, reader):
+            if not {"feature", "role", "dtype"}.issubset(header):
+                raise ValueError("data_dictionary.csv must contain feature, role and dtype columns")
             metadata = list(_rows(header, reader, "data_dictionary.csv"))
+        features = [row["feature"] for row in metadata]
+        if any(not name.strip() for name in features):
+            raise ValueError("data_dictionary.csv contains empty feature names")
+        if len(set(features)) != len(features):
+            raise ValueError("data_dictionary.csv contains duplicate feature definitions")
         id_fields = [row.get("feature", "") for row in metadata
                      if row.get("role", "").strip().lower() == "id"]
-        if len(id_fields) > 1:
-            raise ValueError("data_dictionary.csv: multiple ID columns are declared")
-        id_column = id_fields[0] if id_fields else expected_header[0]
+        target_fields = [row["feature"] for row in metadata
+                         if row["role"].strip().lower() == "target"]
+        if len(id_fields) != 1 or len(target_fields) != 1:
+            raise ValueError("data_dictionary.csv must declare exactly one id and one target")
+        id_column, target_column = id_fields[0], target_fields[0]
         if id_column not in expected_header:
             raise ValueError("Declared ID column is absent from sample_submission.csv")
         targets = [name for name in expected_header if name != id_column]
@@ -84,22 +106,31 @@ def validate_predictions(task_dir: Path, *, spec=None) -> dict:
             descriptions = list(task_dir.glob("*.md"))
             task_file = descriptions[0] if len(descriptions) == 1 else None
         if task_file is not None and task_file.is_file():
-            from agent.task_contract import parse_task_metric
+            from agent.task_contract import _DECLARATION, _description_lines, parse_task_metric
 
+            task_text = task_file.read_text(encoding="utf-8-sig")
             try:
-                metric = parse_task_metric(task_file.read_text(encoding="utf-8-sig"))
-            except ValueError:
+                metric = parse_task_metric(task_text)
+            except ValueError as error:
                 # Legacy structural validation remains useful for unsupported
-                # metrics; no quality verification is claimed on this path.
+                # or absent metrics, but must not hide contradictory semantics.
+                if not str(error).startswith(("Unsupported or unrecognized primary metric",
+                                              "Missing explicit primary metric declaration")):
+                    raise
+                if str(error).startswith("Unsupported or unrecognized primary metric"):
+                    declarations = sum(_DECLARATION.match(line) is not None
+                                       for line in _description_lines(task_text))
+                    if declarations != 1:
+                        raise ValueError("Multiple primary metric declarations cannot use structural fallback") from error
                 metric = None
-            expanded = metric is not None and (
-                metric.name not in {"RMSE", "Macro F1"}
-                or any((dtypes.get(name) == "category") != metric.classification for name in targets)
-            )
-            if expanded:
+            if metric is not None:
                 from agent.task_spec import load_task
 
                 return validate_predictions(task_dir, spec=load_task(task_file))
+        if len(expected_header) != 2 or set(expected_header) != {id_column, target_column}:
+            raise ValueError("sample_submission.csv must contain the declared id and target only")
+        if dtypes.get(target_column) not in {"numeric", "category"}:
+            raise ValueError("Unsupported target dtype in data_dictionary.csv; expected numeric or category")
         categorical = [name for name in targets if dtypes.get(name) == "category"]
         allowed_classes = {name: set() for name in categorical}
         if categorical:
@@ -114,6 +145,7 @@ def validate_predictions(task_dir: Path, *, spec=None) -> dict:
             if id_column not in header:
                 raise ValueError("test.csv is missing the ID column")
             expected_ids = [row[id_column] for row in _rows(header, reader, "test.csv")]
+        _check_test_ids(expected_ids)
         with _csv_file(task_dir / "submission.csv") as (header, reader):
             if header != expected_header:
                 raise ValueError("submission.csv columns or column order differ from sample_submission.csv")

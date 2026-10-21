@@ -147,6 +147,21 @@ def _readable_report(report: dict) -> bytes:
     if model_config is not None:
         from app.model_config import model_options
 
+        def quality_options(config):
+            options = []
+            if "objective" in config:
+                value = "MAE" if config["objective"] == "mae" else config["objective"]
+                options.append(f"Целевая функция: {value}")
+            if "target_transform" in config:
+                value = ("log1p (обратное преобразование expm1)"
+                         if config["target_transform"] == "log1p" else config["target_transform"])
+                options.append(f"Преобразование цели: {value}")
+            return options
+
+        def component_name(component):
+            options = quality_options(component)
+            return component["model"] + (" (" + "; ".join(options) + ")" if options else "")
+
         definition = next((option for task_type in ("classification", "regression")
                            for option in model_options(task_type).values()
                            if option["model"] == model_config["model"]), {})
@@ -155,7 +170,7 @@ def _readable_report(report: dict) -> bytes:
         for name, value in model_config["parameters"].items():
             field = fields.get(name, {})
             if model_config["model"] == "FixedBlend" and name == "components":
-                parameters.append("Модели: " + " + ".join(item["model"] for item in value))
+                parameters.append("Модели: " + " + ".join(component_name(item) for item in value))
                 continue
             if model_config["model"] == "FixedBlend" and name == "weight":
                 parameters.append("Вес каждой модели: 50 %")
@@ -171,6 +186,7 @@ def _readable_report(report: dict) -> bytes:
             elif isinstance(value, float):
                 value = f"{value:g}"
             parameters.append(f'{field.get("label", name)}: {value}')
+        parameters.extend(quality_options(model_config))
         configuration.append(("Параметры модели", "; ".join(parameters)))
     rows = [
         ("Модель", report.get("model") or (model_config or {}).get("model") or action), *configuration,

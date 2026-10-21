@@ -362,6 +362,59 @@ class WorkerTests(unittest.TestCase):
                 self.assertFalse((job_dir / "holdout_predictions.csv").exists())
                 self.assertFalse(json.loads((job_dir / "result.json").read_text(encoding="utf-8"))["output_valid"])
 
+    def test_full_recipe_preserves_objective_and_target_transform_through_refit_and_json(self):
+        source = self.make_source()
+        path, job_dir, staged = self.make_config(source, "baseline")
+        config = json.loads(path.read_text(encoding="utf-8"))
+        recipe = make_model_config("baseline", "regression", {"max_iter": 50},
+                                   objective="mae", target_transform="log1p")
+        path.write_text(json.dumps({**config, "model_config": recipe}), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker.main(["--config", str(path)]), 0)
+        result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+        metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["model_config"], recipe)
+        self.assertEqual(metrics["model_config"], recipe)
+        self.assertEqual(metrics["model"]["parameters"]["loss"], "absolute_error")
+        self.assertNotIn("estimator", metrics["model"]["parameters"])
+        held = pd.read_csv(job_dir / "holdout_predictions.csv")
+        expected = np.sqrt(mean_squared_error(held["actual"], held["prediction"]))
+        self.assertAlmostEqual(result["metric"]["value"], expected)
+        self.assertTrue(worker.validate_predictions(staged)["valid"])
+
+    def test_full_recipe_rejects_conflicting_legacy_params_action_and_automl(self):
+        source = self.make_source()
+        path, _, _ = self.make_config(source, "baseline")
+        base = json.loads(path.read_text(encoding="utf-8"))
+        recipe = make_model_config("baseline", "regression", objective="mae")
+        invalid = [
+            {"model_config": recipe, "model_params": None},
+            {"model_config": recipe, "model_params": {}},
+            {"model_config": recipe, "action": "automl"},
+            {"model_config": make_model_config("extra_trees", "regression")},
+            {"model_config": None},
+        ]
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps({**base, **changes}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    worker.load_config(path)
+
+    def test_full_recipe_rejects_wrong_actual_task_type_before_building_model(self):
+        for classification in (False, True):
+            with self.subTest(classification=classification):
+                source = self.make_source(classification)
+                path, job_dir, staged = self.make_config(source, "baseline")
+                config = json.loads(path.read_text(encoding="utf-8"))
+                wrong_type = "regression" if classification else "classification"
+                recipe = make_model_config("baseline", wrong_type)
+                path.write_text(json.dumps({**config, "model_config": recipe}), encoding="utf-8")
+                with patch.object(worker, "build_pipeline") as build, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(worker.main(["--config", str(path)]), 1)
+                build.assert_not_called()
+                self.assertFalse((job_dir / "holdout_predictions.csv").exists())
+                self.assertFalse((staged / "submission.csv").exists())
+
     def test_existing_symlink_output_is_refused_before_training(self):
         source = self.make_source()
         path, job_dir, _ = self.make_config(source, "baseline")

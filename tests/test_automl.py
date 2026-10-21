@@ -156,6 +156,40 @@ class AutoMLTests(unittest.TestCase):
         self.assertCountEqual([call["id"] for call in verified], ["refine_1", "candidate_2", "candidate_4"])
         self.assertEqual(result["search_policy"]["outer_shortlist_limit"], 3)
 
+    def test_paired_stability_can_reject_one_split_winner_without_using_outer_rows(self):
+        outcomes = {"selection": {"error": 2}}
+
+        def vary_by_repeat(config):
+            if config["phase"] == "selection":
+                repeat = Path(config["candidate_dir"]).name.startswith("stability_")
+                outcomes[(config["id"], "selection")] = {"error": (
+                    10 if repeat and config["id"] == "candidate_1" else
+                    0 if config["id"] == "candidate_1" else 2 if config["id"] == "candidate_2" else 3)}
+
+        result = self.run_search(outcomes, count=3, callback=vary_by_repeat, stability_splits=3)
+        stable = result["stability"]
+        self.assertTrue(stable["applied"])
+        self.assertEqual(stable["summary"]["used_rounds"], 3)
+        self.assertEqual(stable["summary"]["ranking"][0], "candidate_2")
+        self.assertNotIn("candidate_1", [call["id"] for call in self.calls if call["phase"] == "verification"])
+        outer = next(call for call in self.calls if call["phase"] == "seed")
+        for call in self.calls:
+            if Path(call["candidate_dir"]).name.startswith("stability_"):
+                self.assertTrue(set(call["fit_rows"]) | set(call["validation_rows"]) <= set(outer["fit_rows"]))
+                self.assertFalse(set(call["validation_rows"]) & set(outer["validation_rows"]))
+
+    def test_incomplete_paired_round_keeps_original_outer_shortlist(self):
+        outcomes = {"selection": {"error": 2}}
+
+        def fail_repeat(config):
+            if Path(config["candidate_dir"]).name.startswith("stability_"):
+                outcomes[(config["id"], "selection")] = {"exit_code": 1}
+
+        result = self.run_search(outcomes, count=3, callback=fail_repeat, stability_splits=3)
+        self.assertFalse(result["stability"]["applied"])
+        self.assertEqual(result["stability"]["summary"]["used_rounds"], 1)
+        self.assertEqual(sum(call["phase"] == "verification" for call in self.calls), 3)
+
     def test_verification_equal_inner_durations_preserve_score_rank(self):
         with patch.object(automl.time, "monotonic", return_value=0):
             self.run_search({("candidate_1", "selection"): {"error": 2},

@@ -69,6 +69,49 @@ def exploration_plan(classification):
     return result
 
 
+def recipe_identity(item):
+    """Ignore presentation fields when deduplicating executable configurations."""
+    return json.dumps([item["model_config"], normalize_feature_config(item.get("feature_config"))],
+                      sort_keys=True, allow_nan=False)
+
+
+def metric_candidates(metric_name, y_fit, *, existing=()):
+    """Bounded regression alternatives, proposed using FIT targets only.
+
+    An objective/transform is a candidate, never an automatic change to the
+    scoring metric. All predictions must still be evaluated on the original
+    target scale. This profile intentionally cannot inspect held-out targets.
+    """
+    if metric_name not in {"MAE", "RMSE", "MSE", "R2", "R²", "MAPE", "RMSLE"}:
+        return []
+    values = np.asarray(y_fit, dtype=float)
+    if values.ndim != 1 or len(values) < 20 or not np.isfinite(values).all():
+        return []
+    q50, q90, q99 = np.quantile(values, [.50, .90, .99])
+    # Fixed, scale-invariant trigger. Held-out outcomes never affect eligibility.
+    log_eligible = (values.min() >= 0 and q99 > 0
+                    and q99 - q50 > 3 * max(q90 - q50, np.finfo(float).eps))
+    variants = []
+    if metric_name == "MAE":
+        variants.extend((action, {"objective": "mae"})
+                        for action in ("baseline", "catboost", "lightgbm"))
+    if log_eligible:
+        variants.extend((action, {"target_transform": "log1p"})
+                        for action in ("linear", "catboost", "lightgbm"))
+    seen, result = {recipe_identity(item) for item in existing}, []
+    for action, options in variants:
+        parameters = ({"iterations": 100} if action == "catboost" else
+                      {"n_estimators": 100} if action == "lightgbm" else None)
+        item = _candidate(f"metric_{len(result) + 1}", action, "regression", parameters,
+                          "Проверка метрики · " + action + " · " + next(iter(options.values())))
+        item["model_config"] = make_model_config(action, "regression", parameters, **options)
+        key = recipe_identity(item)
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 def refinement_plan(classification, ranked_candidates, existing=()):
     """Explore three new settings for each of the two best distinct families.
 
@@ -105,22 +148,22 @@ def refinement_plan(classification, ranked_candidates, existing=()):
         "linear": ([{"C": value, "max_iter": 500} for value in (0.1, 10.0, 100.0)]
                    if classification else [{"alpha": value} for value in (0.1, 10.0, 100.0)]),
     }
-    def identity(item):
-        return json.dumps([item["model_config"], normalize_feature_config(item.get("feature_config"))], sort_keys=True)
-    seen = {identity(item) for item in existing}
-    families, result, features, bases = [], [], {}, {}
+    seen = {recipe_identity(item) for item in existing}
+    families, result, features, bases, options = [], [], {}, {}, {}
     for item in ranked_candidates:
         action = item["action"]
         if action not in families:
             families.append(action)
             features[action] = normalize_feature_config(item.get("feature_config"))
             bases[action] = item["model_config"]["parameters"]
+            options[action] = {key: item["model_config"][key]
+                               for key in ("objective", "target_transform") if key in item["model_config"]}
         if len(families) == 2:
             break
     for action in families:
         for parameters in spaces[action]:
-            model_config = make_model_config(action, task_type, {**bases[action], **parameters})
-            key = identity({"model_config": model_config, "feature_config": features[action]})
+            model_config = make_model_config(action, task_type, {**bases[action], **parameters}, **options[action])
+            key = recipe_identity({"model_config": model_config, "feature_config": features[action]})
             if key in seen:
                 continue
             seen.add(key)
@@ -157,6 +200,40 @@ def select_shortlist(ranked_candidates, limit=3):
         if len(selected) == limit:
             break
     return selected
+
+
+def local_candidate_plan(classification, metric_name, y_fit, ranked=(), *, metric_recipes=False):
+    """Finite fallback queue; the caller removes already executed recipes.
+
+    Ranking, when supplied, must be from inner selection only. A round-robin
+    refinement order gives multiple families a chance before patience stops.
+    """
+    initial = exploration_plan(classification)
+    ordered = [*ranked, *initial]
+    families = {}
+    for item in ordered:
+        if item.get("action") in ACTION_NAMES and item["action"] not in families:
+            families[item["action"]] = item
+    queue = metric_candidates(metric_name, y_fit) if metric_recipes and not classification else []
+    queue.extend(initial)
+    refinements = [refinement_plan(classification, [item], existing=initial)
+                   for item in families.values()]
+    for index in range(3):
+        queue.extend(items[index] for items in refinements if len(items) > index)
+    for item in list(families.values())[:3]:
+        variant = {**item, "feature_config": normalize_feature_config({
+            **item.get("feature_config", {}), "missing_indicators": True, "rare_min_count": 10})}
+        queue.append(variant)
+    seen, result = set(), []
+    for item in queue:
+        key = recipe_identity(item)
+        if key not in seen:
+            seen.add(key)
+            result.append({**item, "id": f"local_{len(result) + 1}"})
+    return result
+
+
+ACTION_NAMES = {"baseline", "extra_trees", "catboost", "lightgbm", "linear"}
 
 
 def align_predictions(spec, predictions, prediction_classes=()):

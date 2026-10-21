@@ -67,8 +67,23 @@ def _contain_windows():
     return job
 
 
+def process_inventory_matches() -> bool:
+    """Check that /proc describes the PID namespace used by os.kill/getpid.
+
+    A host-mounted /proc can expose an unrelated process under the same numeric
+    PID as this supervisor. Never derive a process tree from that inventory.
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        return (Path("/proc/self/stat").is_file()
+                and int(os.readlink("/proc/self")) == os.getpid())
+    except (OSError, ValueError):
+        return False
+
+
 def _contain_linux():
-    if not Path("/proc/self/stat").is_file():
+    if not process_inventory_matches():
         return False
     libc = ctypes.CDLL(None, use_errno=True)
     libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
@@ -81,13 +96,18 @@ def _contain_linux():
 
 
 def _trusted_without_proc(command):
-    """Only these exact internal recipes run no subprocesses or generated code."""
+    """Allow only fixed host-controlled entry points without tree inspection.
+
+    Offline search can itself launch recipe processes. Without a matching
+    inventory this path cannot promise full descendant supervision; generated
+    Python and arbitrary entry points remain unavailable.
+    """
     if (len(command) not in {5, 6} or command[1] != "-u"
             or Path(command[0]).resolve() != Path(sys.executable).resolve()):
         return False
     script = Path(command[2]).resolve()
     if script == ROOT / "app" / "worker.py":
-        # worker.load_config independently allows only baseline/extra_trees.
+        # worker.load_config independently validates the fixed offline actions.
         return len(command) == 5 and command[3] == "--config"
     return (script == ROOT / "prepare_data.py" and len(command) == 6
             and command[3:5] == ["all", "--data-dir"])
@@ -154,7 +174,7 @@ def main(argv=None):
     elif sys.platform == "linux":
         inventory = _contain_linux()
         if not inventory and not _trusted_without_proc(arguments[1:]):
-            raise RuntimeError("Qwen and arbitrary commands require Linux /proc process supervision.")
+            raise RuntimeError("Qwen and arbitrary commands require Linux /proc process supervision in the current PID namespace.")
     else:
         raise RuntimeError("Job supervision supports Windows and Linux only.")
     try:

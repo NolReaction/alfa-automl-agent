@@ -100,7 +100,9 @@ def feature_schema(numeric, categorical, config=None):
 
 
 def _missing(value):
-    if value is None or isinstance(value, str) and not value.strip():
+    # The CSV contract marks an empty field as missing. A nonempty literal
+    # category/text value, including whitespace or "NA", must remain distinct.
+    if value is None or isinstance(value, str) and value == "":
         return True
     missing = pd.isna(value)
     return isinstance(missing, (bool, np.bool_)) and bool(missing)

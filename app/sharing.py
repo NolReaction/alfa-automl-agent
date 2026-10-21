@@ -29,7 +29,7 @@ MAX_SAFE_INTEGER = (1 << 53) - 1
 FINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl", "agent"}
 AGENT_STATUSES = {"running", "completed", "fallback", "failed"}
-AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "host_metric_unsupported", "repeated_failures", "unknown"}
+AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "host_metric_unsupported", "repeated_failures", "context_budget", "inner_validation_unavailable", "refit_failed", "unknown"}
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _RECORD_FILE = re.compile(r"([0-9a-f]{64})\.json\Z")
@@ -243,6 +243,16 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         reason = _text(raw["agent_reason"], "agent_reason", 120)
         # Only stable reason codes travel; arbitrary machine diagnostics stay local.
         result["agent_reason"] = reason if reason in AGENT_REASONS else "unknown"
+    if "research" in raw:
+        from app.research_summary import validate_research_summary
+
+        if raw["action"] != "agent":
+            raise ValueError("Этапы исследования доступны только для агента.")
+        result["research"] = validate_research_summary(raw["research"])
+        # Process diagnostics can contain paths or credentials. The shared
+        # report keeps stage status; detailed machine explanations stay local.
+        for stage in result["research"].get("stages", []):
+            stage.pop("reason", None)
     if len(_encoded(result)) > MAX_RECORD_BYTES - 1024:
         raise ValueError(f"Один отчёт превышает допустимый размер {MAX_RECORD_BYTES // 1024} КБ.")
     return result

@@ -196,19 +196,48 @@ def normalize_model_params(action, task_type, value=None) -> dict:
             for field in definition["fields"]}
 
 
-def make_model_config(action, task_type, value=None) -> dict:
-    return {"model": _definition(action, task_type)["model"],
-            "parameters": normalize_model_params(action, task_type, value)}
+def _quality_options(action, task_type, *, objective=None, target_transform=None):
+    """Optional recipe controls never change the legacy parameter dictionary."""
+    result = {}
+    if objective is not None:
+        if (task_type != "regression" or action not in {"baseline", "catboost", "lightgbm"}
+                or type(objective) is not str or objective != "mae"):
+            raise ValueError("MAE objective is supported only by the regression boosting recipes.")
+        result["objective"] = objective
+    if target_transform is not None:
+        if task_type != "regression" or type(target_transform) is not str or target_transform != "log1p":
+            raise ValueError("The only target transform is opt-in log1p for regression.")
+        result["target_transform"] = target_transform
+    return result
+
+
+def make_model_config(action, task_type, value=None, *, objective=None, target_transform=None) -> dict:
+    """Build a legacy-compatible recipe with explicitly requested quality options.
+
+    Omitted options add no keys to historical configurations. A saved option
+    is part of the recipe identity, rather than an unchecked model parameter.
+    """
+    result = {"model": _definition(action, task_type)["model"],
+              "parameters": normalize_model_params(action, task_type, value)}
+    result.update(_quality_options(action, task_type, objective=objective,
+                                   target_transform=target_transform))
+    return result
 
 
 def validate_model_config(value, action=None) -> dict:
     """Validate saved evidence strictly, without inventing absent parameters."""
-    if not isinstance(value, dict) or set(value) != {"model", "parameters"}:
+    required = {"model", "parameters"}
+    optional = {"objective", "target_transform"}
+    if (not isinstance(value, dict) or not required <= set(value)
+            or set(value) - required - optional
+            or any(value[name] is None for name in optional if name in value)):
         raise ValueError("Некорректный отчёт о настройках модели.")
     model = value["model"]
     if not isinstance(model, str):
         raise ValueError("Некорректное название модели.")
     if model == "FixedBlend":
+        if set(value) != required:
+            raise ValueError("Quality options belong to individual blend components.")
         if action is not None:
             raise ValueError("Ансамбль создаётся только автоподбором, а не отдельным рецептом.")
         parameters = value["parameters"]
@@ -234,7 +263,8 @@ def validate_model_config(value, action=None) -> dict:
     parameters = value["parameters"]
     if not isinstance(parameters, dict) or set(parameters) != set(definition["defaults"]):
         raise ValueError("В отчёте нужны все разрешённые параметры модели.")
-    return make_model_config(recipe, task_type, parameters)
+    return make_model_config(recipe, task_type, parameters, objective=value.get("objective"),
+                             target_transform=value.get("target_transform"))
 
 
 def _task_type_for_model(model):

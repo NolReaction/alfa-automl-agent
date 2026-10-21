@@ -80,6 +80,15 @@ class FrontendTests(unittest.TestCase):
     def test_class_diagnostics_escape_labels_and_distinguish_imported_reports(self):
         self.check_case("diagnostic_escaping_and_provenance")
 
+    def test_research_stages_keep_inner_outer_and_legacy_provenance_visible(self):
+        self.check_case("research_stages_and_provenance")
+
+    def test_verified_experiment_without_improvement_is_not_an_error(self):
+        self.check_case("research_not_better_is_normal")
+
+    def test_research_fallback_reasons_and_recipe_cards_do_not_expose_private_paths(self):
+        self.check_case("research_fallback_reasons_and_private_paths")
+
 
 if __name__ == "__main__":
     unittest.main()

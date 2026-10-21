@@ -1,0 +1,391 @@
+{
+  "version": 1,
+  "purpose": "posthoc_budget_admission_diagnostic_on_previously_seen_public_train_holdout",
+  "decision": "Strong remains opt-in and not qualified for default. More LightGBM models finished at900s, but strong still lost to equal-budget legacy. This known holdout is not independent confirmation.",
+  "predeclaration": "900s pair selected after observing six strong boosting timeouts in the300s pair; both900s arms fixed before execution, unchanged models/data/source. Original10-row report not replaced.",
+  "source_commit_local": "69dbb0a7a41ac75d353a795e362a733fa22db3ce",
+  "source_commit_remote": "a748cd569dc73539ead7ce1d2e952b4e7f4ff459",
+  "source_git_tree": "7ba19cfaaa7ab424839a4ac14d1ef6450e3c5c3c",
+  "source_sha256": "397326839126221fe3d167e315e01ed1fdb046cfce056de25b03d5b6796dafea",
+  "reachable_evidence_commit": "1bb78f3dc0abec18f37eba08e34af53102adce96",
+  "harness_sha256": {
+    "/workspace/scratch/271f408d330f/alfa-quality-backend/experiment_strong_tabular.py": "c0a512d877ae0165bccbf6d290f9e8bc932ae909f3c97beadda37d2c3088baed",
+    "/workspace/scratch/271f408d330f/alfa-quality-backend/benchmark_agent.py": "c2ccd7d1fbdc80a21a24d3d1cf8bad53276148b85b8d6185a31270af45e6ecfc",
+    "/workspace/scratch/271f408d330f/alfa-quality-backend/benchmark_cases.py": "674c5190305448dcd7d29949df526c673b741c57622edc97b320be7d4a890cc2",
+    "/workspace/scratch/271f408d330f/alfa-quality-backend/experiment_portfolio_recipes.py": "efabb4adb3f33dea63cbff46377a235d21ce28c1835fd53e074257c340d3dcd2"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3",
+    "scikit-learn": "1.5.2",
+    "catboost": "1.2.8",
+    "lightgbm": "4.6.0",
+    "psutil": "6.1.1"
+  },
+  "reaudited_at_utc": "2026-10-21T11:43:18.927863+00:00",
+  "api_calls": 0,
+  "platform_submissions": 0,
+  "resource_scope": "Local cgroup8CPU/8GiB, configured child6GiB. Process inventory unavailable; RSS/CPU telemetry and individual child-cap enforcement not verified. Not32GiB/full3h qualification.",
+  "raw_report": {
+    "path": "data/experiments/strong_tabular/public_classification_v1_900/report.json",
+    "sha256": "037c0a0653927e084143023e878f7a6527dfff2d0f9c003d5b0129c672713d12"
+  },
+  "original_300s_raw_report_sha256": "5c2d1454e9a0351f00aadd1c6c56758a8b7822ff3330c4d904cc6620223d33f0",
+  "result": {
+    "metric": "Macro F1",
+    "higher_is_better": true,
+    "legacy": 0.6242886179316235,
+    "strong_v1": 0.6154616316486765,
+    "strong_minus_legacy": -0.00882698628294698,
+    "outcome": "loss",
+    "strong_gain_over_own_300s": 0.010687289237463649,
+    "legacy_change_from_own_300s": -0.0006826527508889679
+  },
+  "rows": [
+    {
+      "case": "public_classification_seed_31415_fold_0",
+      "seed": 31415,
+      "profile": "legacy",
+      "budget_seconds": 900.0,
+      "elapsed_seconds": 275.968328,
+      "audit_metric": {
+        "name": "Macro F1",
+        "value": 0.6242886179316235,
+        "higher_is_better": true
+      },
+      "internal_metric": {
+        "name": "Macro F1",
+        "value": 0.6134045704372728,
+        "higher_is_better": true
+      },
+      "best_candidate": "refine_3",
+      "model": "LGBMClassifier",
+      "model_config": {
+        "model": "LGBMClassifier",
+        "parameters": {
+          "n_estimators": 400,
+          "num_leaves": 127,
+          "max_depth": -1,
+          "min_child_samples": 20,
+          "learning_rate": 0.03,
+          "reg_lambda": 1.0,
+          "colsample_bytree": 1.0,
+          "class_weight": "balanced"
+        }
+      },
+      "completed_selection_count": 14,
+      "timed_out_candidates": [],
+      "selection_trials": [
+        {
+          "id": "candidate_1",
+          "model": "RandomForestClassifier",
+          "iterations": 120,
+          "selection_completed": true,
+          "selection_metric": 0.5860658592685475,
+          "selection_fit_seconds": 3.2601943839999876,
+          "all_phases_elapsed_seconds": 5.069,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_2",
+          "model": "ExtraTreesClassifier",
+          "iterations": 160,
+          "selection_completed": true,
+          "selection_metric": 0.5290452803721791,
+          "selection_fit_seconds": 2.41191191300004,
+          "all_phases_elapsed_seconds": 4.278,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_3",
+          "model": "ExtraTreesClassifier",
+          "iterations": 200,
+          "selection_completed": true,
+          "selection_metric": 0.5609510312005807,
+          "selection_fit_seconds": 2.792219491000651,
+          "all_phases_elapsed_seconds": 4.572,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_4",
+          "model": "CatBoostClassifier",
+          "iterations": 100,
+          "selection_completed": true,
+          "selection_metric": 0.44428860479948956,
+          "selection_fit_seconds": 10.661026835000484,
+          "all_phases_elapsed_seconds": 12.586,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_5",
+          "model": "CatBoostClassifier",
+          "iterations": 100,
+          "selection_completed": true,
+          "selection_metric": 0.5675722754724007,
+          "selection_fit_seconds": 15.16489795399957,
+          "all_phases_elapsed_seconds": 38.133,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_6",
+          "model": "LGBMClassifier",
+          "iterations": 100,
+          "selection_completed": true,
+          "selection_metric": 0.5863007751951523,
+          "selection_fit_seconds": 3.8374934399998892,
+          "all_phases_elapsed_seconds": 5.872,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_7",
+          "model": "LGBMClassifier",
+          "iterations": 100,
+          "selection_completed": true,
+          "selection_metric": 0.5951404128033394,
+          "selection_fit_seconds": 4.864838475999932,
+          "all_phases_elapsed_seconds": 6.821,
+          "timed_out": false
+        },
+        {
+          "id": "candidate_8",
+          "model": "LogisticRegression",
+          "iterations": 500,
+          "selection_completed": true,
+          "selection_metric": 0.4149792249622755,
+          "selection_fit_seconds": 9.459578621000219,
+          "all_phases_elapsed_seconds": 11.204,
+          "timed_out": false
+        },
+        {
+          "id": "refine_1",
+          "model": "LGBMClassifier",
+          "iterations": 400,
+          "selection_completed": true,
+          "selection_metric": 0.5867751593693697,
+          "selection_fit_seconds": 10.481715416999577,
+          "all_phases_elapsed_seconds": 12.821,
+          "timed_out": false
+        },
+        {
+          "id": "refine_2",
+          "model": "LGBMClassifier",
+          "iterations": 500,
+          "selection_completed": true,
+          "selection_metric": 0.5833814341702985,
+          "selection_fit_seconds": 21.020895589000247,
+          "all_phases_elapsed_seconds": 23.736,
+          "timed_out": false
+        },
+        {
+          "id": "refine_3",
+          "model": "LGBMClassifier",
+          "iterations": 400,
+          "selection_completed": true,
+          "selection_metric": 0.6097811811051385,
+          "selection_fit_seconds": 25.655813457000477,
+          "all_phases_elapsed_seconds": 96.586,
+          "timed_out": false
+        },
+        {
+          "id": "refine_4",
+          "model": "RandomForestClassifier",
+          "iterations": 160,
+          "selection_completed": true,
+          "selection_metric": 0.590602867088194,
+          "selection_fit_seconds": 3.8852372860001196,
+          "all_phases_elapsed_seconds": 5.675,
+          "timed_out": false
+        },
+        {
+          "id": "refine_5",
+          "model": "RandomForestClassifier",
+          "iterations": 200,
+          "selection_completed": true,
+          "selection_metric": 0.5205505436353802,
+          "selection_fit_seconds": 3.585227095999471,
+          "all_phases_elapsed_seconds": 5.39,
+          "timed_out": false
+        },
+        {
+          "id": "refine_6",
+          "model": "RandomForestClassifier",
+          "iterations": 300,
+          "selection_completed": true,
+          "selection_metric": 0.5932943977618368,
+          "selection_fit_seconds": 5.537187601999904,
+          "all_phases_elapsed_seconds": 16.402,
+          "timed_out": false
+        }
+      ],
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "input_sha256": "314e935ec30802c024dc792e569bb1340480e343aaaef0d546d723da1c4b1e7b",
+      "audit_sha256": "24c3d24d862643cb1ace8a257ad80aefd2cc2c7b75d5717310114fb800e2a8a3",
+      "submission_sha256": "a21a3a0e12b1bd3a04da59d3d3205dda31e3e91cbf98b95b39df02cfecf4e146",
+      "raw_automl_report_sha256": "3ee4142e74a8733900b39e128225dba1623d69db62052dd27991c07908b6afe9",
+      "same_input_and_audit_as_300s": true,
+      "previous_300s_audit": {
+        "name": "Macro F1",
+        "value": 0.6249712706825125,
+        "higher_is_better": true
+      },
+      "previous_300s_seconds": 197.296177,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    },
+    {
+      "case": "public_classification_seed_31415_fold_0",
+      "seed": 31415,
+      "profile": "strong_v1",
+      "budget_seconds": 900.0,
+      "elapsed_seconds": 527.798814,
+      "audit_metric": {
+        "name": "Macro F1",
+        "value": 0.6154616316486765,
+        "higher_is_better": true
+      },
+      "internal_metric": {
+        "name": "Macro F1",
+        "value": 0.609112429623535,
+        "higher_is_better": true
+      },
+      "best_candidate": "strong_lgbm_1000_balanced",
+      "model": "LGBMClassifier",
+      "model_config": {
+        "model": "LGBMClassifier",
+        "parameters": {
+          "n_estimators": 1000,
+          "num_leaves": 31,
+          "max_depth": -1,
+          "min_child_samples": 20,
+          "learning_rate": 0.04,
+          "reg_lambda": 5.0,
+          "colsample_bytree": 1.0,
+          "class_weight": "balanced"
+        }
+      },
+      "completed_selection_count": 6,
+      "timed_out_candidates": [
+        "strong_cat_1200",
+        "strong_cat_1600_depth8"
+      ],
+      "selection_trials": [
+        {
+          "id": "strong_reference",
+          "model": "RandomForestClassifier",
+          "iterations": 120,
+          "selection_completed": true,
+          "selection_metric": 0.5860658592685475,
+          "selection_fit_seconds": 4.617084706999776,
+          "all_phases_elapsed_seconds": 12.666,
+          "timed_out": false
+        },
+        {
+          "id": "strong_lgbm_800",
+          "model": "LGBMClassifier",
+          "iterations": 800,
+          "selection_completed": true,
+          "selection_metric": 0.5879183186455074,
+          "selection_fit_seconds": 18.582135129000562,
+          "all_phases_elapsed_seconds": 21.851,
+          "timed_out": false
+        },
+        {
+          "id": "strong_cat_1200",
+          "model": "CatBoostClassifier",
+          "iterations": 1200,
+          "selection_completed": false,
+          "selection_metric": null,
+          "selection_fit_seconds": null,
+          "all_phases_elapsed_seconds": 80.624,
+          "timed_out": true
+        },
+        {
+          "id": "strong_lgbm_1600_regularized",
+          "model": "LGBMClassifier",
+          "iterations": 1600,
+          "selection_completed": true,
+          "selection_metric": 0.5898121607770017,
+          "selection_fit_seconds": 46.544049739,
+          "all_phases_elapsed_seconds": 54.254,
+          "timed_out": false
+        },
+        {
+          "id": "strong_trees_300",
+          "model": "ExtraTreesClassifier",
+          "iterations": 300,
+          "selection_completed": true,
+          "selection_metric": 0.5879839014473192,
+          "selection_fit_seconds": 5.5737718840000525,
+          "all_phases_elapsed_seconds": 16.549,
+          "timed_out": false
+        },
+        {
+          "id": "strong_lgbm_1200_leaves63",
+          "model": "LGBMClassifier",
+          "iterations": 1200,
+          "selection_completed": true,
+          "selection_metric": 0.5836366849919564,
+          "selection_fit_seconds": 45.34791527800007,
+          "all_phases_elapsed_seconds": 52.229,
+          "timed_out": false
+        },
+        {
+          "id": "strong_cat_1600_depth8",
+          "model": "CatBoostClassifier",
+          "iterations": 1600,
+          "selection_completed": false,
+          "selection_metric": null,
+          "selection_fit_seconds": null,
+          "all_phases_elapsed_seconds": 144.501,
+          "timed_out": true
+        },
+        {
+          "id": "strong_lgbm_1000_balanced",
+          "model": "LGBMClassifier",
+          "iterations": 1000,
+          "selection_completed": true,
+          "selection_metric": 0.6094118673158424,
+          "selection_fit_seconds": 29.72998351700062,
+          "all_phases_elapsed_seconds": 116.327,
+          "timed_out": false
+        }
+      ],
+      "full_refit_verified": true,
+      "native_profile_verified": true,
+      "reaudit_verified": true,
+      "input_sha256": "314e935ec30802c024dc792e569bb1340480e343aaaef0d546d723da1c4b1e7b",
+      "audit_sha256": "24c3d24d862643cb1ace8a257ad80aefd2cc2c7b75d5717310114fb800e2a8a3",
+      "submission_sha256": "c608b6e115df38abbd098d2c5e315d8420cf76b9bf7b44da2ede247b20d997a9",
+      "raw_automl_report_sha256": "1dea0fb4353cb54e333a569912ae9bfc3817b8969d7202779a59485eb1975c56",
+      "same_input_and_audit_as_300s": true,
+      "previous_300s_audit": {
+        "name": "Macro F1",
+        "value": 0.6047743424112129,
+        "higher_is_better": true
+      },
+      "previous_300s_seconds": 202.232366,
+      "resources": {
+        "available": false,
+        "peak_rss_bytes": null,
+        "cpu_seconds": null,
+        "memory_limit_bytes": 6442450944,
+        "unavailable_reason": "RuntimeError: process inspection unavailable",
+        "sample_count": 0,
+        "tracked_processes": 0,
+        "cleanup_complete": null
+      }
+    }
+  ]
+}

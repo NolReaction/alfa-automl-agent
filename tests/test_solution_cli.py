@@ -1,4 +1,4 @@
-"""Platform auto mode follows only its environment; explicit offline stays offline."""
+"""Mode selection isolated from search policy; adaptive defaults have their own suite."""
 
 from contextlib import redirect_stderr, redirect_stdout
 import io
@@ -19,9 +19,20 @@ PLATFORM_ENV = {
 
 
 class ModeTests(unittest.TestCase):
+    def assert_budgeted_call(self, called, *arguments, budget, **options):
+        called.assert_called_once()
+        actual_arguments, actual_options = called.call_args
+        actual_options = dict(actual_options)
+        self.assertEqual(actual_arguments, arguments)
+        remaining = actual_options.pop("time_budget")
+        self.assertGreater(remaining, budget - 10)
+        self.assertLessEqual(remaining, budget)
+        self.assertEqual(actual_options, options)
+
     def invoke(self, arguments):
         output, errors = io.StringIO(), io.StringIO()
-        with patch("sys.argv", ["solution.py", *arguments]), redirect_stdout(output), redirect_stderr(errors):
+        with patch("sys.argv", ["solution.py", "--research-search", "legacy", *arguments]), \
+                redirect_stdout(output), redirect_stderr(errors):
             status = solution.main()
         return status, output.getvalue(), errors.getvalue()
 
@@ -37,7 +48,7 @@ class ModeTests(unittest.TestCase):
                     patch.object(solution, "load_local_env", side_effect=AssertionError("Unexpected credentials")):
                 status, output, errors = self.invoke([str(task), "--mode", "offline"])
             self.assertEqual(status, 0, errors)
-            offline.assert_called_once_with(task, time_budget=600, validation={"strategy": "auto"})
+            self.assert_budgeted_call(offline, task, budget=10500, validation={"strategy": "auto"})
             self.assertIn("API calls: 0", output)
 
     def test_auto_without_api_uses_offline_without_reading_local_dotenv(self):
@@ -54,7 +65,7 @@ class ModeTests(unittest.TestCase):
                         patch.object(solution, "load_local_env", side_effect=AssertionError("Unexpected dotenv")):
                     status, output, errors = self.invoke([str(task)])
                 self.assertEqual(status, 0, errors)
-                offline.assert_called_once_with(task, time_budget=600, validation={"strategy": "auto"})
+                self.assert_budgeted_call(offline, task, budget=10500, validation={"strategy": "auto"})
                 self.assertIn("API calls: 0", output)
 
     def test_auto_with_complete_platform_environment_starts_research_without_dotenv(self):
@@ -67,8 +78,8 @@ class ModeTests(unittest.TestCase):
                     patch.object(solution, "run_agent") as research, patch("agent.automl.run_automl") as offline:
                 status, _, errors = self.invoke([str(task)])
             self.assertEqual(status, 0, errors)
-            research.assert_called_once_with(task, client.return_value.__enter__.return_value,
-                                             max_steps=12, time_budget=10500)
+            self.assert_budgeted_call(research, task, client.return_value.__enter__.return_value,
+                                      max_steps=12, budget=10500)
             offline.assert_not_called()
 
     def test_auto_with_required_platform_environment_and_optional_model_starts_research(self):
@@ -87,14 +98,16 @@ class ModeTests(unittest.TestCase):
                         patch.object(solution, "run_agent") as research, patch("agent.automl.run_automl") as offline:
                     status, _, errors = self.invoke([str(task)])
                 self.assertEqual(status, 0, errors)
-                research.assert_called_once_with(task, client.return_value.__enter__.return_value,
-                                                 max_steps=12, time_budget=10500)
+                self.assert_budgeted_call(research, task, client.return_value.__enter__.return_value,
+                                          max_steps=12, budget=10500)
                 offline.assert_not_called()
 
-    def test_auto_rejects_incomplete_platform_environment_before_training(self):
+    def test_auto_uses_offline_when_platform_environment_is_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:
             task = Path(directory) / "task.md"
             task.write_text("Metric: RMSE", encoding="utf-8")
+            result = {"model": "ExtraTreesRegressor", "metric": {"name": "RMSE", "value": 2.0},
+                      "report_path": str(Path(directory) / "report.json")}
             for missing in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
                 for absent_value in (None, "   "):
                     environment = dict(PLATFORM_ENV)
@@ -106,13 +119,13 @@ class ModeTests(unittest.TestCase):
                             patch.dict(os.environ, environment, clear=True), \
                             patch.object(solution, "load_local_env", side_effect=AssertionError("Unexpected dotenv")), \
                             patch.object(solution, "make_client") as client, \
-                            patch("agent.automl.run_automl") as offline:
-                        status, _, errors = self.invoke([str(task)])
-                    self.assertEqual(status, 1)
-                    self.assertIn(missing, errors)
-                    self.assertNotIn(PLATFORM_ENV["OPENAI_API_KEY"], errors)
+                            patch("agent.automl.run_automl", return_value=result) as offline:
+                        status, output, errors = self.invoke([str(task)])
+                    self.assertEqual(status, 0, errors)
+                    self.assertIn(missing, output)
+                    self.assertNotIn(PLATFORM_ENV["OPENAI_API_KEY"], errors + output)
                     client.assert_not_called()
-                    offline.assert_not_called()
+                    self.assert_budgeted_call(offline, task, budget=10500, validation={"strategy": "auto"})
 
     def test_explicit_llm_preserves_research_and_default_time_budget(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -122,8 +135,8 @@ class ModeTests(unittest.TestCase):
                     patch.object(solution, "run_agent") as research, patch("agent.automl.run_automl") as offline:
                 status, _, errors = self.invoke([str(task), "--mode", "llm"])
             self.assertEqual(status, 0, errors)
-            research.assert_called_once_with(task, client.return_value.__enter__.return_value,
-                                             max_steps=12, time_budget=10500)
+            self.assert_budgeted_call(research, task, client.return_value.__enter__.return_value,
+                                      max_steps=12, budget=10500)
             offline.assert_not_called()
 
     def test_unsupported_or_incomplete_validation_does_not_start_training(self):
