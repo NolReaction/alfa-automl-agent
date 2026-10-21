@@ -125,9 +125,113 @@ def load_local_env() -> None:
 
 
 def require_api_settings() -> None:
-    missing = [name for name in API_FIELDS if not os.environ.get(name, "").strip()]
+    missing = [name for name in REQUIRED_API_FIELDS if not os.environ.get(name, "").strip()]
     if missing:
-        raise ValueError("Fill in these settings in .env: " + ", ".join(missing))
+        raise ValueError("Missing required API settings: " + ", ".join(missing)
+                         + ". Supply them in the environment (or .env for --mode llm).")
+
+
+def get_model() -> str:
+    """The contest proxy may replace this optional OpenAI request field."""
+    return os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def sanitize_error_details(details) -> dict:
+    """Revalidate diagnostic metadata before copying it into a public summary.
+
+    No free-form provider values, messages, request IDs, URLs or headers belong
+    in this schema. Unknown fields and values are intentionally discarded.
+    """
+    if not isinstance(details, dict):
+        return {}
+    result = {}
+    for field in ("error_type", "cause_type"):
+        value = details.get(field)
+        if isinstance(value, str) and value in _ERROR_TYPE_NAMES:
+            result[field] = value
+    status = details.get("status_code")
+    if type(status) is int and 100 <= status <= 599:
+        result["status_code"] = status
+    code = details.get("code")
+    if isinstance(code, str) and code in _API_ERROR_CODES:
+        result["code"] = code
+    reason = details.get("transport_reason")
+    if isinstance(reason, str) and reason in _TRANSPORT_REASONS.values():
+        result["transport_reason"] = reason
+    return result
+
+
+def safe_error_details(error: Exception) -> dict:
+    """Describe a typed SDK/transport failure without parsing its message.
+
+    For example, a generic ConnectError does not prove a DNS or TLS failure.
+    Only an actual typed nested cause supports those more precise diagnoses.
+    The cause chain is bounded and cycle-safe; no exception text is accessed.
+    """
+    known = []
+    api_error = ()
+    try:
+        import openai
+        api_error = openai.APIError
+        known.extend((getattr(openai, name), name) for name in _API_ERROR_TYPES
+                     if hasattr(openai, name))
+    except ImportError:
+        pass
+    try:
+        import httpx
+        known.extend((getattr(httpx, name), name) for name in _HTTP_ERROR_TYPES
+                     if hasattr(httpx, name))
+    except ImportError:
+        pass
+    known.extend((kind, kind.__name__) for kind in _BUILTIN_ERROR_TYPES)
+
+    def known_type(value):
+        return next((name for kind, name in known if isinstance(value, kind)), "Exception")
+
+    result = {"error_type": known_type(error)}
+    if isinstance(error, api_error):
+        result.update(status_code=getattr(error, "status_code", None), code=getattr(error, "code", None))
+    seen = set()
+    current = error
+    for depth in range(8):
+        if not isinstance(current, BaseException) or id(current) in seen:
+            break
+        seen.add(id(current))
+        name = known_type(current)
+        reason = _TRANSPORT_REASONS.get(name)
+        if reason is not None:
+            result["transport_reason"] = reason
+            if depth:
+                result["cause_type"] = name
+        cause = current.__cause__
+        current = cause if cause is not None else (
+            None if current.__suppress_context__ else current.__context__)
+    return sanitize_error_details(result)
+
+
+def safe_error_message(error: Exception) -> str:
+    """Keep useful SDK diagnostics without echoing response bodies or headers."""
+    try:
+        from openai import APIError
+    except ImportError:
+        APIError = ()
+
+    if isinstance(error, APIError):
+        details = [type(error).__name__]
+        status = getattr(error, "status_code", None)
+        if type(status) is int and 100 <= status <= 599:
+            details.append(f"HTTP {status}")
+        request_id = getattr(error, "request_id", None)
+        if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
+            details.append(f"request_id={request_id}")
+        code = getattr(error, "code", None)
+        if isinstance(code, str) and code in _API_ERROR_CODES:
+            details.append(f"code={code}")
+        detail = "API request failed (" + ", ".join(details) + ")."
+    else:
+        detail = str(error)
+    key = os.environ.get("OPENAI_API_KEY", "")
+    return detail.replace(key, "[REDACTED]") if key else detail
 
 
 def make_client():

@@ -13,17 +13,23 @@ import re
 import tempfile
 import threading
 
+from app.file_io import replace_file
+from app.search_summary import validate_search_summary
+
 
 FORMAT = "alfa-lab-reports"
 VERSION = 1
 MAX_REPORTS = 200
 MAX_BYTES = 1024 * 1024
-MAX_RECORD_BYTES = 16 * 1024
+MAX_RECORD_BYTES = 128 * 1024
+# A 50-class matrix has 2,500 scalar cells. The byte cap still bounds the
+# envelope; this separate traversal cap must also accommodate many such records.
+MAX_TREE_NODES = 400_000
 MAX_SAFE_INTEGER = (1 << 53) - 1
 FINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
-ACTIONS = {"baseline", "extra_trees", "agent"}
+ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl", "agent"}
 AGENT_STATUSES = {"running", "completed", "fallback", "failed"}
-AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "unknown"}
+AGENT_REASONS = {"time_limit", "api_error", "truncated_response", "model_finished", "step_limit", "host_metric_unsupported", "repeated_failures", "context_budget", "inner_validation_unavailable", "refit_failed", "unknown"}
 _HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _RECORD_FILE = re.compile(r"([0-9a-f]{64})\.json\Z")
@@ -93,21 +99,43 @@ def _split(value):
     if "seed" in value:
         result["seed"] = _number(value["seed"], "split.seed", minimum=0,
                                  maximum=(1 << 32) - 1, integer=True)
-    if "validation_fraction" in value:
-        fraction = _number(value["validation_fraction"], "split.validation_fraction",
-                           minimum=0, maximum=1)
+    for field in ("validation_fraction", "train_fraction"):
+        if field not in value:
+            continue
+        fraction = _number(value[field], f"split.{field}", minimum=0, maximum=1)
         if not 0 < fraction < 1:
-            raise ValueError("Доля валидации должна быть больше 0 и меньше 1.")
-        result["validation_fraction"] = fraction
-    if "stratified" in value:
-        if not isinstance(value["stratified"], bool):
-            raise ValueError("Поле split.stratified должно быть логическим значением.")
-        result["stratified"] = value["stratified"]
-    if "validation_rows" in value:
-        result["validation_rows"] = _number(value["validation_rows"], "split.validation_rows",
-                                            minimum=1, maximum=(1 << 31) - 1, integer=True)
+            name = "валидации" if field == "validation_fraction" else "обучения"
+            raise ValueError(f"Доля {name} должна быть больше 0 и меньше 1.")
+        result[field] = fraction
+    for field in ("stratified", "shuffle"):
+        if field not in value:
+            continue
+        if not isinstance(value[field], bool):
+            raise ValueError(f"Поле split.{field} должно быть логическим значением.")
+        result[field] = value[field]
+    for field, minimum in (("validation_rows", 1), ("train_rows", 1),
+                           ("group_count", 1), ("train_groups", 1), ("validation_groups", 1),
+                           ("group_overlap", 0), ("n_splits", 2), ("fold", 0)):
+        if field in value:
+            result[field] = _number(value[field], f"split.{field}", minimum=minimum,
+                                    maximum=(1 << 31) - 1, integer=True)
     if "validation_hash" in value:
         result["validation_hash"] = _hash(value["validation_hash"], "split.validation_hash")
+    if "strategy" in value:
+        strategy = value["strategy"]
+        if not isinstance(strategy, str) or strategy not in {"random", "time", "grouped"}:
+            raise ValueError("У разбиения некорректная стратегия.")
+        result["strategy"] = strategy
+    for field, limit in (("time_column", 500), ("train_period_min", 100),
+                         ("train_period_max", 100), ("validation_period", 100)):
+        if field not in value:
+            continue
+        text = _text(value[field], f"split.{field}", limit)
+        if not text.strip():
+            raise ValueError(f"Поле split.{field} не должно быть пустым.")
+        result[field] = text
+    if "fold" in result and "n_splits" in result and result["fold"] >= result["n_splits"]:
+        raise ValueError("Номер fold должен быть меньше числа разбиений n_splits.")
     return result
 
 
@@ -122,7 +150,7 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         raise ValueError("У отчёта некорректный идентификатор.")
     if (not isinstance(raw.get("action"), str) or raw["action"] not in ACTIONS
             or not isinstance(raw.get("status"), str) or raw["status"] not in FINAL_STATUSES):
-        raise ValueError("Можно передавать только завершённые запуски baseline, extra_trees или agent.")
+        raise ValueError("Можно передавать только завершённые запуски разрешённых рецептов.")
     if _hash(raw.get("dataset_fingerprint"), "dataset_fingerprint") != fingerprint:
         raise ValueError("Отчёт относится к другим данным. Скачайте одинаковую версию задачи и экспортируйте заново.")
     output_valid = raw.get("output_valid")
@@ -145,6 +173,54 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         "error": "",
         "output_valid": output_valid, "api_used": api_used,
     }
+    if "model_config" in raw:
+        from app.model_config import validate_model_config
+
+        if raw["action"] not in {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"}:
+            raise ValueError("Параметры модели доступны только для локальных рецептов.")
+        model_config = validate_model_config(raw["model_config"],
+                                             action=None if raw["action"] == "automl" else raw["action"])
+        if result["model"] is not None and result["model"] != model_config["model"]:
+            raise ValueError("Название модели не совпадает с параметрами запуска.")
+        result["model_config"] = model_config
+    if "search" in raw:
+        if raw["action"] != "automl":
+            raise ValueError("Отчёт о подборе доступен только для автоподбора.")
+        search = validate_search_summary(raw["search"], metric=result["metric"], model=result["model"],
+                                         allow_running=raw["status"] != "completed")
+        # Machine diagnostics may mention local paths or credentials. Share a
+        # stable explanation while preserving measured candidates and winner.
+        for candidate in search["candidates"]:
+            if candidate["error"] is not None:
+                candidate["error"] = {
+                    "timed_out": "Превышен лимит времени попытки",
+                    "skipped": "Попытка пропущена",
+                }.get(candidate["status"], "Попытка завершилась с ошибкой")
+            if candidate.get("resources", {}).get("unavailable_reason"):
+                candidate["resources"]["unavailable_reason"] = "Измерение ресурсов недоступно"
+        result["search"] = search
+        from app.model_config import winner_feature_evidence
+        result.update(winner_feature_evidence(raw, search))
+    if "feature_config" in raw or "component_feature_configs" in raw:
+        from app.model_config import winner_feature_evidence
+        if raw["action"] != "automl" or "search" not in result:
+            raise ValueError("Настройки признаков доступны только с отчётом автоподбора.")
+        result.update(winner_feature_evidence(raw, result["search"]))
+    if (raw["action"] == "automl" and raw["status"] == "completed"
+            and ("search" not in result or "model_config" not in result or result["metric"] is None)):
+        raise ValueError("У завершённого автоподбора нужны попытки, параметры победителя и метрика.")
+    if "classification_diagnostics" in raw:
+        from agent.diagnostics import validate_classification_diagnostics
+
+        if (raw["action"] not in {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"}
+                or result["metric"] is None or result["metric"]["name"] != "Macro F1"
+                or result["metric"]["higher_is_better"] is not True
+                or not result["split"] or "validation_rows" not in result["split"]):
+            raise ValueError("Диагностика классов доступна только для локальной классификации с проверочной выборкой.")
+        result["classification_diagnostics"] = validate_classification_diagnostics(
+            raw["classification_diagnostics"], metric=result["metric"],
+            validation_rows=result["split"]["validation_rows"],
+        )
     # Raw process/API errors can contain credentials, paths or response bodies.
     # User-authored hypotheses remain exact; machine diagnostics stay local.
     _text(raw.get("error"), "error", 1000)
@@ -167,6 +243,18 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         reason = _text(raw["agent_reason"], "agent_reason", 120)
         # Only stable reason codes travel; arbitrary machine diagnostics stay local.
         result["agent_reason"] = reason if reason in AGENT_REASONS else "unknown"
+    if "research" in raw:
+        from app.research_summary import validate_research_summary
+
+        if raw["action"] != "agent":
+            raise ValueError("Этапы исследования доступны только для агента.")
+        result["research"] = validate_research_summary(raw["research"])
+        # Process diagnostics can contain paths or credentials. The shared
+        # report keeps stage status; detailed machine explanations stay local.
+        for stage in result["research"].get("stages", []):
+            stage.pop("reason", None)
+    if len(_encoded(result)) > MAX_RECORD_BYTES - 1024:
+        raise ValueError(f"Один отчёт превышает допустимый размер {MAX_RECORD_BYTES // 1024} КБ.")
     return result
 
 
@@ -183,7 +271,7 @@ def _check_tree(value):
     while pending:
         item, depth = pending.pop()
         count += 1
-        if depth > 16 or count > 50_000:
+        if depth > 16 or count > MAX_TREE_NODES:
             raise ValueError("Отчёт содержит слишком сложную структуру.")
         if isinstance(item, dict):
             if any(not isinstance(key, str) for key in item):
@@ -305,9 +393,12 @@ class ReportStore:
                                                      delete=False) as stream:
                         temporary = Path(stream.name)
                         stream.write(raw)
-                    self._safe(folder)
-                    self._safe(path)
-                    os.replace(temporary, path)
+                    def check_paths():
+                        self._safe(folder)
+                        self._safe(temporary)
+                        self._safe(path)
+
+                    replace_file(temporary, path, check=check_paths)
                 except OSError as error:
                     raise ValueError("Не удалось сохранить импортированный отчёт.") from error
                 finally:

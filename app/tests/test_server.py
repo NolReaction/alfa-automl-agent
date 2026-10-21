@@ -7,6 +7,8 @@ from io import BytesIO
 import json
 from html.parser import HTMLParser
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -26,7 +28,7 @@ class ServerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         task = self.root / "case"
         task.mkdir()
-        (task / "task.md").write_text("Classification. Metric: Macro F1", encoding="utf-8")
+        (task / "task.md").write_text("Classification.\nPrimary metric: Macro F1", encoding="utf-8")
         records = {
             "data_dictionary.csv": [["feature", "role", "dtype"], ["id", "id", "category"],
                                     ["feature", "feature", "binary"], ["label", "target", "category"]],
@@ -78,6 +80,36 @@ class ServerTests(unittest.TestCase):
         session = json.loads(response)
         self.assertEqual(session["token"], self.server.token)
         self.assertEqual(set(session["api"]), {"ready", "missing", "model_configured"})
+
+    def test_large_diagnostic_download_can_be_uploaded_unchanged(self):
+        from agent.diagnostics import classification_diagnostics
+        from app.sharing import MAX_BYTES
+        from app.tests.test_sharing import classification_job
+
+        labels = [str(index) for index in range(50)]
+        diagnostics = classification_diagnostics(labels, labels)
+        fingerprint = self.server.catalog.fingerprint("case")
+        records = [classification_job(
+            id=f"{index:032x}", dataset_fingerprint=fingerprint,
+            classification_diagnostics=diagnostics,
+            metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
+            split={"validation_rows": 50},
+        ) for index in range(110)]
+        with patch.object(self.server, "experiments", return_value=records):
+            status, headers, downloaded = self.request("/api/tasks/case/export")
+        self.assertEqual(status, 200, downloaded)
+        self.assertGreater(len(downloaded), MAX_BYTES * .98)
+        self.assertLessEqual(len(downloaded), MAX_BYTES)
+        self.assertEqual(int(headers["Content-Length"]), len(downloaded))
+        count = len(json.loads(downloaded)["reports"])
+        status, _, response = self.request(
+            "/api/tasks/case/import", method="POST", body=downloaded,
+            headers={"Content-Type": "application/json", "X-Alfa-Token": self.server.token},
+        )
+        self.assertEqual(status, 200, response)
+        self.assertEqual(json.loads(response), {"imported": count, "skipped": 0})
+        self.assertTrue(all(row["source"] == "imported"
+                            for row in self.server.reports.list("case")))
 
     def test_browser_job_is_isolated_until_explicit_publish_and_report_roundtrip(self):
         task = self.root / "case"
@@ -152,6 +184,110 @@ class ServerTests(unittest.TestCase):
             stream.write("\nChanged data description")
         self.assertEqual(self.request(f"/api/jobs/{job_id}/bundle?task_id=case")[0], 400)
 
+    def test_automl_http_preserves_auto_validation_and_budget_without_model_controls(self):
+        body = {"task_id": "case", "action": "automl", "validation": {"strategy": "auto"}}
+        for model_params in (None, {}, {"n_estimators": 50}):
+            self.assertEqual(self.post("/api/jobs", {**body, "model_params": model_params})[0], 400)
+        for minutes in (True, 0, 176, "10"):
+            self.assertEqual(self.post("/api/jobs", {**body, "minutes": minutes})[0], 400)
+        self.assertEqual(self.post("/api/jobs", {**body, "validation": {"strategy": "auto", "command": "x"}})[0], 400)
+        self.assertIsNone(self.server.jobs.active_job())
+        with patch.object(self.server.jobs, "start", return_value={"id": "example", "action": "automl"}) as start:
+            status, _, response = self.post("/api/jobs", body)
+        self.assertEqual(status, 202, response)
+        self.assertEqual(start.call_args.kwargs["validation"], {"strategy": "auto"})
+        self.assertEqual(start.call_args.kwargs["minutes"], 10)
+        self.assertIsNone(start.call_args.kwargs["model_params"])
+
+    def test_invalid_validation_is_rejected_before_starting_or_creating_artifacts(self):
+        body = {"task_id": "case", "action": "baseline"}
+        invalid = [True, [], "random", {}, {"strategy": []}, {"strategy": "unknown"},
+                   {"strategy": "random", "command": "anything"},
+                   {"strategy": "grouped", "path": "../../.env"},
+                   {"strategy": "time", "time_column": "feature"}]
+        for validation in invalid:
+            with self.subTest(validation=validation):
+                status, _, response = self.post("/api/jobs", {**body, "validation": validation})
+                self.assertEqual(status, 400, response)
+        for action in ("agent", "prepare"):
+            with self.subTest(action=action):
+                status, _, response = self.post("/api/jobs", {
+                    "task_id": None if action == "prepare" else "case",
+                    "action": action, "validation": {"strategy": "random"},
+                })
+                self.assertEqual(status, 400, response)
+                self.assertIn("валидации", json.loads(response)["error"])
+        self.assertEqual(self.server.jobs.list(), [])
+        self.assertEqual(list(self.server.jobs.jobs_root.iterdir()), [])
+        self.assertFalse((self.root / "case" / "submission.csv").exists())
+
+    def test_browser_grouped_validation_reaches_worker_and_returns_group_evidence(self):
+        task = self.root / "case"
+        with (task / "train.csv").open("w", encoding="utf-8", newline="") as stream:
+            csv.writer(stream).writerows([["id", "feature", "label"]] + [
+                [f"train-{index}", index // 4, "yes" if index % 2 else "NA"] for index in range(40)])
+        validation = {"strategy": "grouped"}
+        status, _, response = self.post("/api/jobs", {
+            "task_id": "case", "action": "extra_trees", "validation": validation,
+            "model_params": {"n_estimators": 50, "max_depth": 4},
+        })
+        self.assertEqual(status, 202, response)
+        job_id = json.loads(response)["job"]["id"]
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status, _, response = self.request(f"/api/jobs/{job_id}?task_id=case")
+            self.assertEqual(status, 200, response)
+            detail = json.loads(response)
+            if detail["job"]["status"] not in {"queued", "running"}:
+                break
+            time.sleep(0.05)
+        self.assertEqual(detail["job"]["status"], "completed", detail)
+        self.assertEqual(detail["job"]["validation"], validation)
+        self.assertEqual(detail["job"]["split"]["strategy"], "grouped")
+        self.assertEqual(detail["job"]["split"]["group_overlap"], 0)
+        self.assertEqual(detail["job"]["split"]["group_count"], 10)
+        self.assertEqual(detail["job"]["model_config"]["parameters"]["n_estimators"], 50)
+        self.assertEqual(detail["job"]["model_config"]["parameters"]["max_depth"], 4)
+        self.assertFalse((task / "submission.csv").exists())
+
+    def test_profile_exposes_model_options_without_changing_cached_profile(self):
+        profile = self.server.catalog.profile("case")
+        self.assertNotIn("model_options", profile)
+        with patch.object(self.server.catalog, "profile", return_value=profile):
+            status, _, response = self.request("/api/tasks/case/profile")
+        self.assertEqual(status, 200, response)
+        options = json.loads(response)["model_options"]
+        self.assertEqual(set(options), {"baseline", "extra_trees", "catboost", "lightgbm", "linear"})
+        self.assertEqual(options["baseline"]["model"], "RandomForestClassifier")
+        self.assertEqual(options["extra_trees"]["model"], "ExtraTreesClassifier")
+        self.assertIn("n_estimators", options["baseline"]["defaults"])
+        self.assertTrue(options["baseline"]["fields"])
+        self.assertNotIn("model_options", profile)
+        self.assertNotIn("model_options", self.server.catalog.profile("case"))
+
+    def test_invalid_model_parameters_are_rejected_without_artifacts(self):
+        body = {"task_id": "case", "action": "baseline"}
+        invalid = [True, [], "anything", {"command": "anything"}, {"n_jobs": 1},
+                   {"random_state": 0}, {"max_iter": 50}, {"n_estimators": True},
+                   {"n_estimators": 49}, {"n_estimators": 601}, {"min_samples_leaf": 0},
+                   {"max_depth": {"path": "../../.env"}}]
+        for parameters in invalid:
+            with self.subTest(parameters=parameters):
+                status, _, response = self.post("/api/jobs", {**body, "model_params": parameters})
+                self.assertEqual(status, 400, response)
+        for action in ("agent", "prepare"):
+            for parameters in (None, {}, {"n_estimators": 50}):
+                with self.subTest(action=action, parameters=parameters):
+                    status, _, response = self.post("/api/jobs", {
+                        "task_id": None if action == "prepare" else "case",
+                        "action": action, "model_params": parameters,
+                    })
+                    self.assertEqual(status, 400, response)
+                    self.assertIn("модели", json.loads(response)["error"])
+        self.assertEqual(self.server.jobs.list(), [])
+        self.assertEqual(list(self.server.jobs.jobs_root.iterdir()), [])
+        self.assertFalse((self.root / "case" / "submission.csv").exists())
+
     def test_delivery_is_token_protected_and_downloads_only_competition_sources(self):
         self.assertEqual(self.post("/api/delivery", {}, token=False)[0], 403)
         self.assertEqual(self.post("/api/delivery", {}, headers={"Origin": "https://evil.example"})[0], 403)
@@ -161,13 +297,38 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200, package)
         self.assertEqual(headers["Content-Type"], "application/zip")
         self.assertIn('filename="solution.zip"', headers["Content-Disposition"])
+        self.assertEqual(int(headers["Content-Length"]), len(package))
+        self.assertLessEqual(len(package), build_submission.MAX_ARCHIVE_BYTES)
         with ZipFile(BytesIO(package)) as archive:
-            expected = {path.relative_to(build_submission.ROOT).as_posix()
-                        for path in build_submission.source_files()}
-            self.assertEqual(set(archive.namelist()), expected)
-            self.assertIn("solution.py", archive.namelist())
-            self.assertFalse(any(name.startswith(("app/", "data/")) or name.endswith(".env")
-                                 for name in archive.namelist()))
+            files = {name: archive.read(name) for name in archive.namelist()}
+            self.assertEqual(files, build_submission.archive_files())
+            self.assertIn("solution.py", files)
+            self.assertIn("agent.py", files)
+            self.assertTrue(all("/" not in name and "\\" not in name
+                                and (name.endswith(".py") or name == "requirements.txt")
+                                for name in files))
+            self.assertNotIn(b"must-never-be-served", b"".join(files.values()))
+        # Model the platform's root-only copy, outside the repository import path.
+        downloaded = self.root / "platform"
+        downloaded.mkdir()
+        for name, content in files.items():
+            (downloaded / name).write_bytes(content)
+        script = """
+import importlib
+from pathlib import Path
+import sys
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+for name in ('solution', 'offline_baseline', 'validation', 'agent', 'agent.automl',
+             'agent.automl_worker', 'agent.building_history', 'agent.research'):
+    module = importlib.import_module(name)
+    assert Path(module.__file__).resolve().parent == root, name
+print('flat-download-imports-ok')
+"""
+        imported = subprocess.run([sys.executable, "-I", "-c", script, str(downloaded)],
+                                  cwd=downloaded, text=True, capture_output=True, timeout=30)
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        self.assertIn("flat-download-imports-ok", imported.stdout)
 
     def test_zip_report_import_is_bounded_and_never_extracts_other_files(self):
         def package(entries):

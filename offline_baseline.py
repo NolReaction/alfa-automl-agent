@@ -33,6 +33,7 @@ from validation import validate_predictions
 
 SEED = 42
 VALIDATION_FRACTION = 0.2
+_LEGACY_CATEGORY_ESCAPE = "__ALFA_LEGACY_VALUE__"
 
 
 def csv_header(path: Path) -> list[str]:
@@ -48,7 +49,20 @@ def csv_header(path: Path) -> list[str]:
 
 
 def read_csv(path: Path) -> pd.DataFrame:
-    csv_header(path)
+    header = csv_header(path)
+    # pandas may silently reinterpret an over-wide first record as an index,
+    # shifting the declared ID/feature columns, or fill omitted trailing fields.
+    # Validate records with the same strict CSV dialect used by the standalone
+    # output validator before invoking its faster tabular reader. Explicit empty
+    # fields remain valid missing values; absent fields and blank records do not.
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream, strict=True)
+        next(reader)
+        for number, row in enumerate(reader, start=2):
+            if len(row) != len(header):
+                raise ValueError(
+                    f"{path.name}: record {number} has {len(row)} fields; expected {len(header)}"
+                )
     # Preserve IDs such as 001 and class labels such as NA exactly as written.
     return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
 
@@ -69,7 +83,22 @@ def find_data(task_dir: Path) -> Path:
     return samples[0].parent
 
 
-def load_data(data_dir: Path):
+def load_data(data_dir: Path, *, task_text: str | None = None,
+              classification: bool | None = None):
+    """Load the legacy ten-item tuple, optionally using a declared task metric.
+
+    Existing one-argument callers retain their original dtype-based contract.
+    Expanded callers supply task_text so numeric-coded classes are kept as
+    literal labels and probability templates can be validated by TaskSpec.
+    """
+    metric = None
+    if task_text is not None:
+        from agent.task_contract import parse_task_metric
+
+        metric = parse_task_metric(task_text)
+        if classification is not None and classification != metric.classification:
+            raise ValueError("Explicit task type conflicts with the declared metric")
+        classification = metric.classification
     metadata = read_csv(data_dir / "data_dictionary.csv")
     if not {"feature", "role", "dtype"}.issubset(metadata.columns):
         raise ValueError("data_dictionary.csv must contain feature, role and dtype columns")
@@ -84,12 +113,18 @@ def load_data(data_dir: Path):
         raise ValueError("data_dictionary.csv must declare exactly one id and one target")
     id_column, target = id_fields[0], targets[0]
     target_dtype = dtypes[target]
-    if target_dtype not in {"numeric", "category"}:
+    if target_dtype not in {"numeric", "category"} and not (
+            classification is True and target_dtype == "binary"):
         raise ValueError(f"Unsupported target dtype {target_dtype!r}; expected numeric or category")
-    classification = target_dtype == "category"
+    classification = target_dtype == "category" if classification is None else classification
+    if type(classification) is not bool:
+        raise ValueError("classification must be a boolean when specified")
     columns = csv_header(data_dir / "sample_submission.csv")
-    if len(columns) != 2 or set(columns) != {id_column, target}:
+    probabilities = metric is not None and metric.prediction_kind == "probabilities"
+    if (not probabilities and (len(columns) != 2 or set(columns) != {id_column, target})):
         raise ValueError("sample_submission.csv must contain the declared id and target only")
+    if probabilities and (id_column not in columns or len(columns) < 2):
+        raise ValueError("Probability sample_submission.csv must contain the declared ID and predictions")
     train, test = read_csv(data_dir / "train.csv"), read_csv(data_dir / "test.csv")
     if id_column not in train or target not in train or id_column not in test:
         raise ValueError("Declared id/target columns are missing from train.csv or test.csv")
@@ -125,7 +160,17 @@ def prepare_features(frame, features, numeric, categorical):
     for name in numeric:
         result[name] = pd.to_numeric(result[name], errors="coerce").replace([np.inf, -np.inf], np.nan)
     for name in categorical:
-        result[name] = result[name].replace("", np.nan)
+        # An all-empty string column must remain categorical. pandas.replace
+        # otherwise downcasts it to float64, after which a string imputer fill
+        # value cannot be used even though the declared category is supported.
+        values = result[name].astype(object)
+        # Escape the imputer's generated token and the escape namespace itself
+        # injectively. Genuine "__MISSING__" must differ from an empty CSV cell.
+        values = values.map(lambda value: _LEGACY_CATEGORY_ESCAPE + value
+                            if isinstance(value, str) and (
+                                value == "__MISSING__" or value.startswith(_LEGACY_CATEGORY_ESCAPE))
+                            else value)
+        result[name] = values.where(values.ne(""), np.nan)
     return result
 
 
