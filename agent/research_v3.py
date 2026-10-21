@@ -313,6 +313,10 @@ def _context(state):
     selection = {"metric": state.best_inner, "scope": "inner_selection",
                  "split": state.gate.inner_split}
     search_status = state.report.get("baseline_search", {}).get("status", "fixture_or_unavailable")
+    history = state.report.get("history_research")
+    history_context = (" Explicit host history INNER trial: " + json.dumps({key: history.get(key) for key in
+        ("status", "reason", "history_config", "blend_weight", "candidate", "feedback")}, ensure_ascii=False)
+        if isinstance(history, dict) and history.get("requested") else "")
     return ("The manifest is research_validation.json (version 3). Helper imports are available "
             f"with sys.path.insert(0, {str(ROOT)!r}). Read only the allowed files. "
             f"Baseline preparation status: {search_status}. A prepared baseline recipe is frozen "
@@ -322,7 +326,7 @@ def _context(state):
             + json.dumps(state.baseline.recipe if state.baseline is not None else None, ensure_ascii=False)
             + ". Current INNER selection: " + json.dumps(selection, ensure_ascii=False)
             + ". Host-computed INNER errors: " + json.dumps(state.report.get("baseline_inner_diagnostics"), ensure_ascii=False)
-            + ". Propose a fresh executable candidate, recipe and hypothesis; analysis-only calls "
+            + history_context + ". Propose a fresh executable candidate, recipe and hypothesis; analysis-only calls "
             "do not count as measured trials. Finish after completing at least one measured trial.")
 
 
@@ -356,7 +360,8 @@ def _assess_candidate(state, candidate, hypothesis, *, origin):
     state.tried_recipes.append({"recipe": recipe, "code_hash": candidate.code_hash})
     result = state.measure_inner(candidate)
     state.gate.check_inputs()
-    counter = "successful_experiments" if origin == "llm" else "local_successful_experiments"
+    counter = ("successful_experiments" if origin == "llm" else
+               "history_successful_experiments" if origin == "history" else "local_successful_experiments")
     state.report[counter] = state.report.get(counter, 0) + 1
     better = state.best_inner is None or _better(result.metric, state.best_inner)
     plan = state.finalization_plan(candidate)
@@ -384,6 +389,87 @@ def _assess_candidate(state, candidate, hypothesis, *, origin):
         feedback["diagnostics"] = {"scope": "inner_selection", "available": False,
                                    "reason": safe_error_message(error)}
     return feedback
+
+
+def research_configured_history(state, options):
+    """Measure one explicit history recipe on INNER, preserving the recovery baseline."""
+    from agent.history_runtime import history_candidate_source, make_history_recipe
+
+    gate = state.gate
+    report = {"version": 1, "policy": "explicit_v1", "origin": "host_history",
+              "scope": "inner_selection", "requested": options is not None,
+              "active": False, "status": "disabled", "reason": "not_configured",
+              "attempted": 0, "history_config": options["history_config"] if options else None,
+              "blend_weight": options["blend_weight"] if options else 0.5,
+              "baseline": None, "candidate": None, "feedback": None}
+    state.report["history_research"] = report
+    if options is None:
+        return report
+
+    def skip(reason):
+        report.update(status="skipped", reason=reason)
+        state.report["extensions"]["history"] = "skipped"
+        state.save()
+        return report
+
+    if state.dialogue_closed or state.report.get("stage") != "inner_research":
+        return skip("research_closed")
+    if gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed") is False:
+        return skip("task_semantics_unavailable")
+    if gate.spec.metric.task_type != "regression":
+        return skip("regression_required")
+    config = options["history_config"]
+    if not set([*config["key_columns"], config["period_column"]]) <= set(gate.spec.features):
+        return skip("history_columns_not_in_features")
+    if gate.choice.get("strategy") != "time":
+        return skip("time_validation_required")
+    if gate.choice.get("time_column") != config["period_column"]:
+        return skip("period_column_mismatch")
+    if not gate.fit_rows or not gate.held_rows or not gate.inner_split:
+        return skip("inner_validation_unavailable")
+    if (gate.inner_split.get("strategy") != "time"
+            or gate.inner_split.get("time_column") != config["period_column"]):
+        return skip("inner_time_validation_required")
+    if options["blend_weight"] == 0:
+        return skip("zero_weight")
+    if state.baseline is None or state.baseline_inner is None:
+        return skip("measured_baseline_required")
+    if state.research_timeout() <= 2:
+        return skip("finalization_reserve")
+    state.check_source()
+    gate.check_inputs()
+    baseline = state.baseline
+    baseline.verify()
+    identity = (baseline.code_hash, baseline.recipe_hash)
+    report["baseline"] = {"code_hash": identity[0], "recipe_hash": identity[1]}
+    report.update(active=True, status="running", reason=None, attempted=1)
+    state.report["extensions"]["history"] = "explicit_v1"
+    state.save()
+    try:
+        source = state.run_dir / "history_source.py"
+        source.write_text(history_candidate_source(baseline.code_path.read_text(encoding="utf-8")),
+                          encoding="utf-8", newline="\n")
+        recipe = make_history_recipe(baseline.recipe, config, options["blend_weight"])
+        candidate = freeze_candidate(source, recipe, state.run_dir / "history_frozen")
+        report["candidate"] = {"code_hash": candidate.code_hash, "recipe_hash": candidate.recipe_hash}
+        feedback = _assess_candidate(state, candidate, {
+            "hypothesis": "Blend the frozen baseline with strictly past target history using "
+                          "an explicit key/period configuration and a fixed weight."}, origin="history")
+        report.update(status="completed", reason=feedback["reason"], feedback=feedback)
+        state.event("history_experiment", result=feedback)
+    except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+        report.update(status="failed", reason="candidate_execution_failed", error=safe_error_message(error))
+        if isinstance(error, CandidateExecutionError):
+            report["execution"] = error.execution
+        state.event("history_experiment_failed", error=safe_error_message(error))
+    # Candidate failure must never swallow source mutation or replace baseline.
+    state.check_source()
+    gate.check_inputs()
+    if state.baseline is not baseline or (baseline.code_hash, baseline.recipe_hash) != identity:
+        raise RuntimeError("History research changed the frozen recovery baseline")
+    baseline.verify()
+    state.save()
+    return report
 
 
 def continue_locally(state):
@@ -630,7 +716,8 @@ def finalize(state, reason):
     state.report["publication"] = {"new_result_published": published,
                                   "recipe": state.report.get("published_recipe"), "reason": reason}
     state.report["time_allocation"] = state.budget.report(state.finalization_plan())
-    status = "completed" if reason == "model_finished" and state.report["successful_experiments"] else "fallback"
+    status = "completed" if ((reason == "model_finished" and state.report["successful_experiments"])
+                              or (reason == "local_only" and published)) else "fallback"
     return state.finish(status, reason)
 
 
@@ -728,7 +815,8 @@ def _recover_after_unexpected_error(state):
 
 
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
-                 stability_splits=1, metric_recipes=False, search_profile="legacy"):
+                 stability_splits=1, metric_recipes=False, search_profile="legacy",
+                 history_config=None, history_weight=0.5, local_only=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -736,9 +824,17 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("Invalid quality experiment options")
     if not isinstance(search_profile, str) or search_profile not in {"legacy", "strong_v1"}:
         raise ValueError("Unknown research search profile")
+    if type(local_only) is not bool:
+        raise ValueError("local_only must be a boolean")
+    from agent.history_runtime import normalize_history_options
+    history_options = normalize_history_options(history_config, history_weight)
     state = V3State(Path(task_path).resolve(), max_steps, time_budget)
     state.report["quality_options"] = {"stability_splits": stability_splits,
         "metric_recipes": metric_recipes, "search_profile": search_profile}
+    if history_options is not None:
+        state.report["quality_options"].update(history_options)
+    if local_only:
+        state.report["mode"] = "local_only"
     try:
         prepare_research(state)
         prepare_baseline(state)
@@ -758,6 +854,7 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         state.report["evaluations"]["selection"] = {
             "metric": state.best_inner, "scope": "inner_selection", "split": state.gate.inner_split}
         state.transition("inner_research")
+        research_configured_history(state, history_options)
         if not state.gate.held_rows:
             state.report["stages"][1].update(status="skipped", reason=state.gate.inner_unavailable_reason)
             return finalize(state, "inner_validation_unavailable")
@@ -765,6 +862,13 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
             reason = state.gate.manifest["task_semantics"].get("fallback_reason", "task_semantics_unavailable")
             state.report["stages"][1].update(status="skipped", reason=reason)
             return finalize(state, reason)
+        if local_only:
+            state.report["research_stop"] = {"reason": "local_only", "local_continuation_requested": True}
+            continue_locally(state)
+            if stability_splits > 1:
+                from agent.research_stability import verify_research_finalists
+                verify_research_finalists(state, splits=stability_splits)
+            return finalize(state, "local_only")
         messages = [{"role": "system", "content": SYSTEM_V3},
                     {"role": "user", "content": state.gate.task_text},
                     {"role": "user", "content": state.redact(_context(state))}]
