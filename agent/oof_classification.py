@@ -182,6 +182,9 @@ def fit_oof_guarded_rule(
     Missing class support and model/timeout failures return identity. Invalid
     split structure, clock values, guard options or predictions raise
     :class:`OOFContractError`. Partial OOF predictions are never calibrated.
+    A known selection-support failure is checked before any callback or subset
+    staging. In that case no candidate is tuned: ``guarded`` is None and both
+    returned rules are identity placeholders, as for other preflight failures.
     No exception text from a failing callback is copied into the JSON result.
     """
     timeout = _number(fold_timeout_seconds, "fold_timeout_seconds", positive=True)
@@ -303,6 +306,18 @@ def fit_oof_guarded_rule(
         return finish("fit_missing_class")
     if not len(selection):
         return finish("selection_insufficient_samples")
+    # These are the same support gates, in the same order, as the independent
+    # admission guard. B answers can only make this attempt ineligible; they
+    # never select multipliers or cause a replacement split. Keep structural,
+    # tuning and fold-fit validation above this shortcut so missing B support
+    # cannot hide leakage or change the established earlier fallback reasons.
+    selection_counts = support["selection"]
+    if min(selection_counts) == 0:
+        return finish("selection_missing_class")
+    if len(selection) < config["min_selection_samples"]:
+        return finish("selection_insufficient_samples")
+    if min(selection_counts) < config["min_selection_class_count"]:
+        return finish("selection_insufficient_class_support")
 
     oof = np.full((n_rows, len(classes)), np.nan)
     jobs = [(np.asarray(fold["fit_rows"], dtype=np.int64),
