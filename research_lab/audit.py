@@ -315,9 +315,13 @@ def _automl_fixture_chain(task, report_path, report, audit):
     for key in ("version", "id_column", "target_column", "features", "numeric", "categorical",
                 "classes", "output_columns", "probability_columns", "positive_class", "metric"):
         require(local_spec.get(key) == contract.get(key), "Native AutoML phase TaskSpec differs: " + key)
+    # Native read_text/write_text round-trips LF as CRLF on Windows. Compare
+    # UTF-8 text with universal newlines only; preserve all other whitespace.
+    # The original task's raw bytes remain protected by case input hashes.
     require(safe_path(local_spec.get("data_dir", "")) == phase_dir / "inputs"
             and safe_path(local_spec.get("task_path", "")) == phase_dir / "task.md"
-            and file_hash(phase_dir / "task.md") == file_hash(task / "task.md"),
+            and safe_path(phase_dir / "task.md").read_text(encoding="utf-8")
+                == safe_path(task / "task.md").read_text(encoding="utf-8"),
             "Native AutoML phase task paths/content differ")
     for name in names:
         require(file_hash(phase_dir / "inputs" / name) == file_hash(source_inputs / name),

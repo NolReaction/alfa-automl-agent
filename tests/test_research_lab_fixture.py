@@ -111,6 +111,32 @@ def automl_fixture(root, *, refit=False, materialized=False):
 
 
 class FixtureRouteTests(unittest.TestCase):
+    def test_phase_task_accepts_only_native_newline_transport_and_preserves_exact_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            case, plan, worker, run = automl_fixture(root, materialized=True)
+            task = Path(case["arms"]["incumbent"]["task_dir"])
+            source = task / "task.md"
+            source.write_bytes(source.read_bytes().replace(b"\r\n", b"\n"))
+            case["input_hashes"]["task.md"] = file_hash(source)
+            phase_task = run / "seed" / "seed" / "task.md"
+            crlf = source.read_bytes().replace(b"\n", b"\r\n")
+            phase_task.write_bytes(crlf)
+            result = audit.audit_arm(root, case, "incumbent", worker, plan)
+            self.assertTrue(result["mechanism_verified"], result)
+            self.assertFalse(result["quality_verified"])
+            for extra in (b" ", b"Changed task instructions.\r\n"):
+                with self.subTest(extra=extra):
+                    phase_task.write_bytes(crlf + extra)
+                    changed = audit.audit_arm(root, case, "incumbent", worker, plan)
+                    self.assertFalse(changed["mechanism_verified"], changed)
+                    self.assertIn("phase task paths/content differ", changed["contract_errors"][0])
+            phase_task.write_bytes(crlf)
+            source.write_bytes(crlf)
+            source_drift = audit.audit_arm(root, case, "incumbent", worker, plan)
+            self.assertEqual(source_drift["status"], "integrity_failed")
+            self.assertFalse(source_drift["mechanism_verified"])
+
     def test_actual_unseen_case_output_only_contract_uses_separately_sealed_full_spec(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
