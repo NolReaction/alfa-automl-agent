@@ -135,6 +135,7 @@ def prepare(*, output, manifest, profile, incumbent_root, candidate_root, python
             "comparison_rule": "positive signed difference means candidate better; only two verified CPU arms count as win/tie/loss; no metric averaging",
             "tie_tolerance": 1e-12, "cleanup_allowance_seconds": 20,
             "confirmation_boundary": "pilot is development; confirmation sources/splits sealed before scores; no policy tuning by evaluator",
+            "fixture_boundary": "short native AutoML or native v3 is mechanism only; fixture_gate requires independently verified model artifacts, observed resources and zero API; no quality admission",
             "cases": []}
     from research_lab.adapters import prepare_case, ADAPTER_VERSION
     plan["adapter_version"], plan["adapter_sha256"] = ADAPTER_VERSION, file_hash(ROOT / "research_lab/adapters.py")

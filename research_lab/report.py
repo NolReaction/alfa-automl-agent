@@ -47,7 +47,7 @@ def _reasons(*values):
     return result
 
 
-def _arm(output, entry, audited):
+def _arm(output, entry, audited, *, fixture=False):
     state, state_error = {}, None
     try:
         state_path = under(output, output / entry["state_path"])
@@ -67,10 +67,14 @@ def _arm(output, entry, audited):
     if not isinstance(resources, dict):
         resources = {}
     metric = _metric(external.get("metric"))
-    verified = (audited.get("valid") is True and audited.get("quality_verified") is True
+    complete = (audited.get("valid") is True
                 and audited.get("status") == "completed" and external.get("valid") is True
                 and metric is not None and state_error is None)
+    verified = complete and not fixture and audited.get("quality_verified") is True
+    mechanism = complete and fixture and audited.get("mechanism_verified") is True
     qualified = verified and resources.get("qualification") == "observed" and resources.get("fully_observed") is True
+    observed_mechanism = (mechanism and resources.get("qualification") == "observed"
+                          and resources.get("fully_observed") is True)
     cleanup = execution.get("cleanup") or {}
     raw_resources = execution.get("resources") or {}
     cleanup_complete = cleanup.get("complete") if isinstance(cleanup, dict) else None
@@ -79,7 +83,8 @@ def _arm(output, entry, audited):
     if type(cleanup_complete) is not bool:
         cleanup_complete = None
     provenance = audited.get("provenance")
-    finalization = bool(verified and isinstance(provenance, dict) and provenance.get("outer") and provenance.get("refit"))
+    finalization = bool((verified or mechanism) and isinstance(provenance, dict)
+                        and provenance.get("outer") and provenance.get("refit"))
     timing = {name: execution.get(name) if _number(execution.get(name)) and execution[name] >= 0 else None
               for name in ("worker_wall_seconds", "cleanup_elapsed_seconds", "supervisor_elapsed_seconds", "elapsed_seconds")}
     timing.update({name: state.get(name) if isinstance(state.get(name), str) else None
@@ -90,7 +95,9 @@ def _arm(output, entry, audited):
                   for name in ("attempts", "responses")}
     return {"status": "integrity_failed" if state_error else audited.get("status", "missing_audit"),
             "state_status": state.get("status", "missing"), "audit_valid": audited.get("valid") is True and state_error is None,
-            "quality_verified": verified, "qualified_cpu": qualified, "metric": metric,
+            "quality_verified": verified, "qualified_cpu": qualified,
+            "quality_admission": False,
+            "mechanism_verified": mechanism, "observed_mechanism": observed_mechanism, "metric": metric,
             "resource_qualification": resources.get("qualification", "unavailable"),
             "resource_observation": resources, "cleanup_complete": cleanup_complete,
             "csv_valid": external.get("valid") is True, "outer_and_full_refit_verified": finalization,
@@ -99,6 +106,8 @@ def _arm(output, entry, audited):
             "actual_api": actual_api, "actual_api_source_report_sha256": raw_api.get("source_report_sha256")
             if isinstance(raw_api, dict) else None, "actual_api_verified": audited.get("valid") is True
             and state_error is None and all(value is not None for value in actual_api.values()),
+            "actual_api_provenance": {key: raw_api.get(key) for key in ("kind", "native_calls")}
+            if isinstance(raw_api, dict) and raw_api.get("kind") else None,
             "reason": _reasons(state_error, audited.get("reason"), audited.get("contract_errors"),
                                external.get("error"), state.get("reason"), state.get("error"))}
 
@@ -115,8 +124,9 @@ def _pair(case, arms, *, policy_comparison, fixture, self_check, tolerance):
            "signed_difference": None, "provisional_signed_difference": None, "outcome": "not_completed"}
     left, right = (arms[name] for name in ARMS)
     measured = all(arm["quality_verified"] for arm in (left, right))
+    fixture_measured = fixture and all(arm["mechanism_verified"] for arm in (left, right))
     qualified = all(arm["qualified_cpu"] for arm in (left, right))
-    if measured:
+    if measured or fixture_measured:
         a, b = left["metric"], right["metric"]
         expected = row["metric"].get("name") if isinstance(row["metric"], dict) else row["metric"]
         same = (a["name"] == b["name"] == expected and a["higher_is_better"] == b["higher_is_better"]
@@ -167,6 +177,8 @@ def _summary(rows, denominator):
             "candidate_win_rate": counts["win"] / denominator if denominator else None,
             "verified_quality_arms": sum(arm["quality_verified"] for row in rows for arm in row["arms"].values()),
             "qualified_cpu_arms": sum(arm["qualified_cpu"] for row in rows for arm in row["arms"].values()),
+            "verified_mechanism_arms": sum(arm["mechanism_verified"] for row in rows for arm in row["arms"].values()),
+            "observed_mechanism_arms": sum(arm["observed_mechanism"] for row in rows for arm in row["arms"].values()),
             "actual_api": {**api, "verified_arms": len(api_known), "started_arms": len(started)}}
 
 
@@ -236,6 +248,12 @@ def _markdown(result):
               "Local quality does not establish a contest-score improvement."]
     if result["errors"]:
         lines += ["", "Re-audit / report errors:", ""] + ["- " + _cell(error) for error in result["errors"]]
+    if result["fixture_gate"]["applicable"]:
+        gate = result["fixture_gate"]
+        lines += ["", "Fixture mechanism gate: **" + ("passed" if gate["passed"] else "not passed") +
+                  "**; verified mechanism arms " + str(summary["verified_mechanism_arms"]) +
+                  "; fully observed mechanism arms " + str(summary["observed_mechanism_arms"]) +
+                  ". Quality admission: false; qualified CPU quality arms: 0."]
     return "\n".join(lines) + "\n"
 
 
@@ -301,7 +319,8 @@ def report(output, write=True):
             audited = lookup.get((key, name), {"status": "missing_audit", "valid": False})
             if not plan_trusted or (key, name) in duplicates:
                 audited = {**audited, "status": "integrity_failed", "valid": False, "quality_verified": False}
-            arms[name] = _arm(output, case.get("arms", {}).get(name, {}), audited)
+            arms[name] = _arm(output, case.get("arms", {}).get(name, {}), audited,
+                              fixture=profile == "fixture-smoke")
         rows.append(_pair(case, arms, policy_comparison=plan_trusted and plan.get("policy_comparison") is True,
                           fixture=profile == "fixture-smoke", self_check=plan.get("self_check") is True, tolerance=tolerance))
     denominator = 4 if profile == "pilot" else len(rows)
@@ -314,9 +333,21 @@ def report(output, write=True):
                     and not any(row["outcome"] == "integrity_failed" for row in rows))
     incomplete = any(row["outcome"] not in ("win", "tie", "loss", "fixture_smoke", "self_check") for row in rows)
     status = "integrity_failed" if not integrity_ok else "incomplete" if incomplete or len(rows) < denominator else "completed"
+    expected_arms = denominator * len(ARMS)
+    fixture_complete = (profile == "fixture-smoke" and integrity_ok and status == "completed"
+                        and expected_arms > 0 and summary["verified_mechanism_arms"] == expected_arms)
+    fixture_observed = fixture_complete and summary["observed_mechanism_arms"] == expected_arms
+    fixture_zero_api = summary["actual_api"]["attempts"] == 0 and summary["actual_api"]["responses"] == 0
     result = {"schema_version": 1, "status": status, "profile": profile,
+              "quality_admission": False,
               "scope": "mechanism_fixture" if profile == "fixture-smoke" else "same_solver_self_check" if plan.get("self_check") else "paired_cpu",
               "quality_evidence": bool(plan.get("policy_comparison") is True and summary["qualified_pairs"] > 0 and plan_trusted),
+              "fixture_gate": {"applicable": profile == "fixture-smoke",
+                               "mechanism_complete": fixture_complete,
+                               "resources_observed": fixture_observed,
+                               "zero_api_verified": fixture_zero_api if profile == "fixture-smoke" else False,
+                               "passed": bool(fixture_complete and fixture_observed and fixture_zero_api),
+                               "quality_admission": False},
               "plan_sha256": file_hash(output / "plan.json") if (output / "plan.json").is_file() else None,
               "manifest_sha256": plan.get("manifest_copy_sha256"), "method_sha256": plan.get("method_sha256"),
               "plan_id": plan.get("plan_id"), "tie_tolerance": tolerance, "comparison_rule": plan.get("comparison_rule"),

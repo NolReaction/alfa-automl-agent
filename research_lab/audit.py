@@ -16,6 +16,7 @@ from .integrity import (file_hash, is_transport_temp, json_hash, read_json, requ
 
 
 _REPORT = re.compile(r"\.agent_runs/[0-9a-f]{32}/run\.json")
+_AUTOML_REPORT = re.compile(r"\.agent_runs/[0-9a-f]{32}/automl_report\.json")
 _HEX = re.compile(r"[0-9a-f]{64}")
 _NONCE = re.compile(r"[0-9a-f]{32}")
 _TERMINAL = {"finished", "failed", "censored", "interrupted", "completed"}
@@ -246,6 +247,195 @@ def _resource(execution, report):
     return resource_observation({"launcher": execution, "research": report or {}})
 
 
+def _automl_fixture_chain(task, report_path, report, audit):
+    """Verify the exact native short-route model chain, never v3 quality.
+
+    Native AutoML has no v3 receipts. Its typed checkpoint plus deterministic
+    selected phase paths must prove a real full-data model publication. No
+    other run/report can supply missing evidence and no candidate is imported.
+    """
+    from agent.task_spec import load_task, score_holdout
+    from agent.automl import data_fingerprint
+
+    run_dir = report_path.parent
+    require(safe_path(report.get("report_path", "")) == report_path,
+            "Native AutoML report path differs from exact worker pointer")
+    require(report.get("mode") == "offline" and report.get("output_valid") is True,
+            "Native AutoML has no accepted model output")
+    search = report.get("search") or {}
+    require(search.get("phase") == "finished" and search.get("status") in
+            {"completed", "time_limit", "fallback"}, "Native AutoML did not finish model publication")
+    selected = search.get("best_candidate")
+    require(isinstance(selected, str) and re.fullmatch(r"[A-Za-z0-9_-]+", selected),
+            "Native AutoML selected candidate is invalid")
+    spec = load_task(task / "task.md")
+    contract = spec.to_dict()
+    for key in ("version", "id_column", "target_column", "features", "numeric", "categorical",
+                "classes", "output_columns", "probability_columns", "positive_class", "metric"):
+        require(contract.get(key) == audit["contract"].get(key),
+                "Native AutoML task differs from sealed contract: " + key)
+    source_inputs = safe_path(spec.data_dir)
+    names = ("train.csv", "test.csv", "data_dictionary.csv", "sample_submission.csv")
+    snapshot = run_dir / "input_snapshot"
+    for name in names:
+        require(file_hash(snapshot / name) == file_hash(source_inputs / name),
+                "Native AutoML input snapshot drift: " + name)
+    require(report.get("input_fingerprint") == data_fingerprint(snapshot),
+            "Native AutoML snapshot fingerprint differs from its report")
+    checkpoint_pointer = run_dir / "checkpoint.json"
+    checkpoint = read_json(checkpoint_pointer)
+    relative = checkpoint.get("directory")
+    require(checkpoint.get("version") == 1 and isinstance(relative, str)
+            and re.fullmatch(r"checkpoints/[0-9a-f]{32}", relative),
+            "Native AutoML checkpoint pointer is invalid")
+    checkpoint_dir = _path(task, run_dir / relative)
+    published = file_hash(task / "submission.csv")
+    require(checkpoint.get("submission_sha256") == published
+            == file_hash(checkpoint_dir / "submission.csv"),
+            "Native AutoML checkpoint/publication CSV differ")
+    held_hash = file_hash(checkpoint_dir / "holdout_predictions.csv")
+    require(checkpoint.get("holdout_sha256") == held_hash
+            == file_hash(run_dir / "holdout_predictions.csv"),
+            "Native AutoML checkpoint/holdout export differ")
+    # These two exact paths are the only native phases capable of full fitting.
+    # Do not glob for a report, checkpoint or another successful candidate.
+    phase_dirs = [run_dir / selected / phase for phase in ("seed", "refit")]
+    matches = [path for path in phase_dirs if (path / "submission.csv").is_file()
+               and file_hash(path / "submission.csv") == published]
+    require(len(matches) == 1, "Missing/ambiguous exact native AutoML full-fit phase")
+    phase_dir = matches[0]
+    config = read_json(phase_dir / "config.json")
+    require(config.get("id") == selected and config.get("phase") == phase_dir.name
+            and safe_path(config.get("candidate_dir", "")) == phase_dir,
+            "Native AutoML full-fit phase/config identity differs")
+    require(config.get("model_config") == report.get("candidate_configs", {}).get(selected)
+            and config.get("feature_config") == report.get("candidate_feature_configs", {}).get(selected),
+            "Native AutoML selected recipe differs from phase config")
+    local_spec = config.get("task_spec") or {}
+    for key in ("version", "id_column", "target_column", "features", "numeric", "categorical",
+                "classes", "output_columns", "probability_columns", "positive_class", "metric"):
+        require(local_spec.get(key) == contract.get(key), "Native AutoML phase TaskSpec differs: " + key)
+    # Native read_text/write_text round-trips LF as CRLF on Windows. Compare
+    # UTF-8 text with universal newlines only; preserve all other whitespace.
+    # The original task's raw bytes remain protected by case input hashes.
+    require(safe_path(local_spec.get("data_dir", "")) == phase_dir / "inputs"
+            and safe_path(local_spec.get("task_path", "")) == phase_dir / "task.md"
+            and safe_path(phase_dir / "task.md").read_text(encoding="utf-8")
+                == safe_path(task / "task.md").read_text(encoding="utf-8"),
+            "Native AutoML phase task paths/content differ")
+    for name in names:
+        require(file_hash(phase_dir / "inputs" / name) == file_hash(source_inputs / name),
+                "Native AutoML full-fit staged input drift: " + name)
+    header, train = _csv(source_inputs / "train.csv")
+    fitting, held = config.get("fit_rows"), config.get("validation_rows")
+    require(isinstance(fitting, list) and isinstance(held, list) and fitting and held
+            and all(type(i) is int and 0 <= i < len(train) for i in fitting + held)
+            and len(set(fitting)) == len(fitting) and len(set(held)) == len(held)
+            and not set(fitting) & set(held) and set(fitting + held) == set(range(len(train))),
+            "Native AutoML phase split does not partition original TRAIN")
+    durations = read_json(phase_dir / "durations.json")
+    require(all(_number(durations.get(key)) and durations[key] >= 0
+                for key in ("fit_seconds", "predict_seconds", "total_seconds"))
+            and durations["fit_seconds"] > 0, "Native AutoML has no real fit duration evidence")
+    execution_dir = phase_dir / "execution"
+    marker = f"refitting on all {len(train)} rows"
+    require(execution_dir.is_dir() and any(path.is_file() and path.name.endswith(".stdout.txt")
+            and marker in safe_path(path).read_text(encoding="utf-8", errors="replace")
+            for path in execution_dir.iterdir()), "Native AutoML full-data worker marker is absent")
+    outer_phase = "seed" if phase_dir.name == "seed" else "blend" if selected == "blend" else "verification"
+    outer_path = run_dir / selected / outer_phase / "holdout_predictions.csv"
+    require(file_hash(outer_path) == held_hash, "Native AutoML selected outer/checkpoint output differ")
+    ids = [row[header.index(spec.id_column)] for row in train]
+    actuals = [row[header.index(spec.target_column)] for row in train]
+    value = score_holdout(outer_path, spec, [ids[i] for i in held], [actuals[i] for i in held])
+    claimed = report.get("metric") or {}
+    require(claimed.get("name") == spec.metric.name and _number(claimed.get("value"))
+            and claimed.get("higher_is_better") is spec.metric.higher_is_better
+            and math.isclose(claimed["value"], value, rel_tol=1e-9, abs_tol=1e-10),
+            "Native AutoML claimed outer metric differs from saved predictions")
+    return {"kind": "automl_fixture", "selected_candidate": selected,
+            "checkpoint": checkpoint_pointer.relative_to(task).as_posix(),
+            "checkpoint_sha256": file_hash(checkpoint_pointer),
+            "outer": {"path": outer_path.relative_to(task).as_posix(), "output_sha256": held_hash,
+                      "fit_rows": len(fitting), "predict_rows": len(held), "metric": claimed},
+            "refit": {"config": (phase_dir / "config.json").relative_to(task).as_posix(),
+                      "config_sha256": file_hash(phase_dir / "config.json"),
+                      "phase": phase_dir.name, "fit_rows": len(train),
+                      "predict_rows": len(audit["test_ids"]), "output_sha256": published}}
+
+
+def _fixture_contract(task, audit, case):
+    """Join the fixture's output-only audit contract to its sealed TaskSpec.
+
+    unseen_cases.materialize_case deliberately supplies an output schema, not a
+    complete native TaskSpec. The plan separately freezes the full TaskSpec;
+    missing optional schema fields must not be guessed or treated as conflicts.
+    """
+    from agent.task_spec import load_task
+
+    native = load_task(task / "task.md")
+    contract, frozen = native.to_dict(), case.get("spec")
+    require(isinstance(frozen, dict), "Fixture has no separately sealed full TaskSpec")
+    for key in ("version", "id_column", "target_column", "features", "numeric", "categorical",
+                "classes", "output_columns", "probability_columns", "positive_class", "metric"):
+        require(contract.get(key) == frozen.get(key), "Fixture TaskSpec differs from sealed plan: " + key)
+    contract["prediction_kind"] = native.prediction_kind
+    declared = audit.get("contract")
+    required = {"id_column", "target_column", "classes", "output_columns",
+                "probability_columns", "positive_class", "prediction_kind"}
+    require(isinstance(declared, dict) and required <= declared.keys(),
+            "Fixture external audit output contract is incomplete")
+    for key, value in declared.items():
+        # Full real-data contracts can also carry template-local absolute paths.
+        if key not in {"task_path", "data_dir"}:
+            require(key in contract and contract[key] == value,
+                    "Fixture external audit contract differs: " + key)
+    require(audit.get("metric") == native.metric.name,
+            "Fixture external audit metric differs from native TaskSpec")
+    return contract
+
+
+def _automl_fixture_resources(execution, report, evidence, task, report_path):
+    """Use observed full child executions, not lossy AutoML row aggregates."""
+    executions, observed, observed_dirs = [], set(), set()
+    for item in evidence.get("observations", []):
+        if not isinstance(item, dict) or item.get("phase") != "automl_execution":
+            continue
+        directory = _path(task, item.get("directory"))
+        require(directory.is_relative_to(report_path.parent),
+                "Observed AutoML child is outside the exact current run")
+        config = read_json(directory / "config.json")
+        identifier = config.get("id")
+        require(config.get("phase") in {"seed", "selection", "verification", "refit"}
+                and safe_path(config.get("candidate_dir", "")) == directory
+                and isinstance(identifier, str) and directory.parent.name == identifier,
+                "Observed AutoML child directory/config differ")
+        result = item.get("execution")
+        require(isinstance(result, dict), "Observed AutoML child has no execution")
+        observed.add(identifier)
+        require(directory not in observed_dirs, "Duplicate observed AutoML child invocation")
+        observed_dirs.add(directory)
+        executions.append(result)
+    unknown = []
+    for row in report.get("search", {}).get("candidates", []):
+        if isinstance(row, dict) and (row.get("resources") or row.get("error")) and row.get("id") not in observed:
+            unknown.append({"resources": {"available": False},
+                            "error": row.get("error")})
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]+", row["id"]):
+            candidate_dir = report_path.parent / row["id"]
+            if candidate_dir.is_dir():
+                for phase_dir in candidate_dir.iterdir():
+                    if (phase_dir.is_dir() and (phase_dir / "config.json").is_file()
+                            and (phase_dir / "execution").is_dir() and phase_dir not in observed_dirs):
+                        unknown.append({"resources": {"available": False}, "error": row.get("error")})
+    if not executions:
+        unknown.append({"resources": {"available": False}})
+    # A fully observed outer tree alone does not prove every nested attempt's
+    # inventory/cleanup. Missing old-worker observations remain provisional,
+    # or censored when the corresponding native trial failed.
+    return _resource(execution, {"executions": executions, "unobserved": unknown})
+
+
 def _load(output, *, execution=True):
     from .planning import load_plan
     return load_plan(output, execution=execution)
@@ -268,6 +458,9 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
     errors, report, summary, proof = [], None, None, None
     current = None
     actual_api = None
+    mechanism = False
+    fixture = plan.get("profile") == "fixture-smoke"
+    automl_fixture = False
     integrity = True
     external = {"valid": False, "error": "No saved output", "metric": None}
     evidence_path = None
@@ -294,14 +487,20 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
         _sealed(not audit_path.is_relative_to(arm_dir), "External audit answers are inside solver arm")
         _sealed(file_hash(audit_path) == case["audit_sha256"], "External audit labels/contract changed")
         host_audit = read_json(audit_path)
+        if fixture:
+            host_audit = {**host_audit, "contract": _fixture_contract(task, host_audit, case)}
         from qualify_unseen_tasks import audit_submission
         external = audit_submission(task / "submission.csv", host_audit)
         pointer = evidence.get("run_report")
         require(isinstance(pointer, dict), "Missing exact current-run report pointer")
         current = pointer
         relative = pointer.get("path")
-        require(isinstance(relative, str) and _REPORT.fullmatch(relative)
-                and pointer.get("kind") == "research_v3", "Current report is not native v3 research")
+        automl_fixture = (fixture and config.get("require_adaptive") is False
+                          and pointer.get("kind") == "automl")
+        pattern = _AUTOML_REPORT if automl_fixture else _REPORT
+        require(isinstance(relative, str) and pattern.fullmatch(relative)
+                and pointer.get("kind") == ("automl" if automl_fixture else "research_v3"),
+                "Current report is not an allowed typed native route")
         report_path = _path(task, relative)
         require(file_hash(report_path) == pointer.get("sha256"), "Current run report hash changed")
         report = read_json(report_path)
@@ -317,17 +516,6 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
         require(evidence.get("solver_returned") is True and evidence.get("cli_exit_code") == 0
                 and type(evidence.get("cli_exit_code")) is int and not evidence.get("terminal_error"),
                 "Native solver/main did not return successfully")
-        require(report.get("research_protocol_version") == 3, "Expected native research protocol v3")
-        summary = {key: report.get(key) for key in (
-            "research_protocol_version", "status", "reason", "stage", "api", "mode", "coordinator",
-            "experiments", "successful_experiments", "local_experiments", "local_successful_experiments",
-            "local_research", "baseline_search", "evaluations", "publication", "output_check",
-            "time_budget_seconds", "elapsed_seconds", "time_allocation", "published_recipe", "quality_options")}
-        require(report.get("mode") == "local_only" and report.get("api", {}).get("attempts") == 0
-                and report.get("api", {}).get("responses") == 0
-                and type(report.get("api", {}).get("attempts")) is int
-                and type(report.get("api", {}).get("responses")) is int,
-                "Actual report does not prove zero-API local-only mode")
         original, passed = evidence.get("original_time_budget_seconds"), evidence.get("cli_time_budget_seconds")
         require(_number(original) and _number(passed) and 0 < passed <= original
                 and original == config.get("time_budget_seconds") == plan.get("time_budget_seconds"),
@@ -335,31 +523,66 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
         expected_argv = [str(safe_path(config["solver_root"]) / "solution.py"), str(task / "task.md"),
                          *config["solver_args"], "--time-budget", str(passed)]
         require(evidence.get("cli_argv") == expected_argv, "Observed CLI arguments differ from sealed config")
-        starts = [item for item in evidence.get("observations", [])
-                  if isinstance(item, dict) and item.get("phase") == "run_agent"]
-        require(len(starts) == 1, "Missing/ambiguous native invocation observation")
-        native_budget = starts[0].get("time_budget_seconds")
-        require(_number(native_budget) and 0 < native_budget <= passed
-                and _number(report.get("time_budget_seconds")) and math.isclose(
-                    report["time_budget_seconds"], native_budget, rel_tol=0, abs_tol=.001),
-                "Native report budget differs from observed run_agent invocation")
-        require(_number(report.get("elapsed_seconds")) and 0 <= report["elapsed_seconds"] <= native_budget + .1,
-                "Native elapsed time is missing or exceeds its remaining budget")
-        require(starts[0].get("local_only") is True and starts[0].get("adaptive_search") is True,
-                "Native invocation changed default local/adaptive policy")
-        if native_budget > 300:
-            require(report.get("coordinator", {}).get("active") is True,
-                    "Adaptive coordinator was inactive despite more than 300 seconds remaining")
-        if config.get("require_adaptive"):
-            require(native_budget > 300, "Pilot did not retain more than 300 seconds for adaptive research")
-        require(report.get("stage") == "result" and report.get("status") in {"completed", "fallback"},
-                "Native research did not reach a terminal result")
-        require(report.get("publication", {}).get("new_result_published") is True
-                and report.get("output_check", {}).get("valid") is True,
-                "Fallback/prior output has no new model-quality proof")
-        require(report.get("status") == "completed", "Fallback output remains quality-unverified")
-        trusted_summary, proof = _quality_chain(task, report_path, report, evidence, host_audit)
-        summary.update(trusted_summary)
+        if automl_fixture:
+            require(passed <= 300 and report.get("mode") == "offline",
+                    "Native AutoML fixture is not the short offline CLI route")
+            require(isinstance(api, dict) and api.get("used") is False
+                    and type(api.get("calls")) is int and api["calls"] == 0,
+                    "Native AutoML fixture does not prove zero API calls")
+            require(not any(isinstance(item, dict) and item.get("phase") == "run_agent"
+                            for item in evidence.get("observations", [])),
+                    "Native AutoML fixture contains a conflicting v3 invocation")
+            native_budget = report.get("time_budget_seconds")
+            require(_number(native_budget) and 0 < native_budget <= passed
+                    and _number(report.get("elapsed_seconds"))
+                    and 0 <= report["elapsed_seconds"] <= native_budget + .1,
+                    "Native AutoML fixture exceeds its original remaining budget")
+            proof = _automl_fixture_chain(task, report_path, report, host_audit)
+            actual_api = {"attempts": 0, "responses": 0,
+                          "kind": "native_offline_zero_calls", "native_calls": api["calls"],
+                          "source_report_sha256": file_hash(report_path)}
+            summary = {key: report.get(key) for key in ("mode", "api", "search", "metric",
+                       "time_budget_seconds", "elapsed_seconds", "output_valid")}
+            summary["route"] = "automl_fixture"
+            mechanism = True
+        else:
+            require(report.get("research_protocol_version") == 3, "Expected native research protocol v3")
+            summary = {key: report.get(key) for key in (
+                "research_protocol_version", "status", "reason", "stage", "api", "mode", "coordinator",
+                "experiments", "successful_experiments", "local_experiments", "local_successful_experiments",
+                "local_research", "baseline_search", "evaluations", "publication", "output_check",
+                "time_budget_seconds", "elapsed_seconds", "time_allocation", "published_recipe", "quality_options")}
+            require(report.get("mode") == "local_only" and report.get("api", {}).get("attempts") == 0
+                    and report.get("api", {}).get("responses") == 0
+                    and type(report.get("api", {}).get("attempts")) is int
+                    and type(report.get("api", {}).get("responses")) is int,
+                    "Actual report does not prove zero-API local-only mode")
+            starts = [item for item in evidence.get("observations", [])
+                      if isinstance(item, dict) and item.get("phase") == "run_agent"]
+            require(len(starts) == 1, "Missing/ambiguous native invocation observation")
+            native_budget = starts[0].get("time_budget_seconds")
+            require(_number(native_budget) and 0 < native_budget <= passed
+                    and _number(report.get("time_budget_seconds")) and math.isclose(
+                        report["time_budget_seconds"], native_budget, rel_tol=0, abs_tol=.001),
+                    "Native report budget differs from observed run_agent invocation")
+            require(_number(report.get("elapsed_seconds")) and 0 <= report["elapsed_seconds"] <= native_budget + .1,
+                    "Native elapsed time is missing or exceeds its remaining budget")
+            require(starts[0].get("local_only") is True and starts[0].get("adaptive_search") is True,
+                    "Native invocation changed default local/adaptive policy")
+            if native_budget > 300:
+                require(report.get("coordinator", {}).get("active") is True,
+                        "Adaptive coordinator was inactive despite more than 300 seconds remaining")
+            if config.get("require_adaptive"):
+                require(native_budget > 300, "Pilot did not retain more than 300 seconds for adaptive research")
+            require(report.get("stage") == "result" and report.get("status") in {"completed", "fallback"},
+                    "Native research did not reach a terminal result")
+            require(report.get("publication", {}).get("new_result_published") is True
+                    and report.get("output_check", {}).get("valid") is True,
+                    "Fallback/prior output has no new model-quality proof")
+            require(report.get("status") == "completed", "Fallback output remains quality-unverified")
+            trusted_summary, proof = _quality_chain(task, report_path, report, evidence, host_audit)
+            summary.update(trusted_summary)
+            mechanism = fixture
     except (OSError, ValueError, TypeError, KeyError, AttributeError, csv.Error, UnicodeError) as error:
         if isinstance(error, EvidenceDrift):
             integrity = False
@@ -370,6 +593,11 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
         integrity = False
         errors.append("Evidence changed while auditing")
     resources = _resource(state.get("execution"), report)
+    if automl_fixture and report is not None:
+        try:
+            resources = _automl_fixture_resources(state.get("execution"), report, evidence, task, report_path)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+            errors.append(type(error).__name__ + ": " + str(error)[:700])
     execution = state.get("execution") or {}
     failed = (type(execution.get("exit_code")) is not int or execution.get("exit_code") != 0
               or execution.get("external_timeout") or execution.get("timed_out")
@@ -379,15 +607,17 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
     if not failed and not (_number(wall) and wall >= 0):
         errors.append("Missing finite observed worker wall time")
     interrupted = state.get("status") in {"interrupted", "censored"} and not execution
-    quality = bool(integrity and not errors and external.get("valid") is True and not failed and not interrupted)
+    complete = bool(integrity and not errors and external.get("valid") is True and not failed and not interrupted)
+    mechanism = bool(fixture and mechanism and complete)
+    quality = bool(not fixture and complete)
     if not integrity:
         status = "integrity_failed"
     elif resources["qualification"] == "censored" or interrupted:
-        status, quality = "censored", False
+        status, quality, mechanism = "censored", False, False
     elif failed:
         status = "solver_failed"
     elif _number(wall) and _number(budget) and wall > budget + .25:
-        status, quality = "deadline_exceeded", False
+        status, quality, mechanism = "deadline_exceeded", False, False
     elif errors:
         status = "unverified_contract"
     elif external.get("valid") is not True:
@@ -395,7 +625,7 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
     else:
         status = "completed"
     return {"version": 1, "case": case.get("key", case.get("case_key")), "arm": arm,
-            "status": status, "quality_verified": quality, "quality_admission": False,
+            "status": status, "quality_verified": quality, "mechanism_verified": mechanism, "quality_admission": False,
             "integrity_unchanged": integrity, "contract_errors": errors, "audit": external,
             "resources": resources, "research": summary, "provenance": proof,
             "current_report": current, "actual_api": actual_api, "artifact_hashes": after,
@@ -465,7 +695,7 @@ def re_audit(output):
                             "Missing worker file and unsealed supervisor failure evidence")
                 audit = audit_arm(output, case, arm, worker, plan)
                 require(audit["artifact_hashes"] == index, "Artifact files added/removed after terminal audit")
-                for field in ("status", "quality_verified", "audit", "provenance", "current_report", "actual_api"):
+                for field in ("status", "quality_verified", "mechanism_verified", "audit", "provenance", "current_report", "actual_api"):
                     require(saved.get(field) == audit.get(field), "Recomputed saved audit differs: " + field)
                 require(file_hash(state_path) == before, "Mutable state changed during re-audit")
                 rows.append({**row, "valid": True, **audit})

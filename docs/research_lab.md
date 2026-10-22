@@ -78,6 +78,20 @@ py -3.12 -m venv .venv
 
 Quote executable/root paths containing spaces or Cyrillic text. PowerShell uses the call operator for a quoted executable, for example `& "C:\ML Проект\.venv\Scripts\python.exe" -m research_lab catalog`. No virtualenv activation is necessary. Unit tests for Unicode paths and Windows branches do not establish that the full native series ran on Windows; actual Windows execution must be recorded separately.
 
+If `py` opens a Windows file-association dialog, inspect `Get-Command py -All`
+and invoke the verified launcher by its full executable path. For example,
+`& "C:\Windows\py.exe" "-3.12" -m venv .venv` bypasses an extensionless file
+named `py` earlier in command lookup.
+
+The worker retains the selected interpreter's site-packages even when `.venv`
+is inside the auditor checkout. Earlier laboratory revisions incorrectly removed
+all import paths under the checkout, causing an immediate `ModuleNotFoundError`
+despite successful package preflight. Preserve affected failed plans and use a
+fresh output after the fix. To retain their exact frozen auditor as well, create
+a separate detached auditor worktree for the corrected revision and reuse the
+already installed virtualenv by its absolute `Scripts\python.exe` path. Package
+reinstallation is unnecessary when its recorded versions are unchanged.
+
 ## Linux / Bash
 
 ```bash
@@ -101,17 +115,23 @@ The pinned runtime subset is `requirements.txt`; the supplied full platform list
 
 ## Stage A fixture and safe continuation
 
-Run fixture smoke before public-data measurements. The example below uses one synthetic task, a 20-second test-only cap and two incumbent checkouts. It is neither an adaptive production-quality test nor evidence that candidate policy improves a model.
+Run fixture smoke before public-data measurements. The example below uses one synthetic task, a 60-second test-only cap and two incumbent checkouts. It checks the native short-budget AutoML route; the real pilot checks adaptive v3. The native CLI selects its own route from the remaining original budget. The lab does not force v3 for a short fixture.
 
 ```powershell
 git worktree add --detach ..\alfa-incumbent-copy a45861d7e5588288db66f9ae088a9726f9597370
-.\.venv\Scripts\python.exe -m research_lab prepare --profile fixture-smoke --incumbent-root ..\alfa-incumbent --candidate-root ..\alfa-incumbent-copy --candidate-commit a45861d7e5588288db66f9ae088a9726f9597370 --self-check --python .venv\Scripts\python.exe --cache data/lab-cache --output data/lab-runs/fixture-001 --time-budget 20 --threads 8 --memory-gib 24
+.\.venv\Scripts\python.exe -m research_lab prepare --profile fixture-smoke --incumbent-root ..\alfa-incumbent --candidate-root ..\alfa-incumbent-copy --candidate-commit a45861d7e5588288db66f9ae088a9726f9597370 --self-check --python .venv\Scripts\python.exe --cache data/lab-cache --output data/lab-runs/fixture-001 --time-budget 60 --threads 8 --memory-gib 24
 .\.venv\Scripts\python.exe -m research_lab run --output data/lab-runs/fixture-001
 .\.venv\Scripts\python.exe -m research_lab re-audit --output data/lab-runs/fixture-001
 .\.venv\Scripts\python.exe -m research_lab report --output data/lab-runs/fixture-001
 ```
 
 Bash uses the same arguments with `.venv/bin/python` and `../` worktree paths. No fetch is required for the fixture. Use a new named output directory for every new plan or deliberate repeat.
+
+The short fixture's typed `automl` evidence must bind the exact returned `automl_report.json`, input snapshot, selected model config, outer predictions, full-TRAIN refit phase, checkpoint and published CSV. Native v3 evidence keeps its own receipt checks. AutoML evidence is accepted only for `fixture-smoke`; it cannot satisfy the real adaptive pilot's v3 contract. Missing nested execution observations remain provisional, and failed attempts with unknown cleanup remain censored.
+
+Use `report.json` → `fixture_gate.passed` as the fixture prerequisite for a new pilot. It requires a completed, independently re-audited mechanism for every planned fixture arm, fully observed nested/outer resources and verified actual API 0/0. Inspect `mechanism_complete`, `resources_observed` and `zero_api_verified` when the gate is false. Fixture arms always have `quality_verified=false`, `qualified_cpu=false`, `quality_evidence=false` and `quality_admission=false`; zero `qualified_cpu_arms` is expected. A fixture is neither an adaptive quality test nor evidence of a policy improvement. Keep old plans/results with their original frozen auditor; this audit change requires a fresh plan, not edited saved evidence.
+
+For the native AutoML route, API zero requires the exact pinned native report to declare `api.used=false` and integer `api.calls=0`. Zero calls implies zero attempts/responses; the saved provenance is `native_offline_zero_calls` with its source report hash and native call count. Missing counters are not converted to zero. For v3 the existing native attempts/responses checks remain unchanged. Do not resume an old fixture under this changed method: prepare a fresh named fixture, run/re-audit/report it, inspect `fixture_gate.passed`, then prepare a fresh pilot. `resume` remains only for untouched arms of the same unchanged sealed method.
 
 Each arm has a unique run ID and a state journal: `prepared → started → finished/failed/censored`. Started is written atomically before spawn. Terminal `state.json` has a separate `state.sha256` seal. Run and machine locks exclude competing coordinators. A failed/timeout arm without confirmed descendant cleanup becomes censored and stops the series; unavailable RSS/CPU remains unknown, never zero. A successful audited CSV with incomplete resource observation is provisional.
 

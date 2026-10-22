@@ -142,12 +142,21 @@ def execute(config_path, deadline):
 
     persist()
     try:
+        # -I ignores Python's encoding environment variables. Redirected Windows
+        # streams may otherwise use cp1252 and reject native Cyrillic progress
+        # messages before training. This changes log transport only.
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
         os.chdir(task_dir)
-        # -I excludes ambient PYTHONPATH/site injection. Only this selected root
-        # is added; the auditor never imports code from it in its own process.
+        # -I excludes ambient PYTHONPATH/cwd injection. Preserve the selected
+        # interpreter's libraries, including a venv inside the auditor checkout.
+        # Remove only auditor source entries before adding the selected solver.
         trusted_root = Path(__file__).resolve().parents[1]
+        auditor_sources = {trusted_root, Path(__file__).resolve().parent}
         sys.path[:] = [value for value in sys.path
-                       if value and not Path(value).absolute().is_relative_to(trusted_root)]
+                       if value and Path(value).resolve() not in auditor_sources]
         sys.path.insert(0, str(root))
         spec = importlib.util.spec_from_file_location("solution", root / "solution.py")
         solution = importlib.util.module_from_spec(spec)
@@ -206,6 +215,21 @@ def execute(config_path, deadline):
             if error.name not in {"agent", "agent.automl"}:
                 raise
         else:
+            original_automl_python = automl.run_python
+            @functools.wraps(original_automl_python)
+            def automl_python(*args, **kwargs):
+                # Native AutoML's compact report drops child cleanup fields.
+                # Observe the original returned execution without changing its
+                # args, result, training allowance or native routing.
+                result = original_automl_python(*args, **kwargs)
+                directory = _plain(args[1] if len(args) > 1 else kwargs["task_dir"])
+                evidence["observations"].append({"phase": "automl_execution",
+                    "directory": directory.relative_to(task_dir).as_posix(),
+                    "execution": _copy_json({key: result.get(key) for key in (
+                        "exit_code", "timed_out", "memory_limit_exceeded", "error", "resources")})})
+                persist()
+                return result
+            automl.run_python = automl_python
             original_automl = automl.run_automl
             @functools.wraps(original_automl)
             def run_automl(*args, **kwargs):

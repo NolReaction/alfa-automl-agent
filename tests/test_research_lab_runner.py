@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
+import venv
 
 import os
 import tempfile
@@ -44,9 +46,15 @@ def worker_fixture(tmp_path, *, failure=False, short=False):
         + (" raise RuntimeError('native failure')\n" if failure else " return directory\n"))
     (root / "agent" / "automl.py").write_text(
         "import json\nfrom pathlib import Path\nRESULT={}\n"
+        "EXECUTION={'exit_code':0,'timed_out':False,'resources':{'available':True,'cleanup_complete':True}}\n"
+        "def run_python(code, task_dir, run_dir, step, timeout):\n"
+        " assert code=='protocol-no-fit' and step==1 and timeout==.5\n return EXECUTION\n"
         "def run_automl(task,**kwargs):\n"
         " report=Path(task).parent/'.agent_runs'/('b'*32)/'automl_report.json'\n"
         " report.parent.mkdir(parents=True)\n report.write_text('{}')\n"
+        " directory=report.parent/'seed'/'seed'\n directory.mkdir(parents=True)\n"
+        " execution=run_python('protocol-no-fit',directory,directory/'execution',1,timeout=.5)\n"
+        " assert execution is EXECUTION\n"
         " RESULT['report_path']=str(report)\n return RESULT\n")
     body = (
         "import time\ntime.sleep(.12)\nimport sys,json\nfrom pathlib import Path\n"
@@ -200,6 +208,40 @@ class ResearchLabRunnerTests(unittest.TestCase):
         self.monkeypatch = _MonkeyPatch()
         self.addCleanup(self.monkeypatch.close)
 
+    def test_worker_keeps_site_packages_of_venv_inside_auditor_checkout(self):
+        auditor = self.tmp_path / "auditor"
+        copied_worker = auditor / "research_lab" / "worker.py"
+        copied_worker.parent.mkdir(parents=True)
+        shutil.copy2(WORKER, copied_worker)
+        runtime = auditor / ".venv"
+        venv.EnvBuilder(with_pip=False).create(runtime)
+        executable = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        package_probe = subprocess.run(
+            [str(executable), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+            capture_output=True, text=True, timeout=15, check=True)
+        packages = Path(package_probe.stdout.strip())
+        self.assertTrue(packages.is_relative_to(auditor))
+        (packages / "lab_nested_runtime_dependency.py").write_text("VALUE = 'nested-venv-ok'\n")
+        dependency_probe = subprocess.run(
+            [str(executable), "-I", "-c",
+             "import lab_nested_runtime_dependency as dep; print(dep.VALUE)"],
+            capture_output=True, text=True, timeout=15, check=True)
+        self.assertEqual(dependency_probe.stdout.strip(), "nested-venv-ok")
+
+        config, task, arm = worker_fixture(self.tmp_path)
+        solution = self.tmp_path / "solver" / "solution.py"
+        solution.write_text("import lab_nested_runtime_dependency as dep\n"
+                            "assert dep.VALUE == 'nested-venv-ok'\n" + solution.read_text())
+        process = subprocess.run(
+            [str(executable), "-I", str(copied_worker), str(config),
+             "--deadline", str(time.monotonic() + 10)],
+            capture_output=True, text=True, timeout=15)
+        evidence = read_json(arm / "worker_evidence.json")
+        self.assertEqual(process.returncode, 0, str(evidence.get("terminal_error")))
+        self.assertIsNone(evidence["terminal_error"])
+        self.assertTrue(evidence["solver_returned"])
+        self.assertTrue((task / "argv.json").is_file())
+
     def test_worker_charges_imports_and_uses_exact_returned_current_run(self):
         tmp_path = self.tmp_path
         config, task, arm = worker_fixture(tmp_path)
@@ -219,6 +261,37 @@ class ResearchLabRunnerTests(unittest.TestCase):
         self.assertTrue(pointer["run_report_sha256"] == evidence["run_report"]["sha256"])
         self.assertTrue(evidence["observations"][1]["frozen_split"]["fit_rows"] == [0])
         self.assertTrue(len(evidence["observations"]) == 2)
+
+    def test_worker_uses_utf8_for_redirected_streams_before_solver_imports(self):
+        config, task, arm = worker_fixture(self.tmp_path)
+        solution = self.tmp_path / "solver" / "solution.py"
+        stdout_text = "Проверка импорта модели · готово"
+        stderr_text = "Диагностика модели · ошибок нет"
+        original = solution.read_text()
+        solution.write_text(
+            "import sys\nassert sys.flags.isolated == 1\n"
+            f"print({stdout_text!r}, flush=True)\n"
+            f"print({stderr_text!r}, file=sys.stderr, flush=True)\n" + original,
+            encoding="utf-8")
+        # -I ignores PYTHONIOENCODING/PYTHONUTF8. A redirected Windows child
+        # can therefore start with cp1252 even when its supervisor set UTF-8.
+        # Force that real stream state on every platform, then run the worker.
+        wrapper = (
+            "import runpy,sys\n"
+            "sys.stdout.reconfigure(encoding='cp1252', errors='strict')\n"
+            "sys.stderr.reconfigure(encoding='cp1252', errors='strict')\n"
+            f"sys.argv = {[str(WORKER), str(config), '--deadline', str(time.monotonic() + 10)]!r}\n"
+            f"runpy.run_path({str(WORKER)!r}, run_name='__main__')\n")
+        process = subprocess.run([sys.executable, "-I", "-c", wrapper],
+                                 capture_output=True, timeout=15)
+        evidence = read_json(arm / "worker_evidence.json")
+        self.assertEqual(process.returncode, 0, str(evidence.get("terminal_error")))
+        self.assertIsNone(evidence["terminal_error"])
+        self.assertEqual(process.stdout.decode("utf-8").splitlines(), [stdout_text])
+        self.assertEqual(process.stderr.decode("utf-8").splitlines(), [stderr_text])
+        self.assertTrue(evidence["solver_returned"])
+        self.assertTrue(0 < evidence["cli_time_budget_seconds"] < 8)
+        self.assertEqual(evidence["cli_argv"], json.loads((task / "argv.json").read_text()))
 
 
     def test_worker_captures_failed_native_state_without_claiming_return(self):
@@ -242,6 +315,10 @@ class ResearchLabRunnerTests(unittest.TestCase):
         self.assertTrue(evidence["run_report"]["kind"] == "automl")
         self.assertTrue(evidence["run_report"]["path"].endswith("automl_report.json"))
         self.assertTrue(not (task / "solver_output/research_benchmark.json").exists())
+        observed = [item for item in evidence["observations"] if item["phase"] == "automl_execution"]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]["directory"], ".agent_runs/" + "b" * 32 + "/seed/seed")
+        self.assertTrue(observed[0]["execution"]["resources"]["cleanup_complete"])
 
 
     def test_worker_refuses_oracle_fields_and_second_attempt(self):

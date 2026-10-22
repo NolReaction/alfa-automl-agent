@@ -81,10 +81,12 @@ def main(argv=None):
         else:
             from research_lab.gpu import run_gpu
             result = run_gpu(args.output, args.cpu_plan, time_budget_seconds=args.time_budget, enabled=args.enable)
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False))
+        # Console JSON must also survive redirected Windows locale encodings.
+        # Escapes preserve Unicode values for parsers without changing artifacts.
+        print(json.dumps(result, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False))
         return 2 if isinstance(result, dict) and (result.get("valid") is False or result.get("status") == "integrity_failed") else 0
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
-        print(json.dumps({"status": "blocked", "error_type": type(error).__name__, "reason": str(error)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"status": "blocked", "error_type": type(error).__name__, "reason": str(error)}, ensure_ascii=True), file=sys.stderr)
         return 2
 
 

@@ -153,10 +153,34 @@ class ReportTests(unittest.TestCase):
         for profile, self_check, outcome in (("fixture-smoke", False, "fixture_smoke"), ("pilot", True, "self_check")):
             with self.subTest(profile=profile):
                 self.plan.update(profile=profile, self_check=self_check, policy_comparison=False)
+                for arm in self.fresh["arms"]:
+                    arm["mechanism_verified"] = profile == "fixture-smoke"
                 result = self.run_report()
                 self.assertTrue(all(row["outcome"] == outcome for row in result["pairs"]))
                 self.assertEqual(result["summary"]["outcomes"]["win"], 0)
                 self.assertFalse(result["quality_evidence"])
+
+    def test_fixture_gate_requires_mechanism_resources_and_pinned_zero_api_without_quality(self):
+        self.plan.update(profile="fixture-smoke", self_check=True, policy_comparison=False)
+        for arm in self.fresh["arms"]:
+            arm.update(quality_verified=False, mechanism_verified=True,
+                       actual_api={"attempts": 0, "responses": 0, "source_report_sha256": "d" * 64})
+        result = self.run_report()
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["fixture_gate"]["passed"])
+        self.assertFalse(result["fixture_gate"]["quality_admission"])
+        self.assertEqual(result["summary"]["qualified_cpu_arms"], 0)
+        self.assertEqual(result["summary"]["verified_quality_arms"], 0)
+        self.assertEqual(result["summary"]["verified_mechanism_arms"], 8)
+        self.assertTrue(all(row["signed_difference"] is None for row in result["pairs"]))
+        self.arm(0, "candidate")["resources"] = {"qualification": "provisional_resource_observation",
+                                                 "fully_observed": False}
+        result = self.run_report()
+        self.assertFalse(result["fixture_gate"]["passed"])
+        self.assertTrue(result["fixture_gate"]["mechanism_complete"])
+        self.arm(0, "candidate")["resources"] = {"qualification": "observed", "fully_observed": True}
+        self.arm(0, "candidate")["actual_api"]["attempts"] = None
+        self.assertFalse(self.run_report()["fixture_gate"]["passed"])
 
     def test_metric_name_direction_and_finite_value_must_match(self):
         original = deepcopy(self.fresh)
