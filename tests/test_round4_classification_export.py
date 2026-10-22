@@ -61,6 +61,19 @@ class ExportIntegrityTests(unittest.TestCase):
         self.assertTrue(report[0]["request_excluded"])
         self.assertNotIn("fit_indices", report[0])
 
+    def test_noncanonical_root_preserves_portable_paths_and_containment(self):
+        # Windows short-name paths can resolve to a different spelling too.
+        root = self.root / "worker" / ".."
+        report = export.verify_children(root, self.record, [], ["a", "b"])
+        self.assertEqual(report[0]["status"], "verified")
+        self.assertEqual(export.portable(self.child_dir / "metadata.json", root),
+                         "evidence/worker/invocation/round4_work/ffinal/metadata.json")
+        with tempfile.TemporaryDirectory() as outside_directory:
+            outside = Path(outside_directory) / "metadata.json"
+            outside.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "outside evidence root"):
+                export.portable(outside, root)
+
     def test_disk_metadata_tampering_rejected(self):
         altered = deepcopy(self.metadata)
         altered["fit_indices"] = [1, 0]

@@ -129,6 +129,7 @@ def pinned(path, expected, root=None):
 
 
 def portable(path, root):
+    root = Path(root).resolve()
     return (Path("evidence") / checked_path(path, root).relative_to(root)).as_posix()
 
 
