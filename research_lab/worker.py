@@ -241,6 +241,95 @@ def execute(config_path, deadline):
                 return result
             automl.run_automl = run_automl
 
+        # The native v3 baseline imports AutoML in a separate interpreter.
+        # Observe that exact launch too; an in-process monkeypatch cannot see
+        # its children. Keep the generated experiment script and its arguments
+        # intact, adding only a stdlib observer to the interpreter bootstrap.
+        try:
+            import agent.execution as native_execution
+        except ModuleNotFoundError as error:
+            if error.name not in {"agent", "agent.execution"}:
+                raise
+        else:
+            original_launch = native_execution._python_launch
+            original_python = native_execution.run_python
+            baseline_observer = None
+
+            @functools.wraps(original_launch)
+            def observed_launch(script, directory):
+                command, cwd = original_launch(script, directory)
+                if baseline_observer is None or _plain(script) != baseline_observer["script"]:
+                    return command, cwd
+                try:
+                    if len(command) < 5 or command[2] != "-c" or not isinstance(command[3], str):
+                        raise ValueError("Unsupported native baseline Python launcher")
+                    helper = _plain(Path(__file__).with_name("automl_observer.py"))
+                    bootstrap = (
+                        "import sys as _lab_sys, runpy as _lab_runpy\n"
+                        f"_lab_sys.path.insert(0, {str(root)!r})\n"
+                        "try:\n"
+                        f" _lab_runpy.run_path({str(helper)!r})['install']("
+                        f"{str(baseline_observer['sidecar'])!r}, {str(task_dir)!r})\n"
+                        "except Exception as _lab_error:\n"
+                        " _lab_sys.stderr.write('AutoML observation unavailable: ' + str(_lab_error) + '\\n')\n"
+                        "finally:\n _lab_sys.path.pop(0)\n")
+                    command = list(command)
+                    command[3] = bootstrap + command[3]
+                except (OSError, ValueError, TypeError, IndexError) as error:
+                    evidence["observations"].append({"phase": "automl_observer_error",
+                        "error": type(error).__name__ + ": " + str(error)[-1000:]})
+                return command, cwd
+
+            @functools.wraps(original_python)
+            def observed_python(*args, **kwargs):
+                nonlocal baseline_observer
+                directory = _plain(args[2] if len(args) > 2 else kwargs["run_dir"])
+                if observed_state is None or directory != _plain(observed_state.run_dir) / "startup_execution":
+                    return original_python(*args, **kwargs)
+                startup = _plain(observed_state.run_dir) / "startup"
+                sidecar = startup / "automl_observations.json"
+                if sidecar.exists():
+                    evidence["observations"].append({"phase": "automl_observer_error",
+                        "error": "Native baseline observer sidecar already exists"})
+                    persist()
+                    return original_python(*args, **kwargs)
+                baseline_observer = {"script": directory / "experiment_000.py", "sidecar": sidecar}
+                try:
+                    return original_python(*args, **kwargs)
+                finally:
+                    baseline_observer = None
+                    try:
+                        value = json.loads(_plain(sidecar).read_text(encoding="utf-8"))
+                        if (not isinstance(value, dict) or value.get("version") != 1
+                                or any(not isinstance(value.get(key), list)
+                                       for key in ("observations", "pending", "errors"))):
+                            raise ValueError("Invalid native baseline observer sidecar")
+                        for item in value["observations"]:
+                            if not isinstance(item, dict) or not isinstance(item.get("execution"), dict):
+                                raise ValueError("Invalid observed native baseline execution")
+                            child = _plain(item["directory"])
+                            evidence["observations"].append({"phase": "automl_execution",
+                                "directory": child.relative_to(task_dir).as_posix(),
+                                "source": "baseline_subprocess", "execution": _copy_json(item["execution"])})
+                        for item in value["errors"]:
+                            if not isinstance(item, dict) or not isinstance(item.get("error"), str):
+                                raise ValueError("Invalid native baseline observer error")
+                            evidence["observations"].append({"phase": "automl_observer_error",
+                                "error": item["error"][-1000:]})
+                        for pending in value["pending"]:
+                            evidence["observations"].append({"phase": "automl_observer_error",
+                                "directory": _plain(pending).relative_to(task_dir).as_posix(),
+                                "error": "AutoML child has no observed returned execution"})
+                        evidence["observations"].append({"phase": "automl_observer_complete",
+                            "path": sidecar.relative_to(task_dir).as_posix(), "sha256": _digest(sidecar)})
+                    except (OSError, ValueError, TypeError, KeyError) as error:
+                        evidence["observations"].append({"phase": "automl_observer_error",
+                            "error": type(error).__name__ + ": " + str(error)[-1000:]})
+                    persist()
+
+            native_execution._python_launch = observed_launch
+            native_execution.run_python = observed_python
+
         for name, module in tuple(sys.modules.items()):
             if name == "agent" or name.startswith("agent."):
                 location = getattr(module, "__file__", None)

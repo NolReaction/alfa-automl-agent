@@ -29,6 +29,8 @@ jobs:
           cache: pip
       - name: Install pinned runtime
         run: python -m pip install -r requirements.txt
+      - name: Check nested baseline observation and cleanup qualification
+        run: python -m unittest tests.test_research_lab_observer tests.test_research_lab_baseline_resources -v
       - name: Run both real short-route solver arms and re-audit
         shell: python
         run: |
@@ -57,6 +59,8 @@ jobs:
           print(json.dumps({key: report[key] for key in
               ('status', 'fixture_gate', 'summary', 'quality_evidence')}, sort_keys=True))
           if not (report['status'] == 'completed' and report['fixture_gate']['mechanism_complete']
+                  and report['fixture_gate']['passed'] is True
+                  and report['fixture_gate']['resources_observed'] is True
                   and report['fixture_gate']['zero_api_verified']
                   and report['summary']['qualified_cpu_arms'] == 0
                   and report['quality_evidence'] is False):
@@ -69,7 +73,7 @@ jobs:
               for path in sorted(output.glob('cases/*/arms/*/execution/*.txt')):
                   print(json.dumps({'path': str(path), 'tail': path.read_text(
                       encoding='utf-8', errors='replace')[-5000:]}, ensure_ascii=True))
-              raise SystemExit('Native fixture mechanism was not verified')
+              raise SystemExit('Native fixture gate did not pass')
       - name: Print fixture failure diagnostics
         if: failure()
         shell: python
@@ -85,6 +89,10 @@ jobs:
           for path in sorted(output.glob('cases/*/arms/*/state.json')):
               state = json.loads(path.read_text(encoding='utf-8'))
               audit = state.get('audit', {})
+              execution = state.get('execution', {})
               print(json.dumps({'path': str(path), 'status': state.get('status'),
                   'audit_status': audit.get('status'), 'contract_errors': audit.get('contract_errors'),
-                  'mechanism_verified': audit.get('mechanism_verified')}, ensure_ascii=True))
+                  'mechanism_verified': audit.get('mechanism_verified'),
+                  'resource_qualification': audit.get('resources', {}).get('qualification'),
+                  'launcher_resources': execution.get('resources'),
+                  'launcher_cleanup': execution.get('cleanup')}, ensure_ascii=True))
