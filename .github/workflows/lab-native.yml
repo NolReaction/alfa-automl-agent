@@ -70,3 +70,21 @@ jobs:
                   print(json.dumps({'path': str(path), 'tail': path.read_text(
                       encoding='utf-8', errors='replace')[-5000:]}, ensure_ascii=True))
               raise SystemExit('Native fixture mechanism was not verified')
+      - name: Print fixture failure diagnostics
+        if: failure()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          log = Path('data/ci-fixture.stdout.txt')
+          if log.is_file():
+              print(json.dumps({'launcher_log_tail': log.read_text(
+                  encoding='utf-8', errors='replace')[-16000:]}, ensure_ascii=True))
+          output = Path('data/lab-runs/ci-fixture')
+          for path in sorted(output.glob('cases/*/arms/*/state.json')):
+              state = json.loads(path.read_text(encoding='utf-8'))
+              audit = state.get('audit', {})
+              print(json.dumps({'path': str(path), 'status': state.get('status'),
+                  'audit_status': audit.get('status'), 'contract_errors': audit.get('contract_errors'),
+                  'mechanism_verified': audit.get('mechanism_verified')}, ensure_ascii=True))
