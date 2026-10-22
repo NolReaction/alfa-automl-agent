@@ -35,13 +35,18 @@ class RescueRegressionCliTests(unittest.TestCase):
                 status = solution.main()
             return status, errors.getvalue(), offline, research, construct, dotenv, emergency
 
-    def test_cli_default_omits_new_option_and_explicit_flag_reaches_both_modes(self):
+    def test_cli_default_defers_auto_and_explicit_flag_reaches_both_modes(self):
         status, errors, offline, research, construct, dotenv, _ = self.invoke("--time-budget", "600")
         self.assertEqual(status, 0, errors)
         self.assertNotIn("rescue_regression", offline.call_args.kwargs["quality_options"])
+        self.assertIs(offline.call_args.kwargs["automatic_rescue"], True)
         research.assert_not_called()
         construct.assert_not_called()
         dotenv.assert_not_called()
+        status, errors, offline, _, _, _, _ = self.invoke("--time-budget", "600", "--no-rescue-regression")
+        self.assertEqual(status, 0, errors)
+        self.assertNotIn("rescue_regression", offline.call_args.kwargs["quality_options"])
+        self.assertNotIn("automatic_rescue", offline.call_args.kwargs)
         for llm in (False, True):
             with self.subTest(llm=llm):
                 status, errors, offline, research, construct, dotenv, _ = self.invoke(
