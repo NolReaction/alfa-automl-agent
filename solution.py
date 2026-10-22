@@ -76,7 +76,7 @@ def _remaining(deadline: float) -> float:
 
 def _offline_solution(task_path, *, deadline, validation, quality_options):
     if (quality_options.get("history_config") is not None or quality_options.get("history_auto")
-            or quality_options.get("adaptive_search")):
+            or quality_options.get("adaptive_search") or quality_options.get("rescue_regression")):
         # History uses the same v3 INNER/outer/refit protocol as LLM
         # research, with no client construction or paid requests.
         if validation != {"strategy": "auto"}:
@@ -155,6 +155,9 @@ def main() -> int:
     parser.add_argument("--history-config", help="Experimental inline JSON or @JSON-file key/period configuration; time regression only")
     parser.add_argument("--history-auto", action="store_true",
                         help="Experimentally discover one history schema from INNER-fit features; fixed weight 0.5")
+    parser.add_argument("--rescue-regression", action="store_true",
+                        help="Opt-in fit-calibrated CPU regression candidate; requires adaptive search and budget >300s; "
+                             "only matching temporal RMSE tasks replace one CatBoost slot")
     parser.add_argument("--history-weight", type=float, default=None,
                         help="Fixed history blend weight in [0,1], default 0.5; requires --history-config")
     args = parser.parse_args()
@@ -220,6 +223,11 @@ def main() -> int:
                 print("Adaptive search unavailable for this task metric; retaining the legacy solver.", flush=True)
             else:
                 quality_options["adaptive_search"] = True
+        if args.rescue_regression:
+            if quality_options.get("adaptive_search") is not True:
+                raise ValueError("--rescue-regression requires supported v3 adaptive search, auto validation "
+                                 "and a time-budget greater than 300 seconds.")
+            quality_options["rescue_regression"] = True
         deadline = time.monotonic() + time_budget
         checkpoint = _prepare_emergency(task_path, deadline)
         # Hold a small part of the same deadline for checking and restoring a

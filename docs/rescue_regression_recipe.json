@@ -1,0 +1,31 @@
+{
+  "base": {
+    "engine": "catboost",
+    "fallback_iterations": 400,
+    "max_iterations": 2000,
+    "parameters": {
+      "depth": 6,
+      "l2_leaf_reg": 5.0,
+      "learning_rate": 0.05
+    },
+    "period_column": "Year_Factor",
+    "stopping_rounds": 100
+  },
+  "family": "rescue_regression_v1",
+  "history_config": {
+    "ambiguity_policy": "past_unique_only",
+    "key_columns": [
+      "floor_area",
+      "year_built"
+    ],
+    "numeric_columns": [
+      "floor_area",
+      "year_built"
+    ],
+    "period_column": "Year_Factor",
+    "positive_columns": []
+  },
+  "history_policy": "calibrated",
+  "minimum_calibration_history_rows": 64,
+  "version": 1
+}
