@@ -74,15 +74,24 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
-def _offline_solution(task_path, *, deadline, validation, quality_options):
+def _dispatch_research(task_path, client, *, deadline, quality_options, automatic_rescue=False, **options):
+    """Resolve CLI auto policy and the actual solver budget from one snapshot."""
+    remaining = _remaining(deadline)
+    quality = dict(quality_options)
+    if automatic_rescue and quality.get("adaptive_search") is True and remaining > 300:
+        quality["rescue_regression"] = True
+    return run_agent(task_path, client, time_budget=remaining, **options, **quality)
+
+
+def _offline_solution(task_path, *, deadline, validation, quality_options, automatic_rescue=False):
     if (quality_options.get("history_config") is not None or quality_options.get("history_auto")
             or quality_options.get("adaptive_search") or quality_options.get("rescue_regression")):
         # History uses the same v3 INNER/outer/refit protocol as LLM
         # research, with no client construction or paid requests.
         if validation != {"strategy": "auto"}:
             raise ValueError("Host-local research uses v3 auto validation; validation overrides are unavailable.")
-        directory = run_agent(task_path, None, time_budget=_remaining(deadline),
-                              local_only=True, **quality_options)
+        directory = _dispatch_research(task_path, None, deadline=deadline, quality_options=quality_options,
+                                       automatic_rescue=automatic_rescue, local_only=True)
         print(f"Host-local research report: {directory / 'run.json'}. API calls: 0.")
         return
     from agent.automl import run_automl
@@ -155,9 +164,13 @@ def main() -> int:
     parser.add_argument("--history-config", help="Experimental inline JSON or @JSON-file key/period configuration; time regression only")
     parser.add_argument("--history-auto", action="store_true",
                         help="Experimentally discover one history schema from INNER-fit features; fixed weight 0.5")
-    parser.add_argument("--rescue-regression", action="store_true",
-                        help="Opt-in fit-calibrated CPU regression candidate; requires adaptive search and budget >300s; "
-                             "only matching temporal RMSE tasks replace one CatBoost slot")
+    rescue = parser.add_mutually_exclusive_group()
+    rescue.add_argument("--rescue-regression", action="store_const", const=True,
+                        help="Default: auto for matching temporal RMSE in adaptive runs with >300s remaining; "
+                             "this flag explicitly requests the fit-calibrated CPU regression candidate")
+    rescue.add_argument("--no-rescue-regression", dest="rescue_regression", action="store_const", const=False,
+                        help="Disable automatic regression replacement and retain the previous CatBoost candidate")
+    parser.set_defaults(rescue_regression=None)
     parser.add_argument("--history-weight", type=float, default=None,
                         help="Fixed history blend weight in [0,1], default 0.5; requires --history-config")
     args = parser.parse_args()
@@ -210,12 +223,13 @@ def main() -> int:
         task_path = Path(args.task)
         if not task_path.is_file():
             raise FileNotFoundError(f"Task file not found: {task_path}")
+        parsed_metric = None
         if (args.research_search == "adaptive" and time_budget > 300
                 and args.validation in {None, "auto"} and args.time_column is None):
             from agent.task_contract import parse_task_metric
 
             try:
-                parse_task_metric(task_path.read_text(encoding="utf-8-sig"))
+                parsed_metric = parse_task_metric(task_path.read_text(encoding="utf-8-sig"))
             except ValueError:
                 # Optional routing must not add an entry-point requirement to
                 # legacy research. Its own parser/validator remains responsible
@@ -223,11 +237,17 @@ def main() -> int:
                 print("Adaptive search unavailable for this task metric; retaining the legacy solver.", flush=True)
             else:
                 quality_options["adaptive_search"] = True
-        if args.rescue_regression:
+        if args.rescue_regression is True:
             if quality_options.get("adaptive_search") is not True:
                 raise ValueError("--rescue-regression requires supported v3 adaptive search, auto validation "
                                  "and a time-budget greater than 300 seconds.")
             quality_options["rescue_regression"] = True
+        # Auto only requests eligible RMSE research. The host remains the sole
+        # authority on matching INNER/outer temporal policies and feature roles.
+        automatic_rescue = (args.rescue_regression is None
+            and quality_options.get("adaptive_search") is True
+            and parsed_metric is not None and parsed_metric.name == "RMSE")
+        dispatch_options = {"automatic_rescue": True} if automatic_rescue else {}
         deadline = time.monotonic() + time_budget
         checkpoint = _prepare_emergency(task_path, deadline)
         # Hold a small part of the same deadline for checking and restoring a
@@ -239,7 +259,7 @@ def main() -> int:
         if selected_mode == "offline":
             try:
                 _offline_solution(task_path, deadline=work_deadline, validation=validation,
-                                  quality_options=quality_options)
+                                  quality_options=quality_options, **dispatch_options)
             except (OSError, TimeoutError, MemoryError, RuntimeError) as error:
                 if not _restore_emergency(checkpoint, error, deadline=deadline):
                     raise
@@ -250,8 +270,8 @@ def main() -> int:
             try:
                 with make_client() as client:
                     research_started = True
-                    run_agent(task_path, client, max_steps=args.max_steps,
-                              time_budget=_remaining(work_deadline), **quality_options)
+                    _dispatch_research(task_path, client, max_steps=args.max_steps,
+                                       deadline=work_deadline, quality_options=quality_options, **dispatch_options)
                     solver_completed = True
             except Exception as error:
                 if checkpoint is not None:
@@ -264,7 +284,7 @@ def main() -> int:
                           + safe_error_message(error), file=sys.stderr)
                     try:
                         _offline_solution(task_path, deadline=work_deadline, validation=validation,
-                                          quality_options=quality_options)
+                                          quality_options=quality_options, **dispatch_options)
                     except (OSError, TimeoutError, MemoryError, RuntimeError) as offline_error:
                         if not _restore_emergency(checkpoint, offline_error, deadline=deadline):
                             raise
