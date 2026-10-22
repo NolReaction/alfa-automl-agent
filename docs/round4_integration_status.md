@@ -16,10 +16,18 @@ Main e62 включает PR37/38/39/40/41/42: temporal scheduler, regression ca
 
 | Владелец | Ветка | Результат/граница | Статус |
 | --- | --- | --- | --- |
-| ИИ-1 | work/round4-regression-v1 | Regression modules, новые признаки и fit-only history/base | Задание выдано, новый PR ещё не принят |
-| ИИ-2 | work/round4-classification-v1 | Probability adapter, OOF/decision/features | Задание выдано, новый PR ещё не принят |
-| ИИ-3 | work/round4-llm-v1 | Компактный INNER context и полезные Qwen trials | Задание выдано; host hook требует отдельного согласования |
-| Капитан | work/round4-integration-v1 | Budget allocation, native3600, интеграция/выпуск | План зафиксирован; работа начата |
+| ИИ-1 | work/round4-regression-v1 | Версионированные fit-only regression features/base | [PR44](https://github.com/NolReaction/alfa-automl-agent/pull/44); production activation требует evidence и native admission |
+| ИИ-2 | work/round4-classification-v1 | Probability adapter, OOF/decision/features | Первичное ревью 9ec3462; качество и rollout оцениваются отдельно |
+| ИИ-3 | work/round4-llm-v1 | Ограниченный INNER context и action-policy | [PR45](https://github.com/NolReaction/alfa-automl-agent/pull/45); только inactive helpers, blanket early-stop не рекомендован |
+| Капитан | work/round4-integration-v1 | Budget allocation, native3600, интеграция/выпуск | Fix 8a88dc3, 68 focused tests; итоговая native/CI приёмка — [PR43](https://github.com/NolReaction/alfa-automl-agent/pull/43) |
 | Мурад | work/round4-murad-passport-v1 | Standalone экспорт existing feature profile | Задание выдано; production не затрагивает |
 
-Наш [заранее записанный план](round4_integration_plan.md) отделяет конкретный allocator fix от неподтверждённых гипотез scheduler/cache. Ни одна новая модель или context policy пока не объявлена принятой. Первый длинный контроль — full-native classification3600. Итоги и точные проверенные SHA добавляются после завершения, а не заранее.
+Наш [заранее записанный план](round4_integration_plan.md) отделяет конкретный allocator fix от неподтверждённых гипотез scheduler/cache. Новая модель и context policy не включаются только по факту merge экспериментальных helpers. Первый длинный контроль — full-native classification3600 на immutable e62, парный кандидат — immutable 8a88dc3, единственное runtime-отличие `agent/research_budget.py`. Итоговая таблица фактических native метрик, аудитов, CI и release SHA публикуется после завершения в PR43 и evidence выпуска; исходный план не переписывается под результат.
+
+## Материалы капитана
+
+- [Разбор пяти прежних native запусков](round4_integration_budget_review.md): непересекающиеся интервалы времени, причины refit-budget отказов и отсутствие доказанных повторных fits.
+- [Контракт Qwen после ревью actual PR45](round4_integration_llm_handoff.md): корректный retry hook и причины не включать blanket stop. Mock fixtures не доказывают полезность живого Qwen.
+- [Один длинный Windows-прогон принятого релиза](round4_windows_qualification.md): точный SHA, flat ZIP, pinned runtime, 32 GB и 10 500 секунд. Здесь Windows/full-budget не выполнен; это воспроизводимая последовательность, не сертификат квалификации.
+
+Независимое первичное ревью новых направлений выполнено на зафиксированных heads: regression be06058 (31 pure/mocked tests), classification 9ec3462 (79 focused tests), Qwen 29d7564 (18 pure/mocked tests плюс сверка 59 source hashes). Это не blanket approval последующих коммитов и не повтор всех ML-экспериментов исполнителей. Обновлённые evidence и heads проверяются отдельно перед слиянием.
