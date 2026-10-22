@@ -25,7 +25,7 @@ MAX_CELL_VISITS = 8_000_000
 MAX_RAW_BYTES = 64 * 1024**2
 MAX_VALUE_CHARS = 512
 MAX_SELECTED_COLUMNS = 12
-MAX_CHECKED_CONFIGS = 24
+MAX_CHECKED_CONFIGS = 48
 MAX_AUTO_KEY_WIDTH = 3
 
 
@@ -178,7 +178,7 @@ def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_c
         return result("abstained", "no_recurrent_key_columns")
 
     # The public proposer accounts for parsing, one-column bounds, and at
-    # most 24 checks of width <=3. Admit the whole search before its first call.
+    # most 48 checks of width <=3. Admit the whole search before its first call.
     proposer_work = rows * (2 * len(selected) + 1 + MAX_CHECKED_CONFIGS * (MAX_AUTO_KEY_WIDTH + 1))
     counts["proposer_cell_visits_planned"] = proposer_work
     counts["total_cell_visits_planned"] += proposer_work

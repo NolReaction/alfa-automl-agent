@@ -128,7 +128,7 @@ class AutoHistoryV3Tests(unittest.TestCase):
             self.assertEqual(config, {"key_columns": ["entity"], "period_column": "period",
                 "numeric_columns": [], "positive_columns": [], "ambiguity_policy": "past_unique_only"})
             self.assertEqual(discovery["result"]["screening"]["counts"]["proposer_calls"], 1)
-            self.assertLessEqual(discovery["result"]["proposer_result"]["limits"]["counts"]["checked_configs"], 24)
+            self.assertLessEqual(discovery["result"]["proposer_result"]["limits"]["counts"]["checked_configs"], 48)
             self.assertEqual(report["history_research"]["attempted"], 1)
             self.assertEqual(report["history_successful_experiments"], 1)
             self.assertEqual(report["history_research"]["history_config"], config)
