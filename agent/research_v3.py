@@ -549,6 +549,18 @@ def continue_locally(state):
     return report
 
 
+def _early_extensions_allowed(gate):
+    """Prioritize temporal regression; other tasks retain the measured incumbent route."""
+    inner = gate.inner_split or {}
+    period = gate.choice.get("time_column")
+    return (gate.spec.metric.task_type == "regression"
+            and gate.choice.get("strategy") == "time"
+            and isinstance(period, str) and bool(period)
+            and period in gate.spec.features
+            and inner.get("strategy") == "time"
+            and inner.get("time_column") == period)
+
+
 def _continue_locally(state):
     """Use spare CPU after dialogue stops without reopening its frozen baseline."""
     from agent.offline_research import run_deadline_continuation, run_local_continuation, startup_seen
@@ -595,6 +607,7 @@ def _continue_locally(state):
         return feedback
 
     if getattr(state, "adaptive_search", False):
+        early_extensions = _early_extensions_allowed(gate)
         try:
             from agent.adaptive_search import AdaptiveSearch
             adaptive = AdaptiveSearch(gate.spec.classification, gate.spec.metric.name, max_trials=64)
@@ -604,10 +617,12 @@ def _continue_locally(state):
 
         def extensions():
             from agent.research_extensions import run_research_extensions
-            return run_research_extensions(state, _assess_candidate, max_trials=6)
+            return run_research_extensions(state, _assess_candidate, max_trials=6,
+                                           prioritize=early_extensions)
 
         return run_deadline_continuation(state, recipes, adaptive=adaptive, evaluate=evaluate,
-            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64)
+            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64,
+            extensions_first=early_extensions)
     return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
 
@@ -953,6 +968,7 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
             "reason": "enabled" if state.adaptive_search else "short_budget",
             "minimum_long_budget_seconds": ADAPTIVE_RESERVE_MIN_BUDGET,
             "local_trial_limit": 64, "extension_trial_limit": 6,
+            "extension_policy": "early_temporal_regression_only",
             "api_request_limit": max_steps}
     if local_only:
         state.report["mode"] = "local_only"

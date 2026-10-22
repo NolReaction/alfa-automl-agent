@@ -13,13 +13,14 @@ from agent.offline_research import run_deadline_continuation
 from agent.research_budget import BudgetPolicy
 from agent.research_candidate import freeze_candidate
 from agent.research_v3 import (
-    V3State, _recover_after_unexpected_error, _track_local_candidate,
+    V3State, _early_extensions_allowed, _recover_after_unexpected_error, _track_local_candidate,
     continue_locally, prepare_research, run_agent_v3,
 )
 from agent.search import local_candidate_plan
 from tests.test_offline_research import CODE_HASH, State, recipe
 from tests.test_research_budget import Clock, plan
-from tests.test_research import make_regression
+from tests.test_research import make_regression, write_csv
+from tests.test_history_research import make_panel
 from tests.test_team_integration import fixture_baseline
 
 
@@ -348,10 +349,11 @@ class DialogueExitTests(unittest.TestCase):
                 self.assertEqual(origin, "local")
                 return feedback()
 
-            def extensions(current, assessor, *, max_trials):
+            def extensions(current, assessor, *, max_trials, prioritize):
                 self.assertIs(current, state)
                 self.assertIs(assessor, assess)
                 self.assertEqual(max_trials, 6)
+                self.assertFalse(prioritize)
                 order.append(("extensions", max_trials))
                 return {"attempted": 0}
 
@@ -361,9 +363,124 @@ class DialogueExitTests(unittest.TestCase):
                     patch("agent.research_v3._assess_candidate", new=assess):
                 result = continue_locally(state)
             self.assertEqual(order, [("local", 1.0), ("extensions", 6), ("local", 2.0)])
+            self.assertEqual(result["extension_schedule"], "after_warmup")
             self.assertEqual(result["reason"], "queue_exhausted")
             self.assertEqual(state.report["api"]["attempts"], 0)
             self.assertEqual(state.report["successful_experiments"], 0)
+
+    def test_early_policy_requires_temporal_regression_and_a_declared_matching_period(self):
+        cases = (
+            ("temporal", "regression", {"strategy": "time", "time_column": "period"},
+             {"strategy": "time", "time_column": "period"}, True),
+            ("random", "regression", {"strategy": "random"}, {"strategy": "random"}, False),
+            ("classification", "classification", {"strategy": "time", "time_column": "period"},
+             {"strategy": "time", "time_column": "period"}, False),
+            ("grouped", "classification", {"strategy": "grouped"}, {"strategy": "grouped"}, False),
+            ("mixed_policy", "regression", {"strategy": "time", "time_column": "period"},
+             {"strategy": "random", "time_column": "period"}, False),
+            ("mismatched", "regression", {"strategy": "time", "time_column": "period"},
+             {"strategy": "time", "time_column": "other"}, False),
+            ("outer_missing", "regression", {"strategy": "time"},
+             {"strategy": "time", "time_column": "period"}, False),
+            ("inner_missing", "regression", {"strategy": "time", "time_column": "period"},
+             {"strategy": "time"}, False),
+            ("both_missing", "regression", {"strategy": "time"}, {"strategy": "time"}, False),
+            ("none_period", "regression", {"strategy": "time", "time_column": None},
+             {"strategy": "time", "time_column": None}, False),
+            ("empty_period", "regression", {"strategy": "time", "time_column": ""},
+             {"strategy": "time", "time_column": ""}, False),
+            ("undeclared", "regression", {"strategy": "time", "time_column": "not_a_feature"},
+             {"strategy": "time", "time_column": "not_a_feature"}, False),
+            ("no_inner_policy", "regression", {"strategy": "time", "time_column": "period"}, None, False),
+        )
+        for name, task_type, choice, inner, expected in cases:
+            with self.subTest(name=name):
+                gate = SimpleNamespace(
+                    spec=SimpleNamespace(metric=SimpleNamespace(task_type=task_type),
+                                         features=("period", "other", "measurement")),
+                    choice=choice, inner_split=inner)
+                before = deepcopy((choice, inner))
+                self.assertIs(_early_extensions_allowed(gate), expected)
+                self.assertEqual((gate.choice, gate.inner_split), before)
+
+    def _assert_real_view_schedule(self, task, *, early, classification):
+        state = V3State(task, 12, 600, adaptive_search=True)
+        state.report["quality_options"] = {"adaptive_search": True}
+        prepare_research(state)
+        self.assertIs(state.gate.spec.classification, classification)
+        if early:
+            self.assertEqual(state.gate.choice["strategy"], "time")
+            self.assertEqual(state.gate.inner_split["time_column"], state.gate.choice["time_column"])
+        fixture_baseline(state)
+        baseline_identity = (state.baseline.code_hash, state.baseline.recipe_hash)
+        api_before = deepcopy(state.report["api"])
+        state.transition("inner_research")
+        action_type = "classification" if classification else "regression"
+
+        def ordinary(label, value):
+            return {"id": label, "label": label, "action": "linear",
+                    "model_config": make_model_config("linear", action_type,
+                        {"C": value} if classification else {"alpha": value}),
+                    "feature_config": normalize_feature_config()}
+
+        proposer, order = Proposer([ordinary("adaptive", 2)]), []
+
+        def assess(current, frozen, hypothesis, *, origin):
+            self.assertIs(current, state)
+            self.assertEqual(origin, "local")
+            frozen.verify()
+            order.append(frozen.recipe["label"])
+            result = feedback()
+            result["metric"] = {"name": state.gate.spec.metric.name, "value": 1.0,
+                                "higher_is_better": state.gate.spec.metric.higher_is_better}
+            return result
+
+        def extensions(current, assessor, *, max_trials, prioritize):
+            self.assertIs(current, state)
+            self.assertIs(assessor, assess)
+            self.assertEqual(max_trials, 6)
+            self.assertIs(prioritize, early)
+            order.append("extensions")
+            return {"attempted": 0}
+
+        with patch("agent.research_v3.local_candidate_plan", return_value=[ordinary("warmup", 1)]), \
+                patch("agent.adaptive_search.AdaptiveSearch", return_value=proposer) as construct, \
+                patch("agent.research_extensions.run_research_extensions", side_effect=extensions) as hook, \
+                patch("agent.research_v3._assess_candidate", new=assess):
+            result = continue_locally(state)
+        self.assertEqual(order, ["extensions", "warmup", "adaptive"] if early
+                         else ["warmup", "extensions", "adaptive"])
+        self.assertEqual(result["extension_schedule"], "before_warmup" if early else "after_warmup")
+        self.assertEqual((result["warmup_attempted"], result["adaptive_attempted"]), (1, 1))
+        self.assertEqual(result["reason"], "queue_exhausted")
+        self.assertEqual(len(proposer.observations), 1)
+        self.assertEqual(proposer.observations[0][0]["label"], "adaptive")
+        hook.assert_called_once()
+        construct.assert_called_once_with(classification, state.gate.spec.metric.name, max_trials=64)
+        self.assertEqual(state.report["api"], api_before)
+        self.assertEqual(state.report["api"]["attempts"], 0)
+        self.assertEqual((state.baseline.code_hash, state.baseline.recipe_hash), baseline_identity)
+        state.baseline.verify()
+
+    def test_real_temporal_regression_view_uses_early_hook_with_same_host_assessor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._assert_real_view_schedule(make_panel(Path(directory)), early=True, classification=False)
+
+    def test_real_classification_view_retains_warmup_hook_adaptive_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "multiclass" / "participants"
+            write_csv(inputs / "data_dictionary.csv", [
+                ["feature", "role", "dtype"], ["row_key", "id", "category"],
+                ["measurement", "feature", "numeric"], ["label", "target", "category"]])
+            write_csv(inputs / "train.csv", [["row_key", "measurement", "label"]] + [
+                ["train-" + str(index), index // 2, "a" if index % 2 else "b"] for index in range(80)])
+            write_csv(inputs / "test.csv", [["row_key", "measurement"], ["test-1", 1], ["test-2", 2]])
+            write_csv(inputs / "sample_submission.csv", [["row_key", "label"], ["test-1", "a"], ["test-2", "b"]])
+            task = root / "task.md"
+            task.write_text("Task type: classification\nUse multiclass/participants/*.csv to predict label.\n"
+                            "Metric: Macro F1\nSave submission.csv here.\n", encoding="utf-8")
+            self._assert_real_view_schedule(task, early=False, classification=True)
 
     def test_model_finished_continues_only_for_explicit_long_budget_mode(self):
         for requested, seconds, active in ((False, 10500, False), (True, 10500, True), (True, 300, False)):
