@@ -1,0 +1,133 @@
+{
+  "kind": "feature_only_discovery_probe_no_model_fits",
+  "source_train_sha256": "096dac951cf44fade5417ddd0465c41beee3009663dbea34e8d464a4d3c7f775",
+  "source_train_rows": 53308,
+  "outer_fit_rows": 35000,
+  "inner_fit_rows": 22054,
+  "time_policy": {
+    "strategy": "time",
+    "time_column": "Year_Factor"
+  },
+  "inner_periods": [
+    "1",
+    "2",
+    "3"
+  ],
+  "records": [
+    {
+      "cap": 24,
+      "seconds": 1.5457588750000468,
+      "status": "limited",
+      "reason": "proposer_limited",
+      "selected_config": null,
+      "screening_counts": {
+        "rows": 22054,
+        "features": 62,
+        "raw_cells": 1367348,
+        "raw_cells_scanned": 1367348,
+        "raw_value_bytes_observed": 16340037,
+        "max_value_chars_observed": 41,
+        "screening_cell_visits_planned": 2734696,
+        "proposer_cell_visits_planned": 2668534,
+        "total_cell_visits_planned": 5403230,
+        "valid_period_rows": 22054,
+        "distinct_periods": 3,
+        "screened_columns": 61,
+        "excluded_constant": 0,
+        "excluded_all_unique": 0,
+        "excluded_no_cross_period_recurrence": 6,
+        "recurrent_columns": 55,
+        "selected_columns": 12,
+        "proposer_calls": 1
+      },
+      "proposer_limits": {
+        "caps": {
+          "max_rows": 250000,
+          "max_work": 5265304,
+          "max_period_columns": 1,
+          "max_key_columns": 12,
+          "max_auto_key_width": 3,
+          "max_explicit_key_width": 3,
+          "max_checked_configs": 24,
+          "max_proposals": 1
+        },
+        "counts": {
+          "rows": 22054,
+          "work_planned": 2668534,
+          "eligible_period_columns": 1,
+          "screened_columns": 12,
+          "checked_configs": 24,
+          "unchecked_explicit": 0,
+          "unchecked_pool": 164,
+          "search_complete": false
+        }
+      }
+    },
+    {
+      "cap": 48,
+      "seconds": 1.5597281959999236,
+      "status": "proposed",
+      "reason": "structurally_eligible_for_inner_measurement",
+      "selected_config": {
+        "key_columns": [
+          "floor_area",
+          "year_built"
+        ],
+        "period_column": "Year_Factor",
+        "numeric_columns": [
+          "floor_area",
+          "year_built"
+        ],
+        "positive_columns": [],
+        "ambiguity_policy": "past_unique_only"
+      },
+      "screening_counts": {
+        "rows": 22054,
+        "features": 62,
+        "raw_cells": 1367348,
+        "raw_cells_scanned": 1367348,
+        "raw_value_bytes_observed": 16340037,
+        "max_value_chars_observed": 41,
+        "screening_cell_visits_planned": 2734696,
+        "proposer_cell_visits_planned": 4785718,
+        "total_cell_visits_planned": 7520414,
+        "valid_period_rows": 22054,
+        "distinct_periods": 3,
+        "screened_columns": 61,
+        "excluded_constant": 0,
+        "excluded_all_unique": 0,
+        "excluded_no_cross_period_recurrence": 6,
+        "recurrent_columns": 55,
+        "selected_columns": 12,
+        "proposer_calls": 1
+      },
+      "proposer_limits": {
+        "caps": {
+          "max_rows": 250000,
+          "max_work": 5265304,
+          "max_period_columns": 1,
+          "max_key_columns": 12,
+          "max_auto_key_width": 3,
+          "max_explicit_key_width": 3,
+          "max_checked_configs": 48,
+          "max_proposals": 1
+        },
+        "counts": {
+          "rows": 22054,
+          "work_planned": 4785718,
+          "eligible_period_columns": 1,
+          "screened_columns": 12,
+          "checked_configs": 37,
+          "unchecked_explicit": 0,
+          "unchecked_pool": 203,
+          "search_complete": true
+        }
+      }
+    }
+  ],
+  "model_fits": 0,
+  "api_calls": 0,
+  "scope_note": "Target-free structural discovery on exactly the default ResearchWorkspace INNER-fit features of the official public regression TRAIN. No model was fitted; no quality or leaderboard gain is established.",
+  "runtime_change": "MAX_CHECKED_CONFIGS only: 24 versus 48, all remaining discovery caps unchanged",
+  "candidate_source_base": "ce9993fd9bbdbfe21844a364ceb787522d00e481"
+}
