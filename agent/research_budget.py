@@ -213,8 +213,9 @@ class BudgetPolicy:
         """Allocate ALL pending stages together; their sum cannot exceed remaining.
 
         Recompute before each stage, marking already completed/abandoned stages.
-        Estimated baseline outer/refit costs receive priority over candidate
-        work, so a costly candidate cannot consume the whole recovery budget.
+        Fund every pending estimate when they all fit. Otherwise estimated
+        baseline outer/refit costs receive priority over candidate work, so a
+        costly candidate cannot consume the whole recovery budget.
         """
         self._check_plan(estimate)
         maximum, minimum = _number(maximum, "maximum", positive=True), _number(minimum, "minimum", positive=True)
@@ -229,23 +230,44 @@ class BudgetPolicy:
         available = max(0.0, self.remaining() - self.publication_buffer)
         if not pending or available <= 0:
             return allocations
-        protected = [stage for stage in pending if stage.startswith("baseline_")]
-        floors = {stage: min(maximum, max(minimum, estimate.stage_seconds[stage])) for stage in protected}
-        protected_cost = sum(floors.values())
-        if protected_cost >= available:
-            for stage in protected:
-                allocations[stage] = available * floors[stage] / protected_cost
-            return {stage: value if value >= minimum else 0.0 for stage, value in allocations.items()}
-        allocations.update(floors)
-        available -= protected_cost
-        candidates = [stage for stage in pending if stage not in protected]
-        # With too little time for a candidate's remaining stages, keep its
-        # shares at zero and use the spare time for the fallback instead.
-        active = pending if available >= len(candidates) * minimum else protected
-        for stage in candidates:
-            if stage in active:
-                allocations[stage] = minimum
-                available -= minimum
+        floors = {stage: min(maximum, max(minimum, estimate.stage_seconds[stage])) for stage in pending}
+        required = sum(floors.values())
+        if required > available:
+            # Subtracting absolute monotonic timestamps can lose a few ulps
+            # even at the exact reserve boundary. Cover only that rounding
+            # gap, leaving the correction unspent rather than creating time.
+            tolerance = min(1e-6, 4 * math.ulp(self.deadline))
+            shortfall = required - available
+            largest = max(floors, key=floors.get)
+            corrected = floors[largest] - shortfall - tolerance
+            if shortfall <= tolerance and corrected >= minimum:
+                allocations.update(floors)
+                allocations[largest] = corrected
+                return allocations
+        if required <= available:
+            # A feasible finalization plan must fund every stage's estimate
+            # before distributing surplus. Otherwise the fallback receives
+            # both its floor and a weighted share of the candidate's floor.
+            allocations.update(floors)
+            available -= required
+            active = pending
+        else:
+            protected = [stage for stage in pending if stage.startswith("baseline_")]
+            protected_cost = sum(floors[stage] for stage in protected)
+            if protected_cost >= available:
+                for stage in protected:
+                    allocations[stage] = available * floors[stage] / protected_cost
+                return {stage: value if value >= minimum else 0.0 for stage, value in allocations.items()}
+            allocations.update({stage: floors[stage] for stage in protected})
+            available -= protected_cost
+            candidates = [stage for stage in pending if stage not in protected]
+            # With too little time for a candidate's remaining stages, keep its
+            # shares at zero and use the spare time for the fallback instead.
+            active = pending if available >= len(candidates) * minimum else protected
+            for stage in candidates:
+                if stage in active:
+                    allocations[stage] = minimum
+                    available -= minimum
         while available > 1e-9:
             active = [stage for stage in active if allocations[stage] < maximum]
             if not active:
