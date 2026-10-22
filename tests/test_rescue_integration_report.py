@@ -44,6 +44,11 @@ class RescueIntegrationReportTests(unittest.TestCase):
             "evaluations": {"final_check": {"baseline": {"name": "RMSE", "value": 49.0},
                 "candidate": {"name": "RMSE", "value": 44.5}, "selected": "candidate",
                 "selection_uses_outer": True, "unbiased_estimate": False}},
+            "frozen_baseline": {"code_hash": "b" * 64, "recipe_hash": "a" * 64},
+            "frozen_candidate": {"code_hash": "c" * 64, "recipe_hash": "r" * 64},
+            "candidate_receipts": {"outer": str(self.root / "absent-outer-receipt.json"),
+                                   "refit": str(self.root / "absent-refit-receipt.json"),
+                                   "code_hash": "c" * 64, "recipe_hash": "r" * 64},
             "publication": {"new_result_published": True, "recipe": "candidate"},
             "refit_execution": {"candidate": {"elapsed_seconds": 30.0, "host_elapsed_seconds": 31.0,
                 "exit_code": 0, "resources": {"available": True, "peak_rss_bytes": 2048, "cpu_seconds": 23.0}}}})
@@ -62,6 +67,14 @@ class RescueIntegrationReportTests(unittest.TestCase):
         self.assertEqual(row["research_extensions"]["trials"][1]["recipe_hash"], "r" * 64)
         self.assertIsNone(row["research_extensions"]["trials"][0]["verified"])
         self.assertEqual(row["final_check"]["candidate"]["value"], 44.5)
+        self.assertEqual(row["frozen_baseline"], {"code_hash": "b" * 64, "recipe_hash": "a" * 64})
+        self.assertEqual(row["frozen_candidate"], {"code_hash": "c" * 64, "recipe_hash": "r" * 64})
+        self.assertEqual(row["candidate_receipts"]["outer"], str(self.root / "absent-outer-receipt.json"))
+        self.assertEqual(row["candidate_receipts"]["refit"], str(self.root / "absent-refit-receipt.json"))
+        self.assertEqual(row["candidate_receipts"]["code_hash"], "c" * 64)
+        self.assertEqual(row["candidate_receipts"]["recipe_hash"], "r" * 64)
+        self.assertEqual(row["candidate_receipts"]["verification"], "not_performed")
+        self.assertFalse((self.root / "absent-refit-receipt.json").exists())
         self.assertFalse(row["final_check"]["unbiased_estimate"])
         self.assertIsNone(row["timings"]["stages"][0]["elapsed_seconds"])
         self.assertEqual(row["timings"]["estimated_stage_seconds"], {"candidate_refit": 80.0})
@@ -127,6 +140,9 @@ class RescueIntegrationReportTests(unittest.TestCase):
         self.assertIsNone(rows[0]["local_research"]["extension_schedule"])
         self.assertIsNone(rows[0]["local_research"]["extension_hook_started_remaining_seconds"])
         self.assertIsNone(rows[0]["research_extensions"]["order"])
+        self.assertIsNone(rows[0]["frozen_baseline"])
+        self.assertIsNone(rows[0]["frozen_candidate"])
+        self.assertIsNone(rows[0]["candidate_receipts"])
         self.assertEqual(rows[0]["timings"]["stages"], [])
         self.assertEqual({path: path.read_bytes() for path in originals}, originals)
         self.assertFalse(missing.exists())

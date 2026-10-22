@@ -176,6 +176,14 @@ def summarize_report(path):
         baseline_search={"status": _text(baseline.get("status")), "reason": _text(baseline.get("reason")),
                          "search": _search(baseline.get("search"))},
         search=_search(report.get("search")),
+        frozen_baseline=({name: _text(report["frozen_baseline"].get(name)) for name in ("code_hash", "recipe_hash")}
+                         if isinstance(report.get("frozen_baseline"), dict) else None),
+        frozen_candidate=({name: _text(report["frozen_candidate"].get(name)) for name in ("code_hash", "recipe_hash")}
+                          if isinstance(report.get("frozen_candidate"), dict) else None),
+        candidate_receipts=({**{name: _text(report["candidate_receipts"].get(name)) for name in
+                                ("outer", "refit", "code_hash", "recipe_hash")},
+                             "verification": "not_performed"}
+                            if isinstance(report.get("candidate_receipts"), dict) else None),
         final_check={"baseline": _metric(final.get("baseline")), "candidate": _metric(final.get("candidate")),
                      **{name: _text(final.get(name)) for name in ("selected", "candidate_acceptance", "scope")},
                      "selection_uses_outer": _flag(final.get("selection_uses_outer")),
