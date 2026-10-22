@@ -185,7 +185,11 @@ def safe_error_details(error: Exception) -> dict:
 
 
 def safe_error_message(error: Exception) -> str:
-    """Keep useful SDK diagnostics without echoing response bodies or headers."""
+    """Legacy host-local diagnostic text; use public_error_message for exports.
+
+    Native host artifacts retain local exception detail for debugging. This is
+    not a public serializer: non-SDK errors can contain paths or provider text.
+    """
     try:
         from openai import APIError
     except ImportError:
@@ -207,6 +211,23 @@ def safe_error_message(error: Exception) -> str:
         detail = str(error)
     key = os.environ.get("OPENAI_API_KEY", "")
     return detail.replace(key, "[REDACTED]") if key else detail
+
+
+def public_error_message(error: Exception) -> str:
+    """Allowlisted diagnostic text with no exception strings or request IDs.
+
+    Redacting only the configured API key is insufficient: a provider can put
+    unrelated secrets in its message, headers, body, class name or request ID.
+    Public summaries therefore use the same closed schema as typed details.
+    """
+    details = safe_error_details(error)
+    parts = [details.get("error_type", "Exception")]
+    if "status_code" in details:
+        parts.append(f"HTTP {details['status_code']}")
+    for field in ("code", "cause_type", "transport_reason"):
+        if field in details:
+            parts.append(f"{field}={details[field]}")
+    return "Request failed (" + ", ".join(parts) + ")."
 
 
 def make_client():

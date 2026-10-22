@@ -16,6 +16,24 @@ import experiment_research_smoke as smoke
 from agent.task_spec import load_task, load_task_data
 
 
+def _llm_trial(identity, metric):
+    """Host-owned verified INNER event required by the v2 smoke summary."""
+    return {"kind": "experiment", "result": {"exit_code": 0, "selection": {
+        "verified": True, "scope": "inner_selection", "origin": "llm",
+        "metric": metric, **identity}}}
+
+
+def _receipts(run_dir, recipe, identity, output):
+    """Synthetic native evidence for the winning recipe; no solver is run."""
+    for directory, phase in (("outer_evaluations", "outer_validation"), ("full_refit", "full_refit")):
+        invocation = run_dir / directory / recipe / (phase + "_fixture")
+        invocation.mkdir(parents=True)
+        (invocation / "predictions.csv").write_bytes(output)
+        smoke._write_json(invocation / "receipt.json", {
+            "version": 3, "phase": phase, "nonce": phase + "_fixture", **identity,
+            "output_hash": hashlib.sha256(output).hexdigest()})
+
+
 class ResearchSmokeTests(unittest.TestCase):
     def test_default_preflight_never_constructs_client_or_runs_research(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -114,11 +132,19 @@ class ResearchSmokeTests(unittest.TestCase):
             smoke._write_csv(task.parent / "submission.csv", rows)
             result = task.parent / ".agent_runs" / "fixture"
             result.mkdir(parents=True)
+            frozen = {"code_hash": "a" * 64, "recipe_hash": "b" * 64}
+            baseline = {"code_hash": "c" * 64, "recipe_hash": "d" * 64}
+            metric = ({"name": "RMSE", "value": 1.2, "higher_is_better": False}
+                      if task.parent.name == "regression" else
+                      {"name": "Macro F1", "value": .7, "higher_is_better": True})
+            _receipts(result, "baseline", baseline, (task.parent / "submission.csv").read_bytes())
             smoke._write_json(result / "run.json", {
                 "research_protocol_version": 3, "status": "completed", "reason": "model_finished",
+                "experiments": 1, "frozen_candidate": frozen, "frozen_baseline": baseline,
+                "events": [_llm_trial(frozen, metric)],
                 "successful_experiments": 1, "api": {"attempts": 1, "responses": 1,
                     "usage_reported_responses": 0},
-                "evaluations": {"final_check": {"baseline": {"name": "RMSE", "value": 1.2, "higher_is_better": False}}},
+                "evaluations": {"final_check": {"baseline": metric, "candidate": None, "selected": "baseline"}},
                 "publication": {"new_result_published": True, "recipe": "baseline"},
             })
             return result
@@ -159,13 +185,23 @@ class ResearchSmokeTests(unittest.TestCase):
             task = smoke.create_tasks(Path(directory))["regression"]
             smoke._write_csv(task.parent / "submission.csv", [
                 ["row_key", "outcome"], ["0005", 0], ["NA", 0], ["test c", 0]])
+            run_dir = task.parent / ".agent_runs" / "fixture"
+            frozen = {"code_hash": "a" * 64, "recipe_hash": "b" * 64}
+            baseline = {"code_hash": "c" * 64, "recipe_hash": "d" * 64}
+            metric = {"name": "RMSE", "value": 1.5, "higher_is_better": False}
+            _receipts(run_dir, "baseline", baseline, (task.parent / "submission.csv").read_bytes())
             report = {"research_protocol_version": 3, "status": "completed", "successful_experiments": 1,
-                      "frozen_candidate": {"code_hash": "a" * 64, "recipe_hash": "b" * 64},
-                      "evaluations": {"final_check": {"baseline": {"name": "RMSE", "value": 1.5, "higher_is_better": False},
+                      "experiments": 1, "api": {"attempts": 1, "responses": 1},
+                      "frozen_candidate": frozen, "frozen_baseline": baseline,
+                      "events": [_llm_trial(frozen, metric)],
+                      "evaluations": {"final_check": {"baseline": metric,
                                                       "candidate": None, "selected": "baseline", "errors": {"candidate": "timeout"}}},
                       "publication": {"new_result_published": True, "recipe": "baseline"}}
-            item = smoke.summarize_run(task, report, run_dir=task.parent / ".agent_runs" / "fixture")
+            item = smoke.summarize_run(task, report, run_dir=run_dir)
             self.assertTrue(item["coverage"]["inner_trial_verified"])
+            self.assertTrue(item["coverage"]["finalization_verified"])
+            self.assertEqual(item["coverage"]["published_output_origin"], "baseline")
+            self.assertFalse(item["coverage"]["qwen_full_refit_verified"])
             self.assertFalse(item["coverage"]["generated_candidate_outer_valid"])
             self.assertFalse(item["coverage"]["generated_candidate_published"])
             coverage = smoke.coverage_summary([item, {**item, "task": "classification"}])
@@ -180,15 +216,13 @@ class ResearchSmokeTests(unittest.TestCase):
             (task.parent / "submission.csv").write_bytes(output)
             run_dir = task.parent / ".agent_runs" / "fixture"
             frozen = {"code_hash": "a" * 64, "recipe_hash": "b" * 64}
-            for directory_name, phase in (("outer_evaluations", "outer_validation"), ("full_refit", "full_refit")):
-                invocation = run_dir / directory_name / "candidate" / (phase + "_fixture")
-                invocation.mkdir(parents=True)
-                (invocation / "predictions.csv").write_bytes(output)
-                smoke._write_json(invocation / "receipt.json", {"version": 3, "phase": phase, **frozen,
-                    "output_hash": hashlib.sha256(output).hexdigest()})
+            _receipts(run_dir, "candidate", frozen, output)
+            metric = {"name": "RMSE", "value": 0, "higher_is_better": False}
             report = {"research_protocol_version": 3, "status": "completed", "successful_experiments": 1,
+                      "experiments": 1, "api": {"attempts": 1, "responses": 1},
+                      "events": [_llm_trial(frozen, metric)],
                       "frozen_candidate": frozen,
-                      "evaluations": {"final_check": {"candidate": {"name": "RMSE", "value": 0, "higher_is_better": False},
+                      "evaluations": {"final_check": {"candidate": metric,
                                                       "selected": "candidate"}},
                       "publication": {"new_result_published": True, "recipe": "candidate"}}
             item = smoke.summarize_run(task, report, run_dir=run_dir)
