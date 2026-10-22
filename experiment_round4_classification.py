@@ -451,7 +451,40 @@ def run(args):
     export_table(output, plan)
 
 
-def paired_table(rows, plan):
+def validate_outcomes(rows, *, selection=None, complete_confirmation=False):
+    """Reject duplicate identities and bind confirmation to its frozen finalist.
+
+    Incomplete confirmation is allowed while the runner is still producing
+    records, but it must never become a confirmed aggregate. The host audit
+    requires every planned identity, including failed/skipped outcomes.
+    ``selection`` is supplied only after the caller verifies its frozen file.
+    """
+    keys = [(row["stage"], row["candidate"], row["seed"]) for row in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("Duplicate outcome identity: stage, candidate and seed must be unique")
+    confirmation = {(row["candidate"], row["seed"]) for row in rows if row["stage"] == "confirm"}
+    if selection is None:
+        if confirmation:
+            raise ValueError("Confirmation requires one verified frozen finalist selection")
+        return
+    if selection.get("seeds") != list(SEEDS[1:]):
+        raise ValueError("Frozen confirmation seeds differ from the planned seeds")
+    finalist = selection.get("candidate")
+    if finalist is None:
+        if confirmation:
+            raise ValueError("Confirmation has outcomes without a frozen finalist")
+        return
+    if finalist not in HYPOTHESES:
+        raise ValueError("Confirmation requires one planned frozen finalist")
+    expected = {(name, seed) for seed in SEEDS[1:] for name in ("native_fixed", finalist)}
+    if not confirmation <= expected:
+        raise ValueError("Confirmation outcomes differ from the single frozen finalist or planned seeds")
+    if complete_confirmation and confirmation != expected:
+        raise ValueError("Missing planned confirmation outcomes")
+
+
+def paired_table(rows, plan, *, selection=None):
+    validate_outcomes(rows, selection=selection)
     controls = {row["seed"]: row for row in rows if row["candidate"] == "native_fixed" and row["status"] == "completed"}
     paired = []
     for row in rows:
@@ -481,9 +514,14 @@ def paired_table(rows, plan):
 
 def export_table(output, plan):
     rows = records(output)
+    # Reject duplicates before freezing/reading any aggregate provenance.
+    keys = [(row["stage"], row["candidate"], row["seed"]) for row in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("Duplicate outcome identity: stage, candidate and seed must be unique")
+    selection = freeze_selection(output, plan) if (output / "confirmation_selection.json").exists() else None
     table = {"plan_sha256": digest(output / "plan.json"), "scope": plan["scope"], "outcomes": rows,
              "physical_fit_budget_charges": {stage: sum(row["physical_fits"]["budget_charge"] for row in rows if row["stage"] == stage)
-                                             for stage in CAPS}, **paired_table(rows, plan)}
+                                             for stage in CAPS}, **paired_table(rows, plan, selection=selection)}
     (output / "experiments.json").write_text(json.dumps(table, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
     return table
 
@@ -493,13 +531,13 @@ def audit(args):
     output = args.output.resolve()
     plan, spec, train, test = load_plan(output, execution=False)
     rows = records(output)
+    keys = [(row["stage"], row["candidate"], row["seed"]) for row in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("Duplicate outcome identity: stage, candidate and seed must be unique")
     if {row["candidate"] for row in rows if row["stage"] == "screen"} != set(SCREEN):
         raise ValueError("Missing planned screen outcomes")
     selection = freeze_selection(output, plan) if (output / "confirmation_selection.json").exists() else None
-    if selection and selection["candidate"]:
-        expected = {(name, seed) for seed in SEEDS[1:] for name in ("native_fixed", selection["candidate"])}
-        if {(row["candidate"], row["seed"]) for row in rows if row["stage"] == "confirm"} != expected:
-            raise ValueError("Missing or unexpected confirmation outcomes")
+    validate_outcomes(rows, selection=selection, complete_confirmation=True)
     verified = 0
     for row in rows:
         if row["plan_sha256"] != digest(output / "plan.json"):

@@ -168,8 +168,64 @@ class Round4ExperimentTests(unittest.TestCase):
             for name, f1, b in (("native_fixed", .5, .5), ("frequency", .51, .52)):
                 rows.append({"candidate": name, "seed": seed, "stage": "confirm", "status": "completed", "macro_f1": f1,
                              "class_counts": {"A": {"f1": .5}, "B": {"f1": b}}})
-        result = experiment.paired_table(rows, plan)["confirmation"]
+        result = experiment.paired_table(rows, plan, selection={
+            "candidate": "frequency", "seeds": list(experiment.SEEDS[1:])})["confirmation"]
         self.assertGreater(result["mean_macro_delta"], .003)
+        self.assertEqual(result["recommendation"], "retain_incumbent")
+
+    def confirmation_fixture(self, gain=.002):
+        plan = {"classes": ["A", "B"], "rarest_class": "B", "acceptance": {
+            "mean_gain": .003, "minimum_slice_gain": -.01, "minimum_class_gain": -.05}}
+        selection = {"candidate": "frequency", "seeds": list(experiment.SEEDS[1:])}
+        rows = [{"candidate": name, "seed": seed, "stage": "confirm", "status": "completed", "macro_f1": f1,
+                 "class_counts": {"A": {"f1": f1}, "B": {"f1": f1}}}
+                for seed in experiment.SEEDS[1:]
+                for name, f1 in (("native_fixed", .5), ("frequency", .5 + gain))]
+        return plan, selection, rows
+
+    def test_duplicate_confirmation_cannot_inflate_below_threshold_mean(self):
+        plan, selection, rows = self.confirmation_fixture()
+        result = experiment.paired_table(rows, plan, selection=selection)["confirmation"]
+        self.assertAlmostEqual(result["mean_macro_delta"], .002)
+        self.assertEqual(result["recommendation"], "retain_incumbent")
+        duplicated = rows + [deepcopy(row) for row in rows if row["candidate"] == "frequency"]
+        with self.assertRaisesRegex(ValueError, "Duplicate outcome identity"):
+            experiment.paired_table(duplicated, plan, selection=selection)
+        with self.assertRaisesRegex(ValueError, "Duplicate outcome identity"):
+            experiment.paired_table(rows + [deepcopy(rows[0])], plan, selection=selection)
+
+    def test_valid_complete_confirmation_preserves_acceptance_formula(self):
+        plan, selection, rows = self.confirmation_fixture(gain=.004)
+        result = experiment.paired_table(rows, plan, selection=selection)["confirmation"]
+        self.assertEqual(result["status"], "confirmed")
+        self.assertAlmostEqual(result["mean_macro_delta"], .004)
+        self.assertAlmostEqual(result["mean_other_class_contribution"], .002)
+        self.assertEqual(result["recommendation"], "integration_pending")
+
+    def test_confirmation_is_bound_to_one_frozen_finalist(self):
+        plan, selection, rows = self.confirmation_fixture()
+        with self.assertRaisesRegex(ValueError, "verified frozen finalist"):
+            experiment.paired_table(rows, plan)
+        with self.assertRaisesRegex(ValueError, "single frozen finalist"):
+            experiment.paired_table(rows, plan, selection=dict(selection, candidate="asymmetry"))
+        extra = dict(rows[1], candidate="asymmetry")
+        with self.assertRaisesRegex(ValueError, "single frozen finalist"):
+            experiment.paired_table(rows + [extra], plan, selection=selection)
+        with self.assertRaisesRegex(ValueError, "without a frozen finalist"):
+            experiment.paired_table(rows, plan, selection=dict(selection, candidate=None))
+
+    def test_incomplete_or_failed_pair_never_becomes_confirmed(self):
+        plan, selection, rows = self.confirmation_fixture(gain=.01)
+        for index in (0, 1):
+            with self.subTest(missing_row=index):
+                partial = rows[:index] + rows[index + 1:]
+                result = experiment.paired_table(partial, plan, selection=selection)["confirmation"]
+                self.assertEqual(result["status"], "confirmation_incomplete")
+                self.assertEqual(result["recommendation"], "retain_incumbent")
+                with self.assertRaisesRegex(ValueError, "Missing planned confirmation"):
+                    experiment.validate_outcomes(partial, selection=selection, complete_confirmation=True)
+        rows[1]["status"] = "failed"
+        result = experiment.paired_table(rows, plan, selection=selection)["confirmation"]
         self.assertEqual(result["recommendation"], "retain_incumbent")
 
     def test_input_mutation_rejected_before_loading_task(self):
@@ -261,6 +317,35 @@ class Round4AuditTests(unittest.TestCase):
             row["invocation_inputs"][str(invocation / "fit.csv")] = experiment.digest(invocation / "fit.csv")
             with self.assertRaisesRegex(ValueError, "rows differ"):
                 self.check(output, fixture)
+
+    def test_audit_rejects_duplicate_before_claiming_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            fixture = self.fixture(output)
+            fixture[5].append(deepcopy(fixture[4]))
+            with self.assertRaisesRegex(ValueError, "Duplicate outcome identity"):
+                self.check(output, fixture)
+            self.assertFalse((output / "audit.json").exists())
+            self.assertFalse((output / "experiments.json").exists())
+
+    def test_audit_rejects_multiple_finalists_and_missing_seed_before_receipt_audit(self):
+        for multiple in (True, False):
+            with self.subTest(multiple_finalists=multiple), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary)
+                fixture = self.fixture(output)
+                experiment.write_new(output / "confirmation_selection.json", {})
+                fixture[5].extend([
+                    {"stage": "confirm", "candidate": "native_fixed", "seed": 43},
+                    {"stage": "confirm", "candidate": "frequency", "seed": 43},
+                ])
+                if multiple:
+                    fixture[5].append({"stage": "confirm", "candidate": "asymmetry", "seed": 43})
+                selection = {"candidate": "frequency", "seeds": list(experiment.SEEDS[1:])}
+                reason = "single frozen finalist" if multiple else "Missing planned confirmation"
+                with patch.object(experiment, "freeze_selection", return_value=selection), \
+                        self.assertRaisesRegex(ValueError, reason):
+                    self.check(output, fixture)
+                self.assertFalse((output / "audit.json").exists())
 
 
 if __name__ == "__main__":
