@@ -395,14 +395,15 @@ def _fixture_contract(task, audit, case):
     return contract
 
 
-def _automl_fixture_resources(execution, report, evidence, task, report_path):
-    """Use observed full child executions, not lossy AutoML row aggregates."""
+def _automl_resource_evidence(report, evidence, task, run_dirs):
+    """Inventory every native phase; compact candidate rows lose cleanup."""
+    run_dirs = {safe_path(directory) for directory in run_dirs}
     executions, observed, observed_dirs = [], set(), set()
     for item in evidence.get("observations", []):
         if not isinstance(item, dict) or item.get("phase") != "automl_execution":
             continue
         directory = _path(task, item.get("directory"))
-        require(directory.is_relative_to(report_path.parent),
+        require(directory.parent.parent in run_dirs,
                 "Observed AutoML child is outside the exact current run")
         config = read_json(directory / "config.json")
         identifier = config.get("id")
@@ -417,23 +418,82 @@ def _automl_fixture_resources(execution, report, evidence, task, report_path):
         observed_dirs.add(directory)
         executions.append(result)
     unknown = []
+
+    def missing(row):
+        resources = row.get("resources") or {}
+        item = {"resources": {"available": False}, "error": row.get("error"),
+                "timed_out": bool(resources.get("timed_out") or row.get("status") == "timed_out"),
+                "memory_limit_exceeded": bool(resources.get("memory_exceeded"))}
+        if "exit_code" in resources:
+            item["exit_code"] = resources["exit_code"]
+        return item
+
     for row in report.get("search", {}).get("candidates", []):
         if isinstance(row, dict) and (row.get("resources") or row.get("error")) and row.get("id") not in observed:
-            unknown.append({"resources": {"available": False},
-                            "error": row.get("error")})
+            unknown.append(missing(row))
         if isinstance(row, dict) and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]+", row["id"]):
-            candidate_dir = report_path.parent / row["id"]
-            if candidate_dir.is_dir():
-                for phase_dir in candidate_dir.iterdir():
-                    if (phase_dir.is_dir() and (phase_dir / "config.json").is_file()
-                            and (phase_dir / "execution").is_dir() and phase_dir not in observed_dirs):
-                        unknown.append({"resources": {"available": False}, "error": row.get("error")})
+            for run_dir in run_dirs:
+                candidate_dir = run_dir / row["id"]
+                if candidate_dir.is_dir():
+                    for phase_dir in candidate_dir.iterdir():
+                        if (phase_dir.is_dir() and (phase_dir / "config.json").is_file()
+                                and (phase_dir / "execution").is_dir() and phase_dir not in observed_dirs):
+                            unknown.append(missing(row))
+    for item in evidence.get("observations", []):
+        if isinstance(item, dict) and item.get("phase") == "automl_observer_error":
+            unknown.append({"resources": {"available": False},
+                            "error": item.get("error") or "AutoML observation failed"})
     if not executions:
         unknown.append({"resources": {"available": False}})
     # A fully observed outer tree alone does not prove every nested attempt's
     # inventory/cleanup. Missing old-worker observations remain provisional,
     # or censored when the corresponding native trial failed.
-    return _resource(execution, {"executions": executions, "unobserved": unknown})
+    return {"executions": executions, "unobserved": unknown}
+
+
+def _automl_fixture_resources(execution, report, evidence, task, report_path):
+    return _resource(execution, _automl_resource_evidence(
+        report, evidence, task, [report_path.parent]))
+
+
+def _research_resources(execution, report, evidence, task, report_path):
+    """Replace only baseline AutoML's lossy rows with observed child results.
+
+    The native report stays byte-identical. A timed-out search attempt is safe
+    only with its own cleanup proof, never inferred from outer-tree cleanup.
+    """
+    baseline = report.get("baseline_search")
+    if not isinstance(baseline, dict) or not isinstance(baseline.get("execution"), dict):
+        return _resource(execution, report)
+    startup = report_path.parent / "startup" / "automl_report.json"
+    native = read_json(startup) if startup.is_file() else {"search": baseline.get("search") or {}}
+    if "search" in baseline:
+        require(native.get("search") == baseline["search"],
+                "Baseline search differs from exact saved native AutoML report")
+    nested = report_path.parent / "workspace" / ".agent_runs"
+    run_dirs = []
+    if nested.is_dir():
+        for directory in nested.iterdir():
+            require(re.fullmatch(r"[0-9a-f]{32}", directory.name) and safe_path(directory).is_dir(),
+                    "Unexpected nested baseline AutoML run")
+            run_dirs.append(directory)
+    require(len(run_dirs) <= 1, "Ambiguous nested baseline AutoML run")
+    observed = _automl_resource_evidence(native, evidence, task, run_dirs)
+    markers = [item for item in evidence.get("observations", [])
+               if isinstance(item, dict) and item.get("phase") == "automl_observer_complete"]
+    if markers:
+        require(len(markers) == 1, "Ambiguous baseline AutoML observer seal")
+        marker = markers[0]
+        sidecar = _path(task, marker.get("path"))
+        require(sidecar == startup.parent / "automl_observations.json"
+                and file_hash(sidecar) == marker.get("sha256"), "Baseline AutoML observer seal differs")
+    elif observed["executions"]:
+        observed["unobserved"].append({"resources": {"available": False},
+                                       "error": "Missing baseline AutoML observer seal"})
+    normalized = {**report, "baseline_search": {key: value for key, value in baseline.items()
+                                               if key != "search"},
+                  "baseline_automl_executions": observed}
+    return _resource(execution, normalized)
 
 
 def _load(output, *, execution=True):
@@ -596,6 +656,11 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
     if automl_fixture and report is not None:
         try:
             resources = _automl_fixture_resources(state.get("execution"), report, evidence, task, report_path)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+            errors.append(type(error).__name__ + ": " + str(error)[:700])
+    elif report is not None and evidence is not None:
+        try:
+            resources = _research_resources(state.get("execution"), report, evidence, task, report_path)
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
             errors.append(type(error).__name__ + ": " + str(error)[:700])
     execution = state.get("execution") or {}
