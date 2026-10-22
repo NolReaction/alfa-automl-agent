@@ -116,10 +116,11 @@ provenance. Baseline publication after a losing Qwen candidate can pass INNER
 integration without refitting that loser. Full Qwen publication is a separate
 claim requiring the same admitted Qwen recipe and matching fresh CSV digest.
 
-The captain must update three pre-existing `tests/test_research_smoke.py`
-fixtures outside this branch's file ownership: add verified `origin=llm` INNER
-event identities and genuine winning-recipe outer/refit receipts, or expect
-incomplete evidence. Names and observed failures are listed in the report.
+The captain migrated three pre-existing `tests/test_research_smoke.py`
+fixtures after handoff: added verified `origin=llm` INNER event identities and
+synthetic winning-recipe outer/refit receipts. All 11 old smoke tests now pass;
+the full targeted set is 96 passing tests in the pinned core environment.
+Names and original failures are retained in the report.
 Never weaken the new checks just to accept counters or hash-shaped strings.
 
 No platform score, live tool compatibility, live INNER trial or live payload

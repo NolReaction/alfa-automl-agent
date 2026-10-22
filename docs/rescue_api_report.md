@@ -44,6 +44,20 @@ and `SYSTEM_V3` remain distinct and both unchanged.
 
 ## Validation
 
+Captain integration review, 22 October 2026: the three old smoke fixtures below
+were migrated without weakening the evidence gate. The complete targeted set,
+including all 11 old smoke tests, passed **96 tests** in two invocations
+(51 in 16.251 seconds and 45 in 0.989 seconds), with zero network/API calls.
+This rerun used Python 3.12.14 and the repository's pinned numerical core:
+NumPy 1.26.4, SciPy 1.12.0, pandas 2.2.3, scikit-learn 1.5.2, CatBoost 1.2.8
+and LightGBM 4.6.0. AutoGluon was absent; this is not full platform qualification.
+The isolated probe/public export review found no blocking issue. The receipt
+summary trusts the native host's verified artifacts; it is not an independent
+audit of context nonces, source bytes or full-fit input rows. Live Qwen behavior
+and the inactive context helper's quality benefit remain unverified.
+
+The original author validation below is retained as historical evidence.
+
 The final targeted suite passed **85 tests in 21.685 seconds**, including the
 supervisor, flat-ZIP imports and combined staged replay through the actual host.
 The runtime source is the commit above; the later evidence-only commit adds
@@ -72,7 +86,7 @@ SIGBUS during import in this execution host, before tests. The local override
 was removed and tests rerun with the working runtime. **Exact official pinned
 numerical-environment validation remains pending.** Requirements were not changed.
 
-### Known old-suite migration failures, not hidden
+### Original old-suite migration failures — resolved in captain review
 
 `python -m unittest tests.test_research_smoke -v`: **8 pass, 3 fail**.
 
@@ -82,10 +96,13 @@ numerical-environment validation remains pending.** Requirements were not change
 | `test_explicit_execute_shares_request_budget_and_records_both_tasks` | Same synthetic success assertion without recipe/receipt proof; exit is now 1 |
 | `test_generated_candidate_requires_matching_outer_refit_receipts_and_published_bytes` | Candidate hashes/receipts have no matching verified `origin=llm` INNER event |
 
-Those old test files are outside the explicit file ownership and are unchanged.
+Those old test files were outside the original author's explicit file ownership.
 New `test_rescue_api_smoke` tests prove both full Qwen provenance and correct
 baseline finalization after a losing Qwen trial. This is not an all-suite-green
-claim; migrate the three fixtures before merging.
+claim for the original commit. The captain subsequently added verified LLM
+INNER events and winning baseline/candidate receipts to these fixtures; all
+11 old smoke tests now pass, including assertions that baseline publication
+does not imply a Qwen full refit.
 
 ## Recorded staged mock probe
 
