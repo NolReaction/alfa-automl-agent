@@ -76,7 +76,7 @@ def _remaining(deadline: float) -> float:
 
 def _offline_solution(task_path, *, deadline, validation, quality_options):
     if (quality_options.get("history_config") is not None or quality_options.get("history_auto")
-            or quality_options.get("adaptive_search")):
+            or quality_options.get("adaptive_search") or quality_options.get("finalist_selection")):
         # History uses the same v3 INNER/outer/refit protocol as LLM
         # research, with no client construction or paid requests.
         if validation != {"strategy": "auto"}:
@@ -150,6 +150,8 @@ def main() -> int:
     parser.add_argument("--time-column", help="Numeric period feature for --validation time")
     parser.add_argument("--stability-splits", type=int, choices=(1, 2, 3), default=1,
                         help="Experimental paired inner checks of finalists; default 1 (disabled)")
+    parser.add_argument("--finalist-selection", action="store_true",
+                        help="Experimentally recheck up to three measured finalists; requires --stability-splits 2 or 3")
     parser.add_argument("--metric-recipes", action="store_true",
                         help="Experimentally add metric-aware regression recipes to startup AutoML")
     parser.add_argument("--history-config", help="Experimental inline JSON or @JSON-file key/period configuration; time regression only")
@@ -170,6 +172,12 @@ def main() -> int:
         quality_options = {}
         if args.stability_splits != 1:
             quality_options["stability_splits"] = args.stability_splits
+        if args.finalist_selection:
+            if args.stability_splits < 2:
+                raise ValueError("--finalist-selection requires --stability-splits 2 or 3")
+            if args.validation not in {None, "auto"} or args.time_column is not None:
+                raise ValueError("Finalist selection uses v3 auto validation; omit validation overrides")
+            quality_options["finalist_selection"] = True
         if args.metric_recipes:
             quality_options["metric_recipes"] = True
         if args.search_profile != "legacy":

@@ -131,9 +131,15 @@ def _recipe_from_report(report, task_type):
 
 
 class V3State(RunState):
-    def __init__(self, task_path, max_steps, time_budget, *, adaptive_search=False):
+    def __init__(self, task_path, max_steps, time_budget, *, adaptive_search=False,
+                 finalist_selection=False, stability_splits=1):
         if type(adaptive_search) is not bool:
             raise ValueError("adaptive_search must be a boolean")
+        if type(finalist_selection) is not bool:
+            raise ValueError("finalist_selection must be a boolean")
+        if (type(stability_splits) is not int or stability_splits not in {1, 2, 3}
+                or finalist_selection and stability_splits < 2):
+            raise ValueError("Finalist selection requires two or three stability splits")
         super().__init__(task_path, max_steps, time_budget)
         self._accepted_backup_hash = None
         self.gate = None
@@ -143,6 +149,14 @@ class V3State(RunState):
         self.best_inner = None
         self.dialogue_closed = False
         self.tried_recipes = []
+        self.finalist_selection = finalist_selection
+        self.finalist_splits = stability_splits
+        self._checking_finalists = False
+        self._finalist_split_cache = None
+        self.finalist_pool = None
+        if finalist_selection:
+            from agent.research_finalists import FinalistPool
+            self.finalist_pool = FinalistPool()
         self.adaptive_search = adaptive_search and time_budget > ADAPTIVE_RESERVE_MIN_BUDGET
         self.budget = BudgetPolicy(time_budget, started=self.started, adaptive_reserve=self.adaptive_search)
         self.report.update(research_protocol_version=3, stage="preparation",
@@ -188,8 +202,16 @@ class V3State(RunState):
         return candidate.code_hash + ":" + candidate.recipe_hash
 
     def finalization_plan(self, candidate=None):
-        gate = self.gate
         candidate = candidate if candidate is not None else self.selected_candidate
+        return self._finalization_plan_for(candidate)
+
+    def _finalization_plan_for(self, candidate):
+        gate = self.gate
+        # The baseline is already budgeted as the recovery recipe; do not
+        # budget another copy when it participates in the finalist comparison.
+        if (candidate is not None and self.baseline is not None
+                and self.recipe_key(candidate) == self.recipe_key(self.baseline)):
+            candidate = None
         return self.budget.finalization_estimate(
             baseline_key=self.recipe_key(self.baseline) if self.baseline is not None else "baseline_pending",
             candidate_key=self.recipe_key(candidate) if candidate is not None else None,
@@ -201,7 +223,81 @@ class V3State(RunState):
         return self.finalization_plan().reserve_seconds
 
     def research_timeout(self, maximum=1800):
-        return self.budget.research_timeout(self.finalization_plan(), maximum=maximum)
+        if not self.finalist_selection:
+            return self.budget.research_timeout(self.finalization_plan(), maximum=maximum)
+        finalists = getattr(self, "_active_finalist_shortlist", None)
+        if finalists is None:
+            finalists = self.finalist_shortlist()
+        timeout = self.finalist_research_timeout(finalists, maximum=maximum)
+        reserved = 0.0
+        if not self._checking_finalists and len(finalists) > 1:
+            for fitting, held, _metadata in self.finalist_inner_splits():
+                reserved += sum(self.estimate_research_cost(entry["candidate"],
+                    fit_rows=len(fitting), predict_rows=len(held)) for entry in finalists)
+            # Subtract from the spare time BEFORE capping a new trial. Subtracting
+            # from an already capped timeout could starve otherwise feasible work.
+            spare = self.finalist_research_timeout(finalists, maximum=10500)
+            timeout = min(timeout, max(0.0, spare - reserved))
+        self.report["finalist_budget"] = {
+            "scope": "inner_selection", "finalists": len(finalists),
+            "estimated_repeat_reserve_seconds": reserved,
+            "checking_finalists": self._checking_finalists,
+            "maximum_experiment_seconds": timeout, "guaranteed": False,
+        }
+        return timeout if timeout >= 1.0 else 0.0
+
+    def finalist_shortlist(self):
+        if (self.finalist_pool is None or self.baseline is None
+                or self.baseline_inner is None):
+            return []
+        try:
+            entries = self.finalist_pool.shortlist(self.baseline, self.baseline_inner,
+                self.selected_candidate, self.best_inner if self.selected_candidate is not None else None)
+        except Exception:
+            # A subsequently passing check cannot erase an already observed
+            # breach of a retained frozen identity or canonical host score.
+            self._local_integrity_failed = True
+            raise
+        return [entry for entry in entries if entry["id"] != "alternative"
+                or self.can_finalize_candidate(entry["candidate"])]
+
+    def can_finalize_candidate(self, candidate):
+        try:
+            candidate.verify()
+        except Exception:
+            self._local_integrity_failed = True
+            raise
+        plan = self._finalization_plan_for(candidate)
+        return (plan.estimated_seconds <= self.remaining()
+                and all(value <= 1800 for name, value in plan.stage_seconds.items()
+                        if name.startswith("candidate_")))
+
+    def finalist_research_timeout(self, finalists, maximum=3600):
+        # Every possible winner retains its own outer/full-refit reserve. A
+        # cheap current winner cannot lend its timing to an expensive runner-up.
+        candidates = [entry["candidate"] for entry in finalists] or [self.selected_candidate]
+        return min(self.budget.research_timeout(self._finalization_plan_for(candidate),
+                   maximum=maximum) for candidate in candidates)
+
+    def finalist_inner_splits(self):
+        if self._finalist_split_cache is None:
+            from agent.stability import additional_inner_splits
+            gate = self.gate
+            try:
+                target = gate.research_train[gate.spec.target_column]
+                if not gate.classification:
+                    target = pd.to_numeric(target, errors="raise")
+                self._finalist_split_cache = additional_inner_splits(
+                    gate.research_train, target, gate.features, gate.classification, gate.choice,
+                    canonical=(gate.fit_rows, gate.held_rows), limit=self.finalist_splits - 1)
+            except (ValueError, TypeError) as error:
+                # An unavailable extra split is not permission to invent a new
+                # random policy. Integrity checks live outside this boundary.
+                self._finalist_split_cache = []
+                self.report["finalist_split_preparation"] = {
+                    "status": "skipped", "reason": "extra_splits_unavailable",
+                    "error_type": type(error).__name__, "scope": "inner_selection"}
+        return self._finalist_split_cache
 
     def record_timing(self, candidate, started, fit_rows, predict_rows):
         self.budget.record_measurement(self.recipe_key(candidate),
@@ -384,6 +480,12 @@ def _assess_candidate(state, candidate, hypothesis, *, origin):
     within_stage_limit = all(value <= 1800 for name, value in plan.stage_seconds.items()
                              if name.startswith("candidate_"))
     feasible = plan.estimated_seconds <= state.remaining() and within_stage_limit
+    if getattr(state, "finalist_pool", None) is not None and feasible:
+        # Family is display/grouping metadata, not an additional schema imposed
+        # on otherwise valid custom Python recipes. Keep the host label bounded.
+        family = recipe.get("action") or recipe.get("family")
+        family = family.strip()[:120] if isinstance(family, str) else "custom"
+        state.finalist_pool.record(candidate, result.metric, family=family or "custom")
     if better and feasible:
         state.selected_candidate, state.best_inner = candidate, result.metric
         state.report["improvements"] += 1
@@ -519,6 +621,8 @@ def continue_locally(state):
                 state.selected_candidate.verify()
             for candidate in getattr(state, "_local_frozen_attempts", ()):
                 candidate.verify()
+            if getattr(state, "finalist_selection", False):
+                state.finalist_shortlist()
         except Exception:
             # A later passing verifier cannot erase a known protocol breach.
             # This marker is host memory only and is not supplied to workers.
@@ -664,6 +768,8 @@ def finalize(state, reason):
     state.check_source()
     state.gate.check_inputs()
     state.transition("candidate_frozen")
+    if getattr(state, "finalist_selection", False):
+        state.finalist_shortlist()
     candidate = state.selected_candidate
     for item in (state.baseline, candidate):
         if item is not None:
@@ -904,6 +1010,8 @@ def _recover_after_unexpected_error(state):
             candidate.verify()
     for candidate in getattr(state, "_local_frozen_attempts", ()):
         candidate.verify()
+    if getattr(state, "finalist_selection", False):
+        state.finalist_shortlist()
     if state._accepted_backup_hash is None or not state.recover():
         return None
     state.report["recovery"] = {"status": "restored", "kind": "accepted_checkpoint",
@@ -921,7 +1029,7 @@ def _recover_after_unexpected_error(state):
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False, search_profile="legacy",
                  history_config=None, history_weight=0.5, local_only=False, history_auto=False,
-                 adaptive_search=False):
+                 adaptive_search=False, finalist_selection=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -935,12 +1043,20 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("history_auto must be a boolean")
     if type(adaptive_search) is not bool:
         raise ValueError("adaptive_search must be a boolean")
+    if type(finalist_selection) is not bool:
+        raise ValueError("finalist_selection must be a boolean")
+    if finalist_selection and stability_splits < 2:
+        raise ValueError("Finalist selection requires two or three stability splits")
     if history_auto and (history_config is not None or history_weight != 0.5):
         raise ValueError("Automatic history uses its own config and fixed weight 0.5")
     from agent.history_runtime import normalize_history_options
     history_options = normalize_history_options(history_config, history_weight)
-    state = (V3State(Path(task_path).resolve(), max_steps, time_budget, adaptive_search=True)
-             if adaptive_search else V3State(Path(task_path).resolve(), max_steps, time_budget))
+    state_options = {}
+    if adaptive_search:
+        state_options["adaptive_search"] = True
+    if finalist_selection:
+        state_options.update(finalist_selection=True, stability_splits=stability_splits)
+    state = V3State(Path(task_path).resolve(), max_steps, time_budget, **state_options)
     state.report["quality_options"] = {"stability_splits": stability_splits,
         "metric_recipes": metric_recipes, "search_profile": search_profile}
     if history_options is not None:
@@ -954,6 +1070,8 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
             "minimum_long_budget_seconds": ADAPTIVE_RESERVE_MIN_BUDGET,
             "local_trial_limit": 64, "extension_trial_limit": 6,
             "api_request_limit": max_steps}
+    if finalist_selection:
+        state.report["quality_options"]["finalist_selection"] = True
     if local_only:
         state.report["mode"] = "local_only"
     try:
