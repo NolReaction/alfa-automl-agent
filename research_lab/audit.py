@@ -360,6 +360,37 @@ def _automl_fixture_chain(task, report_path, report, audit):
                       "predict_rows": len(audit["test_ids"]), "output_sha256": published}}
 
 
+def _fixture_contract(task, audit, case):
+    """Join the fixture's output-only audit contract to its sealed TaskSpec.
+
+    unseen_cases.materialize_case deliberately supplies an output schema, not a
+    complete native TaskSpec. The plan separately freezes the full TaskSpec;
+    missing optional schema fields must not be guessed or treated as conflicts.
+    """
+    from agent.task_spec import load_task
+
+    native = load_task(task / "task.md")
+    contract, frozen = native.to_dict(), case.get("spec")
+    require(isinstance(frozen, dict), "Fixture has no separately sealed full TaskSpec")
+    for key in ("version", "id_column", "target_column", "features", "numeric", "categorical",
+                "classes", "output_columns", "probability_columns", "positive_class", "metric"):
+        require(contract.get(key) == frozen.get(key), "Fixture TaskSpec differs from sealed plan: " + key)
+    contract["prediction_kind"] = native.prediction_kind
+    declared = audit.get("contract")
+    required = {"id_column", "target_column", "classes", "output_columns",
+                "probability_columns", "positive_class", "prediction_kind"}
+    require(isinstance(declared, dict) and required <= declared.keys(),
+            "Fixture external audit output contract is incomplete")
+    for key, value in declared.items():
+        # Full real-data contracts can also carry template-local absolute paths.
+        if key not in {"task_path", "data_dir"}:
+            require(key in contract and contract[key] == value,
+                    "Fixture external audit contract differs: " + key)
+    require(audit.get("metric") == native.metric.name,
+            "Fixture external audit metric differs from native TaskSpec")
+    return contract
+
+
 def _automl_fixture_resources(execution, report, evidence, task, report_path):
     """Use observed full child executions, not lossy AutoML row aggregates."""
     executions, observed, observed_dirs = [], set(), set()
@@ -452,6 +483,8 @@ def audit_arm(output, case, arm, worker_evidence, plan=None):
         _sealed(not audit_path.is_relative_to(arm_dir), "External audit answers are inside solver arm")
         _sealed(file_hash(audit_path) == case["audit_sha256"], "External audit labels/contract changed")
         host_audit = read_json(audit_path)
+        if fixture:
+            host_audit = {**host_audit, "contract": _fixture_contract(task, host_audit, case)}
         from qualify_unseen_tasks import audit_submission
         external = audit_submission(task / "submission.csv", host_audit)
         pointer = evidence.get("run_report")

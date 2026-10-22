@@ -104,6 +104,39 @@ class XGBoostPlanTests(unittest.TestCase):
                 with self.subTest(path=path), self.assertRaises(ValueError):
                     experiment.prepare(path)
 
+    def test_direct_plan_api_canonicalizes_paths_and_preserves_escape_rejection(self):
+        with raw_root() as root:
+            output = root / "plan"
+            plan = experiment.prepare(output, ["regression_random_mae"])
+            traversal = root / "traversal"
+            traversal.mkdir()
+            noncanonical = traversal / ".." / "plan"
+            self.assertEqual(experiment.load_plan(noncanonical), plan)
+            relative = next(iter(plan["cases"][0]["files"]))
+            self.assertEqual(experiment._path(noncanonical, relative), (output / relative).resolve())
+            for escaped in ("../outside.csv", str((root.parent / "outside.csv").resolve())):
+                with self.subTest(path=escaped), self.assertRaisesRegex(ValueError, "escapes output"):
+                    experiment._path(noncanonical, escaped)
+
+    def test_directory_alias_loads_plan_against_the_canonical_boundary(self):
+        with raw_root() as root:
+            root.mkdir()
+            alias = root.parent / "raw_alias"
+            try:
+                alias.symlink_to(root, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest("Directory symlinks are unavailable: " + str(error))
+            try:
+                output = alias / "plan"
+                plan = experiment.prepare(output, ["regression_random_mae"])
+                self.assertEqual(experiment.load_plan(output), plan)
+                relative = next(iter(plan["cases"][0]["files"]))
+                self.assertEqual(experiment._path(output, relative), (root / "plan" / relative).resolve())
+                with self.assertRaisesRegex(ValueError, "escapes output"):
+                    experiment._path(output, "../../outside.csv")
+            finally:
+                alias.unlink()
+
     def test_changed_inputs_sources_or_recipes_are_rejected_before_running(self):
         with raw_root() as root:
             output = root / "sealed"

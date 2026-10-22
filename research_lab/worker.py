@@ -142,6 +142,13 @@ def execute(config_path, deadline):
 
     persist()
     try:
+        # -I ignores Python's encoding environment variables. Redirected Windows
+        # streams may otherwise use cp1252 and reject native Cyrillic progress
+        # messages before training. This changes log transport only.
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
         os.chdir(task_dir)
         # -I excludes ambient PYTHONPATH/cwd injection. Preserve the selected
         # interpreter's libraries, including a venv inside the auditor checkout.

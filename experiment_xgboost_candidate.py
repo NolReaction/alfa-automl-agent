@@ -134,6 +134,7 @@ def _relative(output, path):
 
 def _path(output, relative):
     require(isinstance(relative, str) and relative, "Missing evidence path")
+    output = Path(output).resolve()
     path = (output / relative).resolve()
     require(path.is_relative_to(output), "Evidence path escapes output")
     return path
@@ -208,6 +209,7 @@ def prepare(output_dir, names=None):
 
 
 def load_plan(output, *, execution=True):
+    output = _output_root(output)
     plan = read_json(output / "plan.json")
     require(plan.get("version") == PLAN_VERSION
             and plan.get("author_base_sha") == AUTHOR_BASE_SHA, "Unsupported plan")

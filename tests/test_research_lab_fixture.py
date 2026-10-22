@@ -10,20 +10,32 @@ from unittest.mock import patch
 
 from agent.automl import data_fingerprint
 from agent.search import seed_candidate
-from agent.task_spec import load_task
+from agent.task_spec import load_task, score_holdout
 from offline_baseline import read_csv
 from research_lab import audit
 from research_lab.integrity import file_hash, read_json, write_json
 from tests.test_research_lab_audit import fixture, terminal
 
 
-def automl_fixture(root, *, refit=False):
+def automl_fixture(root, *, refit=False, materialized=False):
     """Saved trusted-code protocol fixture; no candidate is imported or fitted."""
     case, plan, worker, old_run = fixture(root)
     task = old_run.parent.parent
+    if materialized:
+        from unseen_cases import materialize_case
+        shutil.rmtree(task)
+        metadata = materialize_case("flow_rmse", task, seed=1729)
+        write_json(case["audit_path"], metadata)
+        case["audit_sha256"] = file_hash(case["audit_path"])
+        case["input_hashes"] = metadata["input_sha256"]
+        materialized_spec = load_task(task / "task.md")
+        materialized_spec.prediction_frame(metadata["test_ids"], metadata["audit_actuals"]).to_csv(
+            task / "submission.csv", index=False)
     spec = load_task(task / "task.md")
-    shutil.rmtree(old_run)
-    (task / "solver_output" / "research_benchmark.json").unlink()
+    case["spec"] = spec.to_dict()
+    if old_run.exists():
+        shutil.rmtree(old_run)
+    (task / "solver_output" / "research_benchmark.json").unlink(missing_ok=True)
     run = task / ".agent_runs" / ("d" * 32)
     identifier = "candidate_1" if refit else "seed"
     phase_name = "refit" if refit else "seed"
@@ -35,14 +47,15 @@ def automl_fixture(root, *, refit=False):
     for path in spec.data_dir.iterdir():
         shutil.copyfile(path, inputs / path.name)
     (phase / "task.md").write_bytes((task / "task.md").read_bytes())
-    recipe = seed_candidate(True)
+    recipe = seed_candidate(spec.classification)
     recipe["id"] = identifier
-    fitting, held = list(range(40)), list(range(40, 60))
+    train = read_csv(inputs / "train.csv")
+    boundary = len(train) * 2 // 3
+    fitting, held = list(range(boundary)), list(range(boundary, len(train)))
     local = replace(spec, task_path=phase / "task.md", data_dir=inputs)
     write_json(phase / "config.json", {**recipe, "candidate_dir": str(phase),
         "phase": phase_name, "task_spec": local.to_dict(), "fit_rows": fitting,
         "validation_rows": held})
-    train = read_csv(inputs / "train.csv")
     held_frame = spec.holdout_frame(train[spec.id_column].iloc[held],
         train[spec.target_column].iloc[held], train[spec.target_column].iloc[held])
     held_frame.to_csv(phase / "holdout_predictions.csv", index=False)
@@ -56,7 +69,7 @@ def automl_fixture(root, *, refit=False):
                                          "total_seconds": .11})
     execution = phase / "execution"
     execution.mkdir()
-    (execution / "0001.stdout.txt").write_text("seed: refitting on all 60 rows\n")
+    (execution / "0001.stdout.txt").write_text(f"{phase_name}: refitting on all {len(train)} rows\n")
     checkpoint = run / "checkpoints" / ("e" * 32)
     checkpoint.mkdir(parents=True)
     for name in ("submission.csv", "holdout_predictions.csv"):
@@ -70,7 +83,10 @@ def automl_fixture(root, *, refit=False):
     report = {"mode": "offline", "api": {"used": False, "calls": 0},
         "time_budget_seconds": 56, "elapsed_seconds": 10, "output_valid": True,
         "input_fingerprint": data_fingerprint(snapshot), "report_path": str(report_path),
-        "metric": {"name": "Accuracy", "value": 1.0, "higher_is_better": True},
+        "metric": {"name": spec.metric.name,
+                   "value": score_holdout(phase / "holdout_predictions.csv", spec,
+                       train[spec.id_column].iloc[held], train[spec.target_column].iloc[held]),
+                   "higher_is_better": spec.metric.higher_is_better},
         "search": {"status": "completed", "phase": "finished", "best_candidate": identifier,
                    "candidates": [{"id": identifier, "resources": {"available": True, "exit_code": 0}}]},
         "candidate_configs": {identifier: recipe["model_config"]},
@@ -95,6 +111,23 @@ def automl_fixture(root, *, refit=False):
 
 
 class FixtureRouteTests(unittest.TestCase):
+    def test_actual_unseen_case_output_only_contract_uses_separately_sealed_full_spec(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            case, plan, worker, _ = automl_fixture(root, materialized=True)
+            external = read_json(case["audit_path"])
+            self.assertNotIn("version", external["contract"])
+            self.assertNotIn("features", external["contract"])
+            self.assertIn("version", case["spec"])
+            result = audit.audit_arm(root, case, "incumbent", worker, plan)
+            self.assertTrue(result["mechanism_verified"], result)
+            self.assertFalse(result["quality_verified"])
+            self.assertEqual(result["provenance"]["refit"]["fit_rows"], 300)
+            self.assertEqual(result["audit"]["rows"], 80)
+            case["spec"]["features"] = ["wrong feature"]
+            changed = audit.audit_arm(root, case, "incumbent", worker, plan)
+            self.assertFalse(changed["mechanism_verified"])
+
     def test_selected_non_seed_full_refit_is_verified_from_its_exact_phase(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -108,6 +141,7 @@ class FixtureRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             case, plan, worker, _ = fixture(root)
+            case["spec"] = load_task(Path(case["arms"]["incumbent"]["task_dir"]) / "task.md").to_dict()
             plan["profile"] = "fixture-smoke"
             result = audit.audit_arm(root, case, "incumbent", worker, plan)
             self.assertTrue(result["mechanism_verified"], result)

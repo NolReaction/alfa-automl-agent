@@ -61,4 +61,11 @@ jobs:
                   and report['summary']['qualified_cpu_arms'] == 0
                   and report['quality_evidence'] is False):
               print((output / 'report.json').read_text(encoding='utf-8'))
+              for path in sorted(output.glob('cases/*/arms/*/worker_evidence.json')):
+                  worker = json.loads(path.read_text(encoding='utf-8'))
+                  print(str(path), json.dumps({key: worker.get(key) for key in
+                      ('solver_returned', 'cli_exit_code', 'terminal_error', 'run_report')},
+                      ensure_ascii=True))
+              for path in sorted(output.glob('cases/*/arms/*/execution/*.txt')):
+                  print(str(path), path.read_text(encoding='utf-8', errors='replace')[-5000:])
               raise SystemExit('Native fixture mechanism was not verified')

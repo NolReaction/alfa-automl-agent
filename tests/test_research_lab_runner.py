@@ -262,6 +262,37 @@ class ResearchLabRunnerTests(unittest.TestCase):
         self.assertTrue(evidence["observations"][1]["frozen_split"]["fit_rows"] == [0])
         self.assertTrue(len(evidence["observations"]) == 2)
 
+    def test_worker_uses_utf8_for_redirected_streams_before_solver_imports(self):
+        config, task, arm = worker_fixture(self.tmp_path)
+        solution = self.tmp_path / "solver" / "solution.py"
+        stdout_text = "Проверка импорта модели · готово"
+        stderr_text = "Диагностика модели · ошибок нет"
+        original = solution.read_text()
+        solution.write_text(
+            "import sys\nassert sys.flags.isolated == 1\n"
+            f"print({stdout_text!r}, flush=True)\n"
+            f"print({stderr_text!r}, file=sys.stderr, flush=True)\n" + original,
+            encoding="utf-8")
+        # -I ignores PYTHONIOENCODING/PYTHONUTF8. A redirected Windows child
+        # can therefore start with cp1252 even when its supervisor set UTF-8.
+        # Force that real stream state on every platform, then run the worker.
+        wrapper = (
+            "import runpy,sys\n"
+            "sys.stdout.reconfigure(encoding='cp1252', errors='strict')\n"
+            "sys.stderr.reconfigure(encoding='cp1252', errors='strict')\n"
+            f"sys.argv = {[str(WORKER), str(config), '--deadline', str(time.monotonic() + 10)]!r}\n"
+            f"runpy.run_path({str(WORKER)!r}, run_name='__main__')\n")
+        process = subprocess.run([sys.executable, "-I", "-c", wrapper],
+                                 capture_output=True, timeout=15)
+        evidence = read_json(arm / "worker_evidence.json")
+        self.assertEqual(process.returncode, 0, str(evidence.get("terminal_error")))
+        self.assertIsNone(evidence["terminal_error"])
+        self.assertEqual(process.stdout.decode("utf-8").splitlines(), [stdout_text])
+        self.assertEqual(process.stderr.decode("utf-8").splitlines(), [stderr_text])
+        self.assertTrue(evidence["solver_returned"])
+        self.assertTrue(0 < evidence["cli_time_budget_seconds"] < 8)
+        self.assertEqual(evidence["cli_argv"], json.loads((task / "argv.json").read_text()))
+
 
     def test_worker_captures_failed_native_state_without_claiming_return(self):
         tmp_path = self.tmp_path
