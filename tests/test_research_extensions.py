@@ -1,6 +1,7 @@
 """Host extension admission and failure isolation, with no model fitting."""
 
 import json
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -347,6 +348,119 @@ class ExtensionTests(unittest.TestCase):
             report = self.isolated("autogluon")
         self.assertEqual(report["trials"][5]["reason"], "autogluon_budget")
         ag.make_autogluon_recipe.assert_not_called()
+
+    def classification_policy(self, metric="Macro F1"):
+        self.state.gate.spec.metric = SimpleNamespace(task_type="classification", name=metric)
+        self.state.gate.choice = {"strategy": "grouped"}
+        self.state.gate.inner_split = {"strategy": "grouped"}
+        recipe = {"action": "linear", "model_config": make_model_config("linear", "classification"),
+                  "feature_config": normalize_feature_config()}
+        self.state.baseline = self.freeze("classification_baseline", recipe)
+
+    def isolated_xgboost(self, **kwargs):
+        names = {"_" + kind + "_trial": Mock(side_effect=extensions._Skip("fixture_skip"))
+                 for kind in extensions.KINDS if kind != "history"}
+        names["_history_trial"] = Mock(side_effect=AssertionError("Classification must not request history"))
+        with patch.multiple(extensions, **names):
+            return extensions.run_research_extensions(self.state, self.assess, **kwargs)
+
+    def test_macro_f1_reuses_history_slot_for_one_bounded_xgboost_candidate(self):
+        self.classification_policy()
+        self.state.gate.research_train = Mock(side_effect=AssertionError("Host factory must not inspect data"))
+        before = self.state.baseline.code_path.read_bytes(), self.state.baseline.recipe_path.read_bytes()
+        with patch.object(extensions, "package_version", return_value="2.1.4") as version:
+            report = self.isolated_xgboost()
+        version.assert_called_once_with("xgboost")
+        self.assertEqual([row["kind"] for row in report["trials"]],
+                         ["frequency", "xgboost", "boost_catboost", "boost_lightgbm", "ensemble", "autogluon"])
+        self.assertEqual((report["max_trials"], report["attempted"], report["verified"]), (6, 1, 1))
+        candidate = self.assess.call_args.args[1]
+        self.assertEqual(candidate.recipe["family"], "xgboost_native_v1")
+        self.assertEqual(candidate.recipe["task_type"], "classification")
+        self.assertEqual(candidate.recipe["metric"], "Macro F1")
+        self.assertEqual(candidate.recipe["validation"], self.state.gate.choice)
+        self.assertIsNot(candidate.recipe["validation"], self.state.gate.choice)
+        self.assertEqual(candidate.recipe["max_iterations"], 800)
+        self.assertEqual(candidate.recipe["stopping_rounds"], 50)
+        self.assertEqual(candidate.recipe["parameters"]["max_depth"], 6)
+        self.assertEqual(candidate.recipe["runtime"]["max_threads"], 8)
+        self.assertEqual(candidate.recipe["runtime"]["device"], "cpu")
+        self.assertEqual(self.assess.call_args.kwargs, {"origin": "local"})
+        self.assertEqual(before, (self.state.baseline.code_path.read_bytes(), self.state.baseline.recipe_path.read_bytes()))
+
+    def test_xgboost_missing_or_wrong_version_skips_without_assessment(self):
+        self.classification_policy()
+        for version, reason in ((PackageNotFoundError("xgboost"), "xgboost_unavailable"),
+                                ("1.0.0", "xgboost_version_mismatch")):
+            with self.subTest(version=str(version)):
+                options = {"side_effect": version} if isinstance(version, Exception) else {"return_value": version}
+                with patch.object(extensions, "package_version", **options):
+                    report = self.isolated_xgboost()
+                self.assertEqual(report["trials"][1]["reason"], reason)
+                self.assertEqual(report["attempted"], 0)
+        self.assess.assert_not_called()
+
+    def test_missing_xgboost_does_not_prevent_later_existing_candidate(self):
+        self.classification_policy()
+        trial = (BASELINE_SOURCE, self.state.baseline.recipe, "Existing controlled candidate")
+        names = {"_" + kind + "_trial": Mock(side_effect=extensions._Skip("fixture_skip"))
+                 for kind in extensions.KINDS}
+        names["_boost_catboost_trial"] = Mock(return_value=trial)
+        with patch.multiple(extensions, **names), \
+                patch.object(extensions, "package_version", side_effect=PackageNotFoundError("xgboost")):
+            report = extensions.run_research_extensions(self.state, self.assess)
+        self.assertEqual(report["trials"][1]["reason"], "xgboost_unavailable")
+        self.assertEqual(report["trials"][2]["status"], "completed")
+        self.assertEqual(report["attempted"], 1)
+        self.assess.assert_called_once()
+
+    def test_xgboost_route_preserves_regression_and_other_classification_metrics(self):
+        for task_type, metric in (("regression", "RMSE"), ("classification", "Accuracy"),
+                                  ("classification", "LogLoss")):
+            with self.subTest(task_type=task_type, metric=metric):
+                self.state.gate.spec.metric = SimpleNamespace(task_type=task_type, name=metric)
+                names = {"_" + kind + "_trial": Mock(side_effect=extensions._Skip("fixture_skip"))
+                         for kind in extensions.KINDS}
+                with patch.multiple(extensions, **names), \
+                        patch.object(extensions, "_xgboost_trial", side_effect=AssertionError("No XGBoost route")):
+                    report = extensions.run_research_extensions(self.state, self.assess)
+                self.assertEqual([row["kind"] for row in report["trials"]], list(extensions.KINDS))
+                self.assertEqual(report["max_trials"], 6)
+                names["_history_trial"].assert_called_once()
+        self.assess.assert_not_called()
+
+    def test_xgboost_obeys_existing_trial_cap_and_finalization_reserve(self):
+        self.classification_policy()
+        names = {"_" + kind + "_trial": Mock(side_effect=extensions._Skip("fixture_skip"))
+                 for kind in extensions.KINDS}
+        names["_frequency_trial"] = Mock(return_value=(BASELINE_SOURCE, self.state.baseline.recipe, "First candidate"))
+        with patch.multiple(extensions, **names), \
+                patch.object(extensions, "_xgboost_trial", side_effect=AssertionError("No budget for new candidate")):
+            report = extensions.run_research_extensions(self.state, self.assess, max_trials=1)
+        self.assertEqual(report["trials"][1]["reason"], "trial_limit")
+        self.assess.reset_mock()
+        self.state.research_timeout.return_value = 1
+        with patch.object(extensions, "_xgboost_trial", side_effect=AssertionError("Reserve is binding")):
+            report = extensions.run_research_extensions(self.state, self.assess)
+        self.assertEqual(report["attempted"], 0)
+        self.assertEqual(report["trials"][1]["reason"], "finalization_reserve")
+        self.assess.assert_not_called()
+
+    def test_optional_xgboost_failure_preserves_source_input_and_candidate_guards(self):
+        self.classification_policy()
+        with patch.object(extensions, "package_version", return_value="2.1.4"):
+            self.assess.side_effect = TimeoutError("Candidate timed out")
+            report = self.isolated_xgboost()
+        self.assertEqual(report["trials"][1]["status"], "failed")
+        self.assertEqual(report["accepted"], 0)
+        self.assess.reset_mock()
+        def mutate(_state, candidate, *_args, **_kwargs):
+            candidate.code_path.write_text("# corrupt frozen source", encoding="utf-8")
+            raise TimeoutError("Optional candidate fit failed")
+        self.assess.side_effect = mutate
+        with patch.object(extensions, "package_version", return_value="2.1.4"), \
+                self.assertRaisesRegex(ValueError, "Frozen candidate"):
+            self.isolated_xgboost()
 
 
 if __name__ == "__main__":

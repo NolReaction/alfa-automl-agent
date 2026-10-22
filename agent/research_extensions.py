@@ -10,6 +10,7 @@ are checked outside those exception handlers and always propagate.
 from __future__ import annotations
 
 from copy import deepcopy
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -93,6 +94,28 @@ def _history_trial(state, _finalist):
                                  discovered["blend_weight"])
     return (history_candidate_source(_source(state.baseline)), recipe,
             "Use one fit-feature-discovered history schema and a fixed past-only blend.")
+
+
+def _xgboost_trial(state, _finalist):
+    """One bounded ordinary Macro F1 alternative, never a forced publication."""
+    gate = state.gate
+    if gate.spec.metric.task_type != "classification" or gate.spec.metric.name != "Macro F1":
+        raise _Skip("macro_f1_classification_required")
+    from agent.xgboost_candidate import (FIXED_CONFIGURATIONS, XGBOOST_VERSION,
+                                         candidate_source, make_xgboost_recipe)
+
+    try:
+        installed = package_version("xgboost")
+    except PackageNotFoundError:
+        raise _Skip("xgboost_unavailable") from None
+    if installed != XGBOOST_VERSION:
+        raise _Skip("xgboost_version_mismatch")
+    recipe = make_xgboost_recipe("classification", "Macro F1", validation=deepcopy(gate.choice),
+        parameters=deepcopy(FIXED_CONFIGURATIONS["depth6_v1"]),
+        max_iterations=800, stopping_rounds=50)
+    return (candidate_source(), recipe,
+            "Compare one CPU XGBoost model with fit-only early stopping and a fresh full-fit refit; "
+            "the host still selects by Macro F1.")
 
 
 def _ordinary_components(candidate):
@@ -226,8 +249,14 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
     _guard(state, identity)
     factories = (_frequency_trial, _history_trial, _boost_catboost_trial,
                  _boost_lightgbm_trial, _ensemble_trial, _autogluon_trial)
+    kinds = KINDS
+    if state.gate.spec.metric.task_type == "classification" and state.gate.spec.metric.name == "Macro F1":
+        # History is regression-only. Reuse its skipped classification slot;
+        # preserve the regression queue, six-attempt cap and host deadlines.
+        kinds = (*KINDS[:1], "xgboost", *KINDS[2:])
+        factories = (*factories[:1], _xgboost_trial, *factories[2:])
     state.report.setdefault("extensions", {})["host_candidates"] = "adaptive_v1"
-    for kind, factory in zip(KINDS, factories):
+    for kind, factory in zip(kinds, factories):
         _guard(state, identity)
         entry = {"kind": kind, "status": "skipped", "reason": None, "attempted": False}
         report["trials"].append(entry)
