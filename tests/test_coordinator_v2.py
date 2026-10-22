@@ -348,10 +348,11 @@ class DialogueExitTests(unittest.TestCase):
                 self.assertEqual(origin, "local")
                 return feedback()
 
-            def extensions(current, assessor, *, max_trials):
+            def extensions(current, assessor, *, max_trials, prioritize):
                 self.assertIs(current, state)
                 self.assertIs(assessor, assess)
                 self.assertEqual(max_trials, 6)
+                self.assertTrue(prioritize)
                 order.append(("extensions", max_trials))
                 return {"attempted": 0}
 
@@ -360,7 +361,7 @@ class DialogueExitTests(unittest.TestCase):
                     patch("agent.research_extensions.run_research_extensions", side_effect=extensions), \
                     patch("agent.research_v3._assess_candidate", new=assess):
                 result = continue_locally(state)
-            self.assertEqual(order, [("local", 1.0), ("extensions", 6), ("local", 2.0)])
+            self.assertEqual(order, [("extensions", 6), ("local", 1.0), ("local", 2.0)])
             self.assertEqual(result["reason"], "queue_exhausted")
             self.assertEqual(state.report["api"]["attempts"], 0)
             self.assertEqual(state.report["successful_experiments"], 0)

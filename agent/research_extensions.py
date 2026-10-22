@@ -201,7 +201,7 @@ def _eligibility(state):
     return None
 
 
-def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
+def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS, prioritize=False):
     """Try at most six optional candidates without bypassing host admission.
 
     ``assess`` has the same signature as ``research_v3._assess_candidate``.
@@ -209,6 +209,8 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
     """
     if type(max_trials) is not int or not 1 <= max_trials <= MAX_EXTENSION_TRIALS:
         raise ValueError("Host extensions require one to six trial slots")
+    if type(prioritize) is not bool:
+        raise ValueError("prioritize must be a boolean")
     if not callable(assess):
         raise ValueError("Host extensions require the host candidate assessor")
     report = {"version": 1, "policy": "host_extensions_v1", "scope": "inner_selection",
@@ -226,8 +228,21 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
     _guard(state, identity)
     factories = (_frequency_trial, _history_trial, _boost_catboost_trial,
                  _boost_lightgbm_trial, _ensemble_trial, _autogluon_trial)
+    order = KINDS
+    if prioritize:
+        gate = state.gate
+        temporal_regression = (gate.spec.metric.task_type == "regression"
+            and gate.choice.get("strategy") == "time"
+            and gate.inner_split.get("strategy") == "time"
+            and gate.inner_split.get("time_column") == gate.choice.get("time_column"))
+        order = (("history", "boost_lightgbm", "boost_catboost", "frequency", "ensemble", "autogluon")
+                 if temporal_regression else
+                 ("boost_lightgbm", "boost_catboost", "frequency", "history", "ensemble", "autogluon"))
+    report.update(schedule="task_priority" if prioritize else "legacy", order=list(order))
+    factories = dict(zip(KINDS, factories))
     state.report.setdefault("extensions", {})["host_candidates"] = "adaptive_v1"
-    for kind, factory in zip(KINDS, factories):
+    for kind in order:
+        factory = factories[kind]
         _guard(state, identity)
         entry = {"kind": kind, "status": "skipped", "reason": None, "attempted": False}
         report["trials"].append(entry)

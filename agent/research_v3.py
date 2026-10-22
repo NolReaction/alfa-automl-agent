@@ -604,10 +604,11 @@ def _continue_locally(state):
 
         def extensions():
             from agent.research_extensions import run_research_extensions
-            return run_research_extensions(state, _assess_candidate, max_trials=6)
+            return run_research_extensions(state, _assess_candidate, max_trials=6, prioritize=True)
 
         return run_deadline_continuation(state, recipes, adaptive=adaptive, evaluate=evaluate,
-            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64)
+            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64,
+            extensions_first=True)
     return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
 
@@ -953,6 +954,7 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
             "reason": "enabled" if state.adaptive_search else "short_budget",
             "minimum_long_budget_seconds": ADAPTIVE_RESERVE_MIN_BUDGET,
             "local_trial_limit": 64, "extension_trial_limit": 6,
+            "extension_schedule": "before_warmup_task_priority",
             "api_request_limit": max_steps}
     if local_only:
         state.report["mode"] = "local_only"

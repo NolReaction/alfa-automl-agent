@@ -1,8 +1,8 @@
 # Дополнительные кандидаты адаптивного исследования
 
 `agent.research_extensions.run_research_extensions(state, assess, max_trials=6)` —
-ограниченный host hook для нового режима `adaptive_search`. Координатор вызывает
-его после обычных локальных рецептов и до адаптивного поиска. Без явного
+ограниченный host hook для режима `adaptive_search`. Native координатор вызывает
+его после измерения стартового baseline, до обычных локальных рецептов. Без явного
 `state.report["quality_options"]["adaptive_search"] == True` hook ничего не обучает.
 Дополнительно нужны измеренный INNER baseline, доступное внутреннее разбиение,
 поддерживаемая семантика задачи и открытая стадия исследования.
@@ -13,6 +13,20 @@ fit проходит существующий `assess` с замороженны
 Рост INNER не означает внешнего допуска или роста конкурсного скора.
 
 ## Очередь и пределы
+
+Native маршрут передаёт `prioritize=True`. При совпадающей временной политике
+INNER/outer регрессии сначала идут history → LightGBM → CatBoost → frequency;
+для остальных задач — LightGBM → CatBoost → frequency → history. Затем следуют
+ensemble и AutoGluon. Используются те же фабрики и шесть общих слотов, новые
+модели или параметры обучения эта политика не добавляет. Прямой вызов helper
+без `prioritize=True` сохраняет исторический порядок таблицы ниже.
+
+Это даёт расширениям шанс до длинного warmup. Полного исполнения всех шести
+кандидатов политика не обещает: каждый fit ограничивается оставшимся временем
+и резервом финализации. После hook обычная очередь и adaptive продолжаются,
+если их допускает заново рассчитанный резерв. Hook вызывается не более одного
+раза. При раннем вызове ordinary finalist может отсутствовать, поэтому ensemble
+штатно пропускается; суммарный эффект порядка проверяется native сравнением.
 
 | Кандидат | Что проверяется | Когда пропускается |
 | --- | --- | --- |
@@ -80,7 +94,7 @@ accepted candidate может меняться обычным assessor; его f
 и не заменяет.
 
 `run.json.research_extensions` содержит версию, scope, предел, actual attempts,
-verified/accepted counts и запись каждого типа, включая skip reason. History
+verified/accepted counts, `schedule`, `order` и запись каждого типа, включая skip reason. History
 дополнительно имеет `history_research.policy = adaptive_auto_v1`, actual attempt,
 frozen hashes и feedback. Discovery и measurement остаются разными событиями.
 
