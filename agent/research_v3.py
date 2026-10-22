@@ -936,7 +936,7 @@ def _recover_after_unexpected_error(state):
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False, search_profile="legacy",
                  history_config=None, history_weight=0.5, local_only=False, history_auto=False,
-                 adaptive_search=False):
+                 adaptive_search=False, rescue_regression=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -950,6 +950,10 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("history_auto must be a boolean")
     if type(adaptive_search) is not bool:
         raise ValueError("adaptive_search must be a boolean")
+    if type(rescue_regression) is not bool:
+        raise ValueError("rescue_regression must be a boolean")
+    if rescue_regression and (not adaptive_search or time_budget <= ADAPTIVE_RESERVE_MIN_BUDGET):
+        raise ValueError("rescue_regression requires v3 adaptive search and a budget greater than 300 seconds")
     if history_auto and (history_config is not None or history_weight != 0.5):
         raise ValueError("Automatic history uses its own config and fixed weight 0.5")
     from agent.history_runtime import normalize_history_options
@@ -962,6 +966,8 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         state.report["quality_options"].update(history_options)
     if history_auto:
         state.report["quality_options"]["history_auto"] = True
+    if rescue_regression:
+        state.report["quality_options"]["rescue_regression"] = True
     if adaptive_search:
         state.report["quality_options"]["adaptive_search"] = True
         state.report["coordinator"] = {"version": 2, "requested": True, "active": state.adaptive_search,
@@ -974,6 +980,19 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         state.report["mode"] = "local_only"
     try:
         prepare_research(state)
+        if rescue_regression:
+            from agent.research_extensions import (
+                RESCUE_REGRESSION_MIN_SECONDS, _rescue_regression_eligibility,
+            )
+            reason = _rescue_regression_eligibility(state)
+            state.report["rescue_regression"] = {
+                "requested": True, "replacement_slot": "boost_catboost",
+                "status": "skipped" if reason else "pending", "reason": reason,
+                "attempted": False, "history_schema": "not_checked",
+                "minimum_research_seconds": RESCUE_REGRESSION_MIN_SECONDS,
+                "time_guard_kind": "heuristic_admission_floor", "runtime_guaranteed": False,
+                "refit_cost_status": "unknown_until_host_measurement",
+            }
         prepare_baseline(state)
         semantics_allowed = state.gate.manifest.get("task_semantics", {}).get("adaptive_research_allowed", True)
         if semantics_allowed and state.gate.held_rows and state.baseline is not None:
