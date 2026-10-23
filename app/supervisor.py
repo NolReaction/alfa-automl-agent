@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import signal
@@ -166,6 +167,9 @@ def _cleanup_linux():
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    cpu_lane = bool(arguments and arguments[0] == "--cpu-lane")
+    if cpu_lane:
+        arguments.pop(0)
     if not arguments or arguments[0] != "--" or len(arguments) < 2:
         raise ValueError("Expected -- followed by the internal job command.")
     inventory = False
@@ -177,11 +181,22 @@ def main(argv=None):
             raise RuntimeError("Qwen and arbitrary commands require Linux /proc process supervision in the current PID namespace.")
     else:
         raise RuntimeError("Job supervision supports Windows and Linux only.")
+    lane = ExitStack()
     try:
+        if cpu_lane:
+            # Own the OS lock in the contained process, so losing the app's
+            # HTTP process cannot release the lane while training continues.
+            if str(ROOT) not in sys.path:
+                sys.path.insert(0, str(ROOT))
+            from research_lab.process import coordinator_lock, machine_lock_path
+            lane.enter_context(coordinator_lock(machine_lock_path()))
         return subprocess.call(arguments[1:], stdin=subprocess.DEVNULL)
     finally:
-        if inventory:
-            _cleanup_linux()
+        try:
+            if inventory:
+                _cleanup_linux()
+        finally:
+            lane.close()
 
 
 if __name__ == "__main__":

@@ -75,7 +75,7 @@ const inlineLoading = () =>
 const state = {
   tasks: [],
   task: null,
-  view: "data",
+  view: "overview",
   profiles: new Map(),
   profile: null,
   generation: 0,
@@ -112,6 +112,45 @@ const state = {
   experimentFingerprint: null,
   inspectJob: null,
   currentDatasetFingerprint: null,
+  nativeQueues: [],
+  nativeActiveQueue: null,
+  nativeSelectedQueue: null,
+  nativeDetail: null,
+  nativePreflight: null,
+  nativeRegressionTask: null,
+  nativeClassificationTask: null,
+  nativeBudgetSeconds: 10500,
+  nativeStartBusy: false,
+  nativePreflightBusy: false,
+  nativePollBusy: false,
+  nativeDetailGeneration: 0,
+  nativeLogGeneration: 0,
+  nativeLogKind: "coordinator",
+  nativeLogProfile: "regression_off",
+  nativeActivityUpdated: 0,
+  nativeActivityBusy: false,
+  dashboard: null,
+  system: null,
+  overviewPollBusy: false,
+  overviewStructure: null,
+  campaigns: [],
+  campaignActive: null,
+  campaignPresets: null,
+  campaignDraft: null,
+  campaignRevision: 0,
+  campaignPreview: null,
+  campaignPreviewBody: null,
+  campaignPreviewRevision: null,
+  campaignPreviewBusy: false,
+  campaignStartBusy: false,
+  campaignSelected: null,
+  campaignDetail: null,
+  campaignReport: null,
+  campaignDetailGeneration: 0,
+  campaignPollBusy: false,
+  campaignError: "",
+  campaignControlBusy: null,
+  campaignEditorOpen: false,
 };
 const main = $("#main");
 function apiBase(task = state.task) {
@@ -171,6 +210,632 @@ function warningList(values) {
     ? `<div class="warning-box"><ul>${values.map((v) => `<li>${esc(v)}</li>`).join("")}</ul></div>`
     : "";
 }
+
+// Workbench: current machine readings and deliberate, reviewable test series.
+const CAMPAIGN_ACTION_NAMES = {automl: "Автоподбор", baseline: "RandomForest", extra_trees: "ExtraTrees", catboost: "CatBoost", lightgbm: "LightGBM", linear: "Линейная модель"};
+const CAMPAIGN_STATES = {
+  queued: ["В очереди", "gray"], pending: ["Ещё не запускалось", "gray"], launching: ["Запускается", "amber"], running: ["Выполняется", "red"],
+  pausing: ["Пауза после текущего задания", "amber"], paused: ["На паузе", "amber"],
+  stopping: ["Останавливается", "amber"], cleanup_pending: ["Остановка требует проверки", "amber"],
+  completed: ["Завершено", "green"], stopped: ["Остановлено", "gray"], cancelled: ["Не выполнено", "gray"],
+  failed: ["Ошибка", "red"], interrupted: ["Прервано", "amber"], skipped: ["Пропущено", "gray"],
+};
+function campaignStatus(status) {
+  const [label, tone] = CAMPAIGN_STATES[status] || ["Статус неизвестен", "gray"];
+  return badge(label, tone);
+}
+function campaignRunning(campaign) {
+  return Boolean(campaign && ["queued", "running", "pausing", "paused", "stopping", "cleanup_pending"].includes(campaign.status));
+}
+function setCampaignActive(campaign) {
+  state.campaignActive = campaignRunning(campaign) ? campaign : null;
+  applyNativeLaneControls();
+}
+function campaignPath(id) {
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id)) throw new Error("Неверный идентификатор серии.");
+  return `/api/campaigns/${encodeURIComponent(id)}`;
+}
+function readyTasks() { return state.tasks.filter((task) => task.available === true); }
+function displayTask(id) { return state.tasks.find((task) => task.id === id)?.name || id || "Задача"; }
+function systemPercent(value) { return Number.isFinite(value) ? percent(value) : "Нет измерения"; }
+function gib(value) { return Number.isFinite(value) ? `${number(value / 1024 ** 3, 1)} ГиБ` : "Нет измерения"; }
+function systemMeter(value) {
+  return Number.isFinite(value) ? `<meter class="system-meter" min="0" max="100" value="${Math.max(0, Math.min(100, value))}" aria-label="Загрузка ${number(value)} процентов">${number(value)}%</meter>` : "";
+}
+function systemHTML(system) {
+  if (!system) return '<div class="workbench-empty"><p>Измерения компьютера пока недоступны. Обновите страницу или проверьте, что приложение запущено.</p></div>';
+  const cpu = system.cpu || {}, ram = system.memory || {}, disk = system.disk || {}, gpu = system.gpu || {};
+  const devices = Array.isArray(gpu.devices) ? gpu.devices : [], sleep = system.sleep;
+  return `<div class="system-grid"><article class="system-card"><span>CPU · весь компьютер</span><strong class="system-value">${systemPercent(cpu.percent)}</strong>${systemMeter(cpu.percent)}<p>${esc(cpu.name || "Название процессора не получено")}</p><small>${Number.isFinite(cpu.logical_cores) ? `${number(cpu.logical_cores)} логических ядер` : esc(cpu.reason || "Сбор измерения…")}</small></article><article class="system-card"><span>Оперативная память</span><strong class="system-value">${systemPercent(ram.percent)}</strong>${systemMeter(ram.percent)}<p>Свободно ${gib(ram.available_bytes)} из ${gib(ram.total_bytes)}</p>${ram.available === false ? `<small>${esc(ram.reason || "Измерение недоступно")}</small>` : ""}</article><article class="system-card"><span>${esc(disk.label || "Диск результатов")}</span><strong class="system-value">${gib(disk.free_bytes)}</strong><p>Свободное место · всего ${gib(disk.total_bytes)}</p>${disk.available === false ? `<small>${esc(disk.reason || "Измерение недоступно")}</small>` : ""}${disk.note ? `<small>${esc(disk.note)}</small>` : ""}</article><article class="system-card"><span>Видеокарта · весь компьютер</span>${devices.length ? devices.map((device) => `<div><strong class="system-value">${systemPercent(device.utilization_percent)}</strong><p>${esc(device.name || "GPU")}</p><small>VRAM ${gib(device.memory_used_bytes)} / ${gib(device.memory_total_bytes)}${Number.isFinite(device.temperature_c) ? ` · ${number(device.temperature_c)} °C` : ""}</small></div>`).join("") : `<strong class="system-value">Нет измерения</strong><p>${esc(gpu.reason || "Данные видеокарты недоступны")}</p>`}</article></div><p class="system-note">Это нагрузка всего компьютера, включая другие программы. Обучение в сериях использует CPU в 8 потоков; GPU для обучения не включён.${system.sampled_at ? ` Измерено ${esc(date(system.sampled_at))}.` : ""}</p>${sleep ? `<p class="system-note">${esc(sleep.active === true ? "Windows: запрос против простоя и сна активен на время работы." : sleep.requested === true ? "Windows: запрос против сна не подтверждён." : "Запрос против простоя и сна сейчас не активен.")}${sleep.reason ? ` ${esc(sleep.reason)}` : ""} Закрытие крышки и ручное выключение компьютера этим не блокируются.</p>` : ""}`;
+}
+function phaseName(job) {
+  return ({queued: "Ожидание запуска", preparing: "Подготовка данных", training: "Обучение и подбор моделей", validating: "Проверка качества", refitting: "Обучение выбранной модели на всех данных", finished: "Сохранение результата"})[job?.stage] || (job?.status === "queued" ? "Ожидание запуска" : "Работа продолжается");
+}
+function campaignCompleted(campaign) {
+  return (campaign?.steps || []).filter((step) => step.status === "completed").length;
+}
+function overviewActivity(data) {
+  const campaign = data.active_campaign, native = data.active_queue, job = data.active_job;
+  if (campaignRunning(campaign)) {
+    const current = (campaign.steps || []).find((step) => ["launching", "running"].includes(step.status));
+    return `<article class="activity-card"><div class="workbench-section-head"><h3>${esc(campaign.name || "Серия тестов")}</h3>${campaignStatus(campaign.status)}</div><p class="activity-phase">${campaign.status === "paused" ? "Серия ждёт явного продолжения. Старые задания повторно не запускаются." : current ? `${esc(displayTask(current.task_id))} · ${esc(phaseName(current.job))}` : "Подготовка следующего задания"}</p><p class="activity-count">Выполнено ${campaignCompleted(campaign)} из ${(campaign.steps || []).length} заданий · прошло ${duration(campaign.elapsed_seconds)}</p><button class="button primary" data-campaign-open="${esc(campaign.id)}">Открыть серию ${icon("activity")}</button></article>`;
+  }
+  if (nativeRunning(native)) {
+    const current = (native.profiles || []).find((item) => item.status === "running");
+    return `<article class="activity-card"><div class="workbench-section-head"><h3>Проверка агента</h3>${nativeStatus(native.status)}</div><p>${esc(current ? NATIVE_NAMES[current.profile] || current.profile : "Очередь проверки агента занята")}</p><button class="button primary" data-workflow-view="native">Открыть проверку</button></article>`;
+  }
+  if (runningJob(job)) return `<article class="activity-card"><div class="workbench-section-head"><h3>${esc(CAMPAIGN_ACTION_NAMES[job.action] || "Эксперимент")}</h3>${statusBadge(job.status)}</div><p class="activity-phase">${esc(phaseName(job))}</p><p class="activity-count">${esc(displayTask(job.task_id))} · прошло ${duration(job.elapsed_seconds)}</p><button class="button primary" data-open-job="${esc(job.id)}" data-task-id="${esc(job.task_id || "")}">Открыть эксперимент</button></article>`;
+  return '<div class="workbench-empty"><h3>Компьютер свободен для следующего теста</h3><p>Выберите готовый план серии. Приложение выполнит задания последовательно и сохранит отчёты.</p><button class="button primary" data-workflow-view="campaigns">Собрать серию тестов</button></div>';
+}
+function overviewHTML(data, system) {
+  const tasks = Array.isArray(data.tasks) ? data.tasks : state.tasks;
+  const ready = tasks.filter((task) => task.available === true), busy = Boolean(data.active_job || data.active_queue || data.active_campaign);
+  const recent = (data.recent_jobs || []).slice(0, 4);
+  return heading("ЛОКАЛЬНАЯ ЛАБОРАТОРИЯ", "Обзор", "Подготовьте данные, выберите план и оставьте последовательные тесты работать на компьютере.", false) +
+    `<section class="overview-hero"><div class="overview-hero-copy"><span class="eyebrow">СЛЕДУЮЩИЙ ШАГ</span><h2>${ready.length ? busy ? "Следите за текущей работой" : "Запустите осмысленную серию тестов" : "Подготовьте данные для первых тестов"}</h2><p>${ready.length ? "Короткая проверка, сравнение пяти моделей или дневной автоподбор с разными лимитами." : "Загрузите публичные задачи. После загрузки они появятся в выборе серии."}</p><div class="overview-actions">${ready.length ? '<button class="button primary" data-workflow-view="campaigns">Выбрать план тестов ' + icon("clock") + '</button><button class="button" data-workflow-view="runs">Один эксперимент</button>' : '<button class="button primary" data-launch="prepare">Загрузить публичные данные</button>'}</div></div><div class="overview-hero-fact"><strong>${ready.length} / ${tasks.length}</strong><span>задач готовы</span><small>Без API · CPU, 8 потоков</small></div></section>` +
+    `<div class="overview-grid"><section class="panel overview-card"><div class="panel-head"><div><h2>Сейчас выполняется</h2><p>Текущий этап и сохранённый прогресс</p></div><span id="overview-refresh" class="subtle-text">Обновляется автоматически</span></div><div class="panel-body" id="overview-activity">${overviewActivity(data)}</div></section><section class="panel overview-card"><div class="panel-head"><div><h2>Данные для тестов</h2><p>Готовность файлов перед обучением</p></div></div><div class="overview-task-list">${tasks.length ? tasks.map((task) => `<div class="overview-task-item"><div><strong>${esc(taskName(task))}</strong><small>${task.available ? "Файлы готовы к проверке и обучению" : esc(task.error || "Файлы ещё не загружены")}</small></div>${badge(task.available ? "Готово" : "Нужны данные", task.available ? "green" : "amber")}<button class="button small" data-overview-task="${esc(task.id)}">Открыть</button></div>`).join("") : '<div class="workbench-empty"><p>Задач пока нет.</p><button class="button" data-launch="prepare">Загрузить данные</button></div>'}</div></section></div>` +
+    `<section class="panel overview-card"><div class="panel-head"><div><h2>Ваш компьютер</h2><p>Фактические измерения системы</p></div>${badge("CPU-обучение", "gray")}</div><div class="panel-body" id="overview-system">${systemHTML(system)}</div></section>` +
+    `<section class="panel overview-card"><div class="panel-head"><div><h2>Последние эксперименты</h2><p>Результаты сохраняются после завершения приложения</p></div><button class="text-button" data-workflow-view="result">Все результаты →</button></div><div class="activity-list">${recent.length ? recent.map((job) => `<div class="overview-task-item"><div><strong>${esc(CAMPAIGN_ACTION_NAMES[job.action] || "Эксперимент")} · ${esc(displayTask(job.task_id))}</strong><small>${esc(date(job.started_at))} · ${duration(job.elapsed_seconds)}</small></div>${statusBadge(job.status)}<span>${esc(nativeMetric(job.metric))}</span><button class="button small" data-open-job="${esc(job.id)}" data-task-id="${esc(job.task_id || "")}">Открыть</button></div>`).join("") : '<div class="workbench-empty"><p>После первого запуска здесь появятся настоящие измерения качества.</p></div>'}</div></section>`;
+}
+async function loadOverview(generation, quiet = false) {
+  const [data, system] = await Promise.all([api("/api/dashboard"), api("/api/system").catch(() => null)]);
+  if (generation !== state.generation || state.view !== "overview") return;
+  state.dashboard = data; state.system = system;
+  if (Array.isArray(data.tasks)) state.tasks = data.tasks;
+  state.session = {...state.session, active_job: data.active_job, active_campaign: data.active_campaign};
+  setNativeActive(data.active_queue); setCampaignActive(data.active_campaign);
+  const structure = JSON.stringify({tasks: data.tasks, recent: data.recent_jobs, busy: Boolean(data.active_job || data.active_queue || data.active_campaign)});
+  if (!quiet || structure !== state.overviewStructure || !$("#overview-activity")) main.innerHTML = overviewHTML(data, system);
+  else {
+    $("#overview-activity").innerHTML = overviewActivity(data);
+    $("#overview-system").innerHTML = systemHTML(system);
+    $("#overview-refresh").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+  }
+  state.overviewStructure = structure;
+  applyNativeLaneControls();
+}
+function campaignPreset(id) { return (state.campaignPresets?.presets || []).find((preset) => preset.id === id); }
+function campaignTaskOptions(selected) {
+  return readyTasks().map((task) => `<option value="${esc(task.id)}" ${selected === task.id ? "selected" : ""}>${esc(taskName(task))}</option>`).join("");
+}
+function campaignDefaultSteps(presetId, taskIds) {
+  const preset = campaignPreset(presetId);
+  if (!preset || !Array.isArray(preset.actions) || !Array.isArray(preset.budgets_minutes)) return [];
+  return preset.budgets_minutes.flatMap((minutes) => preset.actions.flatMap((action) => taskIds.map((task_id) => ({task_id, action, minutes, validation: {strategy: action === "automl" ? "auto" : "random"}}))));
+}
+function newCampaignDraft() {
+  const task_ids = readyTasks().slice(0, 2).map((task) => task.id), preset = campaignPreset("day") ? "day" : state.campaignPresets?.presets?.[0]?.id || "custom";
+  return {preset, task_ids, name: campaignPreset(preset)?.name || "Моя серия тестов", max_hours: 12, steps: campaignDefaultSteps(preset, task_ids)};
+}
+function invalidateCampaignPreview() {
+  state.campaignRevision++; state.campaignPreview = null; state.campaignPreviewBody = null; state.campaignPreviewRevision = null;
+  state.campaignError = "";
+}
+function campaignValidationOptions(step) {
+  const task = state.tasks.find((task) => task.id === step.task_id), profile = state.profiles.get(step.task_id);
+  const options = [["random", "Случайные 80/20"]];
+  if (step.action === "automl") options.unshift(["auto", "Автоматически"]);
+  if (task?.task_type === "classification") options.push(["grouped", "Разделить дубли"]);
+  if (task?.task_type === "regression" && (profile?.columns || []).some((column) => column.role === "feature" && column.dtype === "numeric")) options.push(["time", "Последний период"]);
+  return options;
+}
+function campaignStepEditor(step, index) {
+  const numeric = (state.profiles.get(step.task_id)?.columns || []).filter((column) => column.role === "feature" && column.dtype === "numeric");
+  const fixed = step.action !== "automl";
+  return `<li class="campaign-step"><span class="campaign-step-number">${index + 1}</span><div class="campaign-step-fields"><label class="form-field">Задача<select data-campaign-index="${index}" data-campaign-field="task_id">${campaignTaskOptions(step.task_id)}</select></label><label class="form-field">Метод<select data-campaign-index="${index}" data-campaign-field="action">${Object.entries(CAMPAIGN_ACTION_NAMES).map(([action, name]) => `<option value="${action}" ${step.action === action ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></label><label class="form-field">Лимит, минут<input type="number" min="1" max="${fixed ? 30 : 175}" step="1" data-campaign-index="${index}" data-campaign-field="minutes" value="${esc(fixed ? 30 : step.minutes)}" ${fixed ? "disabled" : ""}></label><label class="form-field">Проверка качества<select data-campaign-index="${index}" data-campaign-field="strategy">${campaignValidationOptions(step).map(([value, label]) => `<option value="${value}" ${step.validation?.strategy === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></label>${step.validation?.strategy === "time" ? `<label class="form-field">Столбец периода<select data-campaign-index="${index}" data-campaign-field="time_column"><option value="">Выберите столбец</option>${numeric.map((column) => `<option value="${esc(column.name)}" ${step.validation.time_column === column.name ? "selected" : ""}>${esc(column.name)}</option>`).join("")}</select></label>` : ""}</div><div class="campaign-step-actions"><button class="icon-button" type="button" data-campaign-move="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="Поднять задание ${index + 1}">${icon("arrowup")}</button><button class="icon-button" type="button" data-campaign-move="${index}" data-direction="1" ${index === state.campaignDraft.steps.length - 1 ? "disabled" : ""} aria-label="Опустить задание ${index + 1}">${icon("arrowdown")}</button><button class="icon-button" type="button" data-campaign-remove="${index}" aria-label="Удалить задание ${index + 1}">×</button></div></li>`;
+}
+function campaignBody() {
+  const draft = state.campaignDraft;
+  if (!draft) throw new Error("Выберите план серии.");
+  const allowed = new Set(readyTasks().map((task) => task.id)), task_ids = [...new Set(draft.steps.map((step) => step.task_id))];
+  if (task_ids.length < 1 || task_ids.length > 2 || task_ids.some((id) => !allowed.has(id))) throw new Error("Выберите одну или две готовые задачи.");
+  if (draft.steps.length < 1 || draft.steps.length > 12) throw new Error("В серии должно быть от 1 до 12 заданий.");
+  if (!Number.isFinite(draft.max_hours) || draft.max_hours <= 0 || draft.max_hours > 12) throw new Error("Общий лимит — больше 0 и не больше 12 часов.");
+  const steps = draft.steps.map((step) => {
+    if (!Object.hasOwn(CAMPAIGN_ACTION_NAMES, step.action)) throw new Error("Выберите известный метод обучения.");
+    if (!Number.isInteger(step.minutes) || step.minutes < 1 || step.minutes > 175) throw new Error("Лимит задания — целое число минут от 1 до 175.");
+    const strategy = step.validation?.strategy || (step.action === "automl" ? "auto" : "random");
+    if (!campaignValidationOptions(step).some(([value]) => value === strategy)) throw new Error("Выберите доступный способ проверки качества.");
+    const validation = {strategy};
+    if (strategy === "time") {
+      const column = step.validation.time_column;
+      if (!(state.profiles.get(step.task_id)?.columns || []).some((item) => item.name === column && item.role === "feature" && item.dtype === "numeric")) throw new Error("Укажите числовой столбец периода.");
+      validation.time_column = column;
+    }
+    return {task_id: step.task_id, action: step.action, minutes: step.action === "automl" ? step.minutes : 30, validation, ...(step.model_params ? {model_params: structuredClone(step.model_params)} : {}), ...(step.label ? {label: step.label} : {})};
+  });
+  const body = {preset: draft.preset, task_ids, name: draft.name.trim().slice(0, 100), max_hours: draft.max_hours};
+  if (draft.preset === "custom") body.steps = steps;
+  return body;
+}
+function campaignLaunchBlock() {
+  if (state.campaignStartBusy) return "Запускаем серию…";
+  if (campaignRunning(state.campaignActive)) return "Текущая серия занимает очередь. Продолжите или остановите её.";
+  if (nativeRunning(state.nativeActiveQueue)) return "Сейчас идёт проверка агента. Дождитесь её завершения или остановите её.";
+  if (runningJob(state.session?.active_job)) return "Сейчас выполняется отдельный эксперимент.";
+  if (!state.campaignPreview || state.campaignPreviewRevision !== state.campaignRevision) return "Сначала проверьте план и его лимиты.";
+  if (!state.campaignPreview.ready) return "Исправьте причины, указанные в проверке плана.";
+  if (!state.campaignPreview.source_seal?.valid) return "Версия исходников не подтверждена. Обновите проверку плана.";
+  if (!state.campaignPreview.runtime_seal?.valid) return "Среда Python не подтверждена. Обновите проверку плана.";
+  return null;
+}
+function campaignSealsHTML(value) {
+  const source = value.source_seal || {}, runtime = value.runtime_seal || {};
+  return `<div class="campaign-seals">${badge(source.valid === true ? "Код подтверждён" : source.valid === false ? "Код изменился" : "Код не проверен", source.valid === true ? "green" : "amber")}${badge(runtime.valid === true ? "Среда Python подтверждена" : runtime.valid === false ? "Среда Python изменилась" : "Среда Python не проверена", runtime.valid === true ? "green" : "amber")}${runtime.python_version ? `<span>Python ${esc(runtime.python_version)}${Number.isFinite(runtime.pointer_bits) ? ` · ${number(runtime.pointer_bits)} бит` : ""}</span>` : ""}</div>${source.valid === false || runtime.valid === false ? '<p class="campaign-error">Версия кода или среда Python изменилась. Новые результаты этой серии нельзя считать сопоставимыми; изучите отчёты и создайте новый план.</p>' : ""}`;
+}
+function campaignPreviewHTML() {
+  const preview = state.campaignPreview;
+  if (!preview) return '<div class="campaign-note"><strong>План ещё не проверен</strong><p>Проверка не обучает модели. Сервер подтвердит данные, версию кода и реальные лимиты.</p></div>';
+  return `<div class="campaign-preview">${badge(preview.ready ? "План готов к запуску" : "План требует исправления", preview.ready ? "green" : "amber")}${campaignSealsHTML(preview)}<div class="campaign-preview-metrics"><div><span>Заданий</span><strong>${(preview.steps || []).length}</strong></div><div><span>Потолок всех исполнений</span><strong>${duration(preview.worker_upper_bound_seconds)}</strong></div><div><span>Общий лимит серии</span><strong>${duration(preview.wall_budget_seconds)}</strong></div></div><p>Подготовка данных и сохранение отчётов могут занять дополнительное время. Задания могут закончиться раньше лимита. Фиксированные модели ограничены 30 минутами, автоподбор — выбранным временем.</p>${warningList(preview.errors)}${warningList(preview.warnings)}<p class="campaign-note">Сравнимы только результаты на тех же данных и проверочных строках. Выбор лучшего по этой проверке не заменяет независимый тест и не обещает баллы платформы.</p><details><summary>Проверенный порядок и версия</summary><ol>${(preview.steps || []).map((step) => `<li>${esc(displayTask(step.task_id))} · ${esc(CAMPAIGN_ACTION_NAMES[step.action] || step.action)} · до ${duration(step.worker_timeout_seconds)} исполнения</li>`).join("")}</ol><p>Код <code>${esc(preview.source_seal?.sha || "Не подтверждён")}</code></p></details></div>`;
+}
+function campaignDraftPlanHTML() {
+  const steps = state.campaignDraft.steps;
+  const budgets = steps.map((step) => step.action === "automl" ? step.minutes : 30);
+  const valid = budgets.every((value) => Number.isInteger(value) && value >= 1 && value <= 175);
+  return `<div class="campaign-draft-summary"><div><strong>${steps.length} последовательных заданий</strong><p>${valid && steps.length ? `До ${duration(budgets.reduce((sum, value) => sum + value, 0) * 60)} обучения по текущему плану` : "Добавьте задания и укажите лимиты"}</p></div><span>Точные лимиты подтвердит проверка плана</span></div><details class="campaign-step-editor" id="campaign-step-editor" ${state.campaignEditorOpen ? "open" : ""}><summary>Изменить задания, порядок и проверку качества</summary><ol class="campaign-step-list">${steps.map(campaignStepEditor).join("")}</ol><div class="campaign-toolbar"><button class="button small" data-action="campaign-add" ${steps.length >= 12 || !readyTasks().length ? "disabled" : ""}>+ Добавить задание</button><span class="subtle-text">${steps.length} / 12 заданий · любое изменение требует новой проверки</span></div></details>`;
+}
+function campaignEditorHTML() {
+  const draft = state.campaignDraft, presets = state.campaignPresets?.presets || [], block = campaignLaunchBlock();
+  return `<section class="panel campaign-builder"><div class="panel-head"><div><h2>План новой серии</h2><p>Выберите готовый план и при необходимости измените задания.</p></div>${badge("CPU · 8 потоков · без API", "green")}</div><div class="panel-body"><div class="campaign-presets">${presets.map((preset) => `<button class="preset-card ${draft.preset === preset.id ? "selected" : ""}" type="button" data-campaign-preset="${esc(preset.id)}" aria-pressed="${draft.preset === preset.id}"><strong>${esc(preset.name)}</strong><span>${esc(preset.description)}</span><small>${preset.id === "day" ? "30 / 90 / 175 минут на задачу · до 9 ч 50 мин для двух" : preset.id === "models" ? "Пять семейств · до 30 минут каждое" : preset.id === "custom" ? "Редактируемый порядок · до 12 заданий" : "До 5 минут на задачу"}</small></button>`).join("")}</div><fieldset class="campaign-task-picker"><legend>Задачи серии · выберите одну или две</legend>${readyTasks().map((task) => `<label><input type="checkbox" data-campaign-task="${esc(task.id)}" ${draft.task_ids.includes(task.id) ? "checked" : ""}> ${esc(taskName(task))}</label>`).join("") || '<p>Нет готовых задач. <button class="text-button" data-launch="prepare">Загрузить публичные данные</button></p>'}</fieldset><div class="form-grid"><label class="form-field">Название серии<input id="campaign-name" maxlength="100" value="${esc(draft.name)}"></label><label class="form-field">Общий лимит, часов<input id="campaign-max-hours" type="number" min="0.1" max="12" step="0.1" value="${esc(draft.max_hours)}"></label></div>${campaignDraftPlanHTML()}<p class="campaign-note">Последовательное обучение на CPU. Отдельная модель может закончить за минуты; лимит не обещает непрерывную нагрузку. Показания GPU на обзоре относятся ко всему компьютеру.</p><div id="campaign-preview">${campaignPreviewHTML()}</div><p id="campaign-editor-error" class="form-error" role="alert">${esc(state.campaignError)}</p><div class="campaign-toolbar"><button class="button" data-action="campaign-preview" ${state.campaignPreviewBusy ? "disabled" : ""}>${state.campaignPreviewBusy ? '<span class="spinner"></span> Проверяем…' : `${icon("shield")} Проверить план`}</button><button class="button primary" data-action="campaign-start" ${block ? "disabled" : ""}>${icon("activity")} Запустить серию</button><span id="campaign-launch-block" class="subtle-text">${esc(block || "План проверен. Можно запускать.")}</span></div></div></section>`;
+}
+function renderCampaignEditor() {
+  const node = $("#campaign-editor");
+  if (node) node.innerHTML = campaignEditorHTML();
+  applyNativeLaneControls();
+}
+function renderCampaignHistory() {
+  const node = $("#campaign-history");
+  if (!node) return;
+  node.innerHTML = state.campaigns.length ? state.campaigns.map((campaign) => `<button class="native-history-item ${campaign.id === state.campaignSelected ? "selected" : ""}" data-campaign-open="${esc(campaign.id)}" aria-pressed="${campaign.id === state.campaignSelected}"><span><strong>${esc(campaign.name || "Серия тестов")}</strong><small>${esc(date(campaign.created_at))}</small></span>${campaignStatus(campaign.status)}</button>`).join("") : '<div class="workbench-empty"><p>Серий пока нет. Первый проверенный план появится здесь после запуска.</p></div>';
+}
+function comparisonRows(group) {
+  if (!group?.comparison_key || !group.dataset_fingerprint || !group.metric_name || typeof group.higher_is_better !== "boolean") return [];
+  return (Array.isArray(group.jobs) ? group.jobs : []).filter((job) => typeof job.job_id === "string" && Number.isFinite(job.value) && Number.isFinite(job.minutes));
+}
+function campaignCurve(group, rows) {
+  const points = rows.filter((row) => row.action === "automl").sort((a, b) => a.minutes - b.minutes);
+  if (points.length < 2) return '<p class="campaign-note">Кривая бюджета появится после двух сравнимых запусков автоподбора с разными лимитами.</p>';
+  const times = points.map((row) => row.minutes), values = points.map((row) => row.value);
+  const minX = Math.min(...times), rangeX = Math.max(...times) - minX;
+  if (rangeX === 0) return '<p class="campaign-note">У сравнимых запусков одинаковый лимит времени.</p>';
+  const minY = Math.min(...values), maxY = Math.max(...values), spanY = maxY - minY || Math.max(Math.abs(maxY) * .05, .01);
+  const xy = points.map((row) => ({...row, x: 46 + (row.minutes - minX) / rangeX * 500, y: 140 - (row.value - minY) / spanY * 110}));
+  return `<figure class="campaign-curve"><svg viewBox="0 0 600 190" role="img" aria-label="Локальное качество автоподбора по лимиту времени. Точные значения в таблице ниже."><path d="M46 15V140H558" fill="none" stroke="currentColor" opacity=".25"/><polyline points="${xy.map((row) => `${row.x},${row.y}`).join(" ")}" fill="none" stroke="#e5232e" stroke-width="2"/>${xy.map((row) => `<circle cx="${row.x}" cy="${row.y}" r="4" fill="#e5232e"/><text x="${row.x}" y="163" text-anchor="middle">${number(row.minutes)} мин</text>`).join("")}<text x="48" y="12">${esc(group.metric_name)} · ${group.higher_is_better ? "выше лучше" : "ниже лучше"}</text></svg><figcaption>Лимит времени, а не фактически потраченное время. Точки относятся к одной локальной проверке.</figcaption></figure>`;
+}
+function campaignComparisonsHTML(groups) {
+  const valid = (Array.isArray(groups) ? groups : []).map((group) => ({group, rows: comparisonRows(group)})).filter(({rows}) => rows.length);
+  if (!valid.length) return '<div class="workbench-empty"><h3>Сравнение появится после проверенных результатов</h3><p>Несовместимые данные и разбиения не объединяются. Ошибка процесса или непроверенный CSV не дают победителя.</p></div>';
+  return valid.map(({group, rows}) => {
+    const best = rows.find((row) => row.job_id === group.best_job_id);
+    return `<section class="campaign-comparison"><div class="workbench-section-head"><h3>${esc(displayTask(group.task_id))} · ${esc(group.metric_name)}</h3>${best ? badge("Лучший в этой локальной группе", "green") : badge("Победитель не определён", "gray")}</div><p class="campaign-note">${esc(validationLabel({split: group.split}))} · одна версия данных и одни проверочные строки</p>${campaignCurve(group, rows)}<div class="table-wrap" tabindex="0" role="region" aria-label="Сравнимые результаты серии"><table><thead><tr><th>Метод</th><th>Лимит</th><th>${esc(group.metric_name)}</th><th>Эксперимент</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(CAMPAIGN_ACTION_NAMES[row.action] || row.action)} ${row.job_id === best?.job_id ? '<span aria-label="Лучший локально">★</span>' : ""}</td><td>${row.minutes} мин</td><td>${number(row.value, 6)}</td><td><button class="text-button" data-open-job="${esc(row.job_id)}" data-task-id="${esc(group.task_id)}">Открыть</button></td></tr>`).join("")}</tbody></table></div><details><summary>Основание сравнения</summary><p>Данные <code>${esc(group.dataset_fingerprint)}</code></p><p>Разбиение <code>${esc(group.comparison_key)}</code></p></details></section>`;
+  }).join("");
+}
+function campaignReportGroups(report, campaign) {
+  if (report?.campaign?.id !== campaign.id || !Array.isArray(report.groups)) return [];
+  return report.groups.map((group) => ({...group, best_job_id: group.best?.job_id,
+    jobs: (Array.isArray(group.budget_curve) ? group.budget_curve : []).flatMap((point) => {
+      const step = (campaign.steps || []).find((step) => step.id === point.step_id && step.job_id === point.job_id);
+      return step ? [{job_id: point.job_id, step_id: point.step_id, value: point.metric?.value, action: step.action, minutes: point.minutes}] : [];
+    })}));
+}
+function campaignDetailHTML(campaign, report = null) {
+  const steps = Array.isArray(campaign.steps) ? campaign.steps : [], active = campaignRunning(campaign), path = campaignPath(campaign.id);
+  const canPause = ["queued", "running"].includes(campaign.status), canResume = campaign.status === "paused";
+  const controlsBusy = state.campaignControlBusy?.id === campaign.id;
+  return `<section class="panel campaign-detail"><div class="panel-head"><div><h2>${esc(campaign.name || "Серия тестов")}</h2><p>${esc(date(campaign.created_at))} · ${campaignCompleted(campaign)} из ${steps.length} заданий выполнены</p></div>${campaignStatus(campaign.status)}</div><div class="panel-body"><div class="campaign-preview-metrics"><div><span>Прошло</span><strong>${duration(campaign.elapsed_seconds)}</strong></div><div><span>Общий лимит</span><strong>${duration(campaign.wall_budget_seconds)}</strong></div><div><span>Потолок исполнений</span><strong>${duration(campaign.worker_upper_bound_seconds)}</strong></div></div><div class="campaign-toolbar">${canPause ? `<button class="button" data-campaign-control="pause" data-campaign-id="${esc(campaign.id)}" ${controlsBusy ? "disabled" : ""}>Пауза после задания</button>` : ""}${canResume ? `<button class="button primary" data-campaign-control="resume" data-campaign-id="${esc(campaign.id)}" ${controlsBusy ? "disabled" : ""}>Продолжить оставшиеся</button>` : ""}${active ? `<button class="button danger" data-campaign-control="stop" data-campaign-id="${esc(campaign.id)}" ${campaign.status === "stopping" || controlsBusy ? "disabled" : ""}>${campaign.status === "cleanup_pending" ? "Повторить остановку" : "Остановить всю серию"}</button>` : ""}</div>${campaign.status === "pausing" ? '<p class="campaign-note">Текущее задание продолжает работу. Следующее будет ждать команды «Продолжить оставшиеся».</p>' : campaign.status === "paused" ? '<p class="campaign-note">Очередь сохранена за этой серией. Продолжение запускает только оставшиеся задания. Для другого плана остановите эту серию.</p>' : ""}${campaign.error ? `<div class="warning-box campaign-error">${esc(campaign.error)}</div>` : ""}${campaignSealsHTML(campaign)}<ol class="campaign-step-list campaign-current">${steps.map((step, index) => `<li class="campaign-step"><span class="campaign-step-number">${index + 1}</span><div class="campaign-step-status"><strong>${esc(displayTask(step.task_id))} · ${esc(CAMPAIGN_ACTION_NAMES[step.action] || step.action)}</strong><p>${["launching", "running"].includes(step.status) ? esc(phaseName(step.job)) : step.job?.metric ? esc(nativeMetric(step.job.metric)) : ""}</p><small>Лимит ${duration(step.worker_timeout_seconds || step.minutes * 60)}${Number.isFinite(step.job?.elapsed_seconds) ? ` · прошло ${duration(step.job.elapsed_seconds)}` : ""}</small>${step.admissible === false ? '<p class="campaign-error">Результат не допущен к сравнению. Изучите эксперимент.</p>' : ""}${step.error ? `<p class="campaign-error">${esc(step.error)}</p>` : ""}</div>${campaignStatus(step.status)}${step.job_id ? `<button class="button small" data-open-job="${esc(step.job_id)}" data-task-id="${esc(step.task_id)}">Эксперимент</button>` : ""}</li>`).join("")}</ol><div class="workbench-section-head"><h3>Результаты серии</h3></div>${report ? campaignComparisonsHTML(campaignReportGroups(report, campaign)) : '<p class="campaign-error">Сводный отчёт пока не загружен. Повторим автоматически; отдельные эксперименты доступны выше.</p>'}<div class="campaign-exports"><a class="button small" href="${path}/report.json" download>${icon("download")} Отчёт JSON</a><a class="button small" href="${path}/report.csv" download>Таблица CSV</a><a class="button small" href="${path}/bundle.zip" download>Пакет для команды ZIP</a></div><p class="campaign-note">Пакет содержит доступные на момент выгрузки отчёты. Локальный лучший результат не равен баллам платформы.</p><details><summary>Версия и ограничения</summary><p>Код <code>${esc(campaign.source_seal?.sha || "Не подтверждён")}</code></p>${warningList(campaign.warnings)}<p>CPU · 8 потоков · API не используется. Остановленные задания не возобновляются с середины.</p></details></div></section>`;
+}
+async function loadCampaignDetail(id, generation = state.generation) {
+  const request = ++state.campaignDetailGeneration;
+  const [response, report] = await Promise.all([api(campaignPath(id)), api(`${campaignPath(id)}/report.json`).catch(() => null)]);
+  if (generation !== state.generation || state.view !== "campaigns" || state.campaignSelected !== id || request !== state.campaignDetailGeneration) return;
+  state.campaignDetail = response.campaign;
+  state.campaignReport = report;
+  const node = $("#campaign-detail"), opened = $$("details", node).map((detail) => detail.open);
+  node.innerHTML = campaignDetailHTML(response.campaign, report);
+  $$("details", node).forEach((detail, index) => { detail.open = opened[index] === true; });
+}
+async function loadCampaignPage(generation) {
+  const [presets, response, session] = await Promise.all([api("/api/campaign-presets"), api("/api/campaigns"), api("/api/session")]);
+  if (generation !== state.generation || state.view !== "campaigns") return;
+  state.campaignPresets = presets; state.session = session; state.campaigns = Array.isArray(response.campaigns) ? response.campaigns : [];
+  setNativeActive(session.active_queue); setCampaignActive(response.active_campaign || session.active_campaign);
+  if (!state.campaignDraft) state.campaignDraft = newCampaignDraft();
+  main.innerHTML = heading("ПОСЛЕДОВАТЕЛЬНЫЕ ЭКСПЕРИМЕНТЫ", "Серии тестов", "План на несколько минут или на весь день. Вы задаёте порядок, приложение сохраняет каждый результат.", false) + '<section id="campaign-editor"></section><div class="workbench-section-head"><h2>История и ход работы</h2><span id="campaign-refresh" class="subtle-text">Обновляется каждые 3 секунды</span></div><div class="campaign-layout"><section class="panel campaign-history" id="campaign-history" aria-label="История серий тестов"></section><div id="campaign-detail"></div></div>';
+  renderCampaignEditor(); renderCampaignHistory();
+  if (!state.campaigns.some((campaign) => campaign.id === state.campaignSelected)) state.campaignSelected = state.campaignActive?.id || state.campaigns[0]?.id || null;
+  renderCampaignHistory();
+  if (state.campaignSelected) await loadCampaignDetail(state.campaignSelected, generation);
+  else $("#campaign-detail").innerHTML = empty("Пока нет запущенных серий", "Проверьте план выше. До нажатия «Запустить серию» обучение не начинается.", "clock", false);
+  // Numeric period columns are optional editor choices; failures don't hide the workbench.
+  await Promise.allSettled(readyTasks().filter((task) => !state.profiles.has(task.id)).map(async (task) => {
+    const profile = await api(`${apiBase(task.id)}/profile`);
+    if (generation === state.generation && state.view === "campaigns") state.profiles.set(task.id, profile);
+  }));
+}
+async function previewCampaign() {
+  if (state.campaignPreviewBusy) return;
+  let body;
+  try { body = campaignBody(); } catch (error) { state.campaignError = error.message; renderCampaignEditor(); return; }
+  const revision = state.campaignRevision, generation = state.generation;
+  state.campaignPreviewBusy = true; state.campaignError = ""; renderCampaignEditor();
+  try {
+    const preview = await post("/api/campaigns/preview", body);
+    if (generation !== state.generation || state.view !== "campaigns" || revision !== state.campaignRevision) return;
+    state.campaignPreview = preview; state.campaignPreviewBody = structuredClone(body); state.campaignPreviewRevision = revision;
+    // Show the server's exact expansion before the user commits to running it.
+    if (Array.isArray(preview.steps) && preview.steps.length) state.campaignDraft.steps = preview.steps.map(({task_id, action, minutes, validation, model_params, label}) => ({task_id, action, minutes, validation, ...(model_params ? {model_params} : {}), ...(label ? {label} : {})}));
+  } catch (error) {
+    if (generation === state.generation && revision === state.campaignRevision) state.campaignError = error.message;
+  } finally { state.campaignPreviewBusy = false; if (generation === state.generation && state.view === "campaigns") renderCampaignEditor(); }
+}
+async function startCampaign() {
+  const block = campaignLaunchBlock(); if (block) { toast(block); return; }
+  const body = {...structuredClone(state.campaignPreviewBody), preview_token: state.campaignPreview.plan_sha256}, generation = state.generation;
+  state.campaignStartBusy = true; renderCampaignEditor();
+  try {
+    const response = await post("/api/campaigns", body);
+    setCampaignActive(response.campaign); state.campaignSelected = response.campaign.id;
+    invalidateCampaignPreview();
+    if (generation === state.generation && state.view === "campaigns") await loadCampaignPage(generation);
+    else toast("Серия запущена. Ход работы доступен в «Серии тестов».");
+  } catch (error) { if (generation === state.generation && state.view === "campaigns") state.campaignError = error.message; else toast(error.message); }
+  finally { state.campaignStartBusy = false; if (generation === state.generation && state.view === "campaigns") renderCampaignEditor(); }
+}
+async function controlCampaign(id, action, button) {
+  if (!["pause", "resume", "stop"].includes(action) || state.campaignControlBusy) return;
+  state.campaignControlBusy = {id, action}; button.disabled = true;
+  try {
+    const response = await post(`${campaignPath(id)}/${action}`, {});
+    setCampaignActive(campaignRunning(response.campaign) ? response.campaign : null);
+    if (state.view === "campaigns" && state.campaignSelected === id) await loadCampaignDetail(id);
+    if (state.view === "campaigns") renderCampaignEditor();
+  } catch (error) { toast(error.message); }
+  finally { state.campaignControlBusy = null; if (button.isConnected) button.disabled = false; }
+}
+function campaignChanged() {
+  state.campaignEditorOpen = true;
+  state.campaignDraft.preset = "custom";
+  state.campaignDraft.task_ids = [...new Set(state.campaignDraft.steps.map((step) => step.task_id))];
+  invalidateCampaignPreview(); renderCampaignEditor();
+}
+function selectCampaignPreset(id) {
+  const preset = campaignPreset(id); if (!preset) return;
+  state.campaignDraft.preset = id;
+  state.campaignDraft.name = preset.name;
+  state.campaignEditorOpen = id === "custom";
+  if (id !== "custom") state.campaignDraft.steps = campaignDefaultSteps(id, state.campaignDraft.task_ids);
+  invalidateCampaignPreview(); renderCampaignEditor();
+}
+function moveCampaignStep(index, direction) {
+  const steps = state.campaignDraft?.steps || [], destination = index + direction;
+  if (!Number.isInteger(index) || ![-1, 1].includes(direction) || index < 0 || index >= steps.length || destination < 0 || destination >= steps.length) return;
+  [steps[index], steps[destination]] = [steps[destination], steps[index]];
+  campaignChanged();
+}
+function changeCampaignField(index, field, value) {
+  if (!Number.isInteger(index) || index < 0 || index >= (state.campaignDraft?.steps || []).length) return;
+  const step = state.campaignDraft.steps[index];
+  if (field === "minutes") step.minutes = Number(value);
+  else if (field === "task_id" && readyTasks().some((task) => task.id === value)) {
+    const ids = new Set(state.campaignDraft.steps.map((row, position) => position === index ? value : row.task_id));
+    if (ids.size > 2) { toast("В одной серии можно использовать не больше двух задач."); renderCampaignEditor(); return; }
+    step.task_id = value; step.validation = {strategy: step.action === "automl" ? "auto" : "random"};
+  } else if (field === "action" && Object.hasOwn(CAMPAIGN_ACTION_NAMES, value)) {
+    step.action = value; if (value !== "automl") step.minutes = 30;
+    if (value !== "automl" && step.validation?.strategy === "auto") step.validation = {strategy: "random"};
+    delete step.model_params;
+  } else if (field === "strategy" && campaignValidationOptions(step).some(([strategy]) => strategy === value)) {
+    step.validation = {strategy: value};
+  } else if (field === "time_column") step.validation = {strategy: "time", time_column: value};
+  else return;
+  campaignChanged();
+}
+async function pollWorkbench() {
+  if (document.hidden || !["overview", "campaigns"].includes(state.view) || state.overviewPollBusy || state.campaignPollBusy) return;
+  const generation = state.generation;
+  if (state.view === "overview") {
+    state.overviewPollBusy = true;
+    try { await loadOverview(generation, true); }
+    catch { if (generation === state.generation && $("#overview-refresh")) $("#overview-refresh").textContent = "Связь прервалась. Повторим автоматически."; }
+    finally { state.overviewPollBusy = false; }
+    return;
+  }
+  state.campaignPollBusy = true;
+  try {
+    const [response, session] = await Promise.all([api("/api/campaigns"), api("/api/session")]);
+    if (generation !== state.generation || state.view !== "campaigns") return;
+    state.session = session; state.campaigns = Array.isArray(response.campaigns) ? response.campaigns : [];
+    setNativeActive(session.active_queue); setCampaignActive(response.active_campaign || session.active_campaign);
+    renderCampaignHistory();
+    if (state.campaignSelected) await loadCampaignDetail(state.campaignSelected, generation);
+    const block = campaignLaunchBlock(), start = $('[data-action="campaign-start"]');
+    if (start) start.disabled = Boolean(block);
+    if ($("#campaign-launch-block")) $("#campaign-launch-block").textContent = block || "План проверен. Можно запускать.";
+    if ($("#campaign-refresh")) $("#campaign-refresh").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+  } catch { if (generation === state.generation && $("#campaign-refresh")) $("#campaign-refresh").textContent = "Связь прервалась. Повторим автоматически."; }
+  finally { state.campaignPollBusy = false; }
+}
+
+// Native series use the pinned agent and retain their own history and audits.
+const NATIVE_PROFILES = ["regression_off", "regression_on", "classification"];
+const NATIVE_NAMES = {
+  regression_off: "Регрессия · rescue OFF",
+  regression_on: "Регрессия · rescue ON",
+  classification: "Классификация",
+};
+const NATIVE_STATUS = {
+  queued: ["В очереди", "gray"], pending: ["Ожидает", "gray"],
+  preparing: ["Подготовка", "amber"], running: ["Выполняется", "red"],
+  stopping: ["Останавливается", "amber"], completed: ["Завершено", "green"],
+  failed: ["Ошибка", "red"], stopped: ["Очередь остановлена", "amber"],
+  interrupted: ["Прервано", "amber"], cancelled: ["Остановлено", "gray"],
+  cleanup_pending: ["Остановка требует проверки", "amber"],
+  not_started: ["Не запускалось", "gray"],
+};
+function nativeStatus(status) {
+  const [label, tone] = NATIVE_STATUS[status] || ["Статус не подтверждён", "gray"];
+  return badge(label, tone);
+}
+function nativeRunning(queue) {
+  return Boolean(queue && ["queued", "preparing", "running", "stopping", "cleanup_pending"].includes(queue.status));
+}
+function nativePath(id) {
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id)) throw new Error("Неверный идентификатор серии.");
+  return `/api/native-queues/${encodeURIComponent(id)}`;
+}
+function nativeTasks(type) {
+  return state.tasks.filter((task) => task.available === true && task.task_type === type);
+}
+function nativeMetric(metric) {
+  return Number.isFinite(metric?.value) ? `${number(metric.value, 6)} ${metric.name || ""}`.trim() : "Пока нет метрики";
+}
+function nativePayload(regressionTask, classificationTask, seconds) {
+  if (!nativeTasks("regression").some((task) => task.id === regressionTask) ||
+      !nativeTasks("classification").some((task) => task.id === classificationTask))
+    throw new Error("Выберите готовые задачи регрессии и классификации.");
+  if (!Number.isInteger(seconds) || seconds < 301 || seconds > 10500)
+    throw new Error("Лимит одного задания — целое число секунд от 301 до 10 500.");
+  return {regression_task_id: regressionTask, classification_task_id: classificationTask, time_budget_seconds: seconds};
+}
+function nativeLaunchBlock() {
+  if (state.nativeStartBusy) return "Серия запускается…";
+  if (campaignRunning(state.campaignActive)) return "Серия тестов занимает очередь. Продолжите или остановите её в разделе «Серии тестов».";
+  if (nativeRunning(state.nativeActiveQueue)) return "Сначала дождитесь завершения текущей серии или остановите её.";
+  if (runningJob(state.session?.active_job)) return "Сейчас выполняется другой запуск приложения.";
+  if (!state.nativePreflight) return "Сначала проверьте готовность компьютера.";
+  if (!state.nativePreflight.ready) return "Перед запуском устраните причины, указанные в проверке готовности.";
+  if (!nativeTasks("regression").length || !nativeTasks("classification").length)
+    return "Нужны готовые задачи регрессии и классификации.";
+  return null;
+}
+function setNativeActive(queue) {
+  state.nativeActiveQueue = nativeRunning(queue) ? queue : null;
+  state.nativeActivityUpdated = Date.now();
+  applyNativeLaneControls();
+}
+function applyNativeLaneControls() {
+  const blocked = nativeRunning(state.nativeActiveQueue) || campaignRunning(state.campaignActive);
+  $$('[data-launch]').forEach((button) => {
+    if (blocked && button.dataset.nativeBlocked !== "true") {
+      button.dataset.nativeWasDisabled = String(button.disabled);
+      button.dataset.nativeBlocked = "true";
+      button.disabled = true;
+    } else if (!blocked && button.dataset.nativeBlocked === "true") {
+      button.disabled = button.dataset.nativeWasDisabled === "true";
+      delete button.dataset.nativeBlocked;
+      delete button.dataset.nativeWasDisabled;
+    }
+  });
+}
+function nativeOptions(type, selected) {
+  const tasks = nativeTasks(type);
+  return tasks.length ? tasks.map((task) => `<option value="${esc(task.id)}" ${task.id === selected ? "selected" : ""}>${esc(task.name || task.id)}</option>`).join("")
+    : '<option value="">Нет готовой задачи</option>';
+}
+function nativePreflightPanel() {
+  const report = state.nativePreflight;
+  const errors = Array.isArray(report?.errors) ? report.errors : [];
+  return `<div class="native-readiness-head"><div><h3>Готовность компьютера</h3><p>Одна серия занимает общую очередь CPU. Нужны Windows, Python 3.12 и 32 ГБ памяти.</p></div><button class="button small" data-action="native-preflight" ${state.nativePreflightBusy ? "disabled" : ""}>${state.nativePreflightBusy ? '<span class="spinner"></span> Проверяем…' : `${icon("shield")} Проверить готовность`}</button></div>${report ? `<div class="native-readiness-result">${badge(report.ready ? "Готов к запуску" : "Запуск пока недоступен", report.ready ? "green" : "amber")}<span>CPU: ${number(report.threads || 8)} потоков</span>${Number.isFinite(report.physical_ram_bytes) ? `<span>RAM: ${number(report.physical_ram_bytes / 1024 ** 3, 1)} ГиБ</span>` : ""}${Number.isFinite(report.free_disk_bytes) ? `<span>Свободно: ${number(report.free_disk_bytes / 1024 ** 3, 1)} ГиБ</span>` : ""}</div>${errors.length ? warningList(errors.map((error) => typeof error === "string" ? error : error?.message || error?.reason || "Проверка не завершена")) : ""}${report.release_sha ? `<p class="native-source">Версия агента <code>${esc(report.release_sha)}</code></p>` : ""}` : '<p class="native-hint">Проверка подтвердит среду, свободное место и доступность CPU.</p>'}`;
+}
+function nativeShell() {
+  const block = nativeLaunchBlock();
+  return heading("ПРОВЕРКА ВЕРСИИ АГЕНТА", "Проверка агента", "Специальный протокол: сравнение rescue OFF / ON и классификация с проверкой отчётов. Для обычного обучения используйте «Серии тестов».", false) +
+    `<section class="panel native-plan"><div class="native-plan-title"><div><h2>Новая серия</h2><p>Каждое задание получит отдельную копию данных и собственный отчёт.</p></div>${badge("Без API", "green")}</div><ol class="native-plan-steps">${NATIVE_PROFILES.map((profile, index) => `<li><span class="native-step-number">${index + 1}</span><div><strong>${esc(NATIVE_NAMES[profile])}</strong><small>${index === 0 ? "Контрольный результат" : index === 1 ? "Та же задача и те же входные данные" : "Отдельная проверка классификации"}</small></div></li>`).join("")}</ol><form id="native-launch-form"><div class="form-grid"><label class="form-field">Регрессия (требуется RMSE)<select id="native-regression-task" name="regression_task_id" ${nativeTasks("regression").length ? "" : "disabled"} required>${nativeOptions("regression", state.nativeRegressionTask)}</select></label><label class="form-field">Классификация<select id="native-classification-task" name="classification_task_id" ${nativeTasks("classification").length ? "" : "disabled"} required>${nativeOptions("classification", state.nativeClassificationTask)}</select></label><label class="form-field">Лимит одного задания<select id="native-budget" name="time_budget_seconds">${[[3600, "До 1 часа"], [10500, "До 2 ч 55 мин"]].map(([value, label]) => `<option value="${value}" ${value === state.nativeBudgetSeconds ? "selected" : ""}>${label}</option>`).join("")}</select></label><div class="native-budget-summary"><span>Потолок обучения всей серии</span><strong id="native-total-budget">${duration(state.nativeBudgetSeconds * 3)}</strong><small>Подготовка и проверка отчётов займут дополнительное время.</small></div></div><p class="native-hint">Это верхние лимиты: агент может закончить раньше. Серия работает на CPU в 8 потоков. Видеокарта в этом плане не используется.</p><div id="native-readiness" class="native-readiness">${nativePreflightPanel()}</div><p id="native-launch-error" class="form-error" role="alert"></p><div class="native-launch-footer"><p id="native-launch-block">${esc(block || "Задания выполняются по одному. Ошибка обязательной проверки остановит очередь.")}</p><button class="button primary" id="native-start" type="submit" ${block ? "disabled" : ""}>${icon("activity")} ${state.nativeStartBusy ? "Запускаем…" : "Запустить три задания"}</button></div></form></section>` +
+    `<div class="native-history-heading"><h2>История серий</h2><span id="native-refresh-time" class="subtle-text">Обновление каждые 3 секунды</span></div><div class="native-layout"><section class="panel native-history-panel" aria-label="История ночных тестов"><div id="native-history" class="native-history"></div></section><div class="native-detail-column"><section id="native-queue-detail"></section><section class="panel native-logs" id="native-log-panel" hidden><div class="panel-head"><div><h2>Журнал серии</h2><p id="native-log-caption">Журнал координатора · обновляется во время работы</p></div></div><div class="native-log-controls"><label class="form-field">Источник<select id="native-log-kind"><option value="coordinator">Координатор · текущий журнал</option><option value="stdout">stdout · итог задания</option><option value="stderr">stderr · итог задания</option></select></label><label class="form-field" id="native-log-profile-field" hidden>Задание<select id="native-log-profile">${NATIVE_PROFILES.map((profile) => `<option value="${profile}">${esc(NATIVE_NAMES[profile])}</option>`).join("")}</select></label></div><pre id="native-log" class="code-content native-log-text" tabindex="0">Выберите серию.</pre></section></div></div>`;
+}
+function nativeCheckLabel(name) {
+  return ({root_exit_zero: "Процесс завершился успешно", watchdog_not_reached: "Внешний лимит не превышен",
+    memory_limit_not_reached: "Лимит памяти не превышен", tree_resources_observed: "Ресурсы процесса измерены",
+    owned_cleanup_complete: "Дочерние процессы завершены", input_hashes_unchanged: "Входные данные не изменились",
+    flat_hashes_unchanged: "Код агента не изменился", worker_config_unchanged: "Настройки задания не изменились",
+    source_identity_unchanged: "Версия исходников сохранена", worker_returned: "Получен отчёт текущего запуска",
+    observer_complete: "Наблюдения сохранены", one_adaptive_offline_invocation: "Выполнен offline-поиск",
+    original_deadline_respected: "Исходный бюджет соблюдён", zero_api: "API не использовался",
+    fresh_full_refit_published: "Есть новое обучение на полном TRAIN", selected_outer_execution_clean: "Проверочное обучение завершено",
+    selected_refit_execution_clean: "Полное обучение завершено", requested_rescue_profile_recorded: "Режим rescue подтверждён",
+    output_structure_valid: "Формат предсказаний корректен", outer_and_full_refit_receipts_valid: "Квитанции обучения проверены"})[name] || name.replaceAll("_", " ");
+}
+function nativeProfileCard(row) {
+  const resources = row.resources || {};
+  const measured = resources.available === true;
+  const stage = ({inner_research: "Поиск на INNER", outer_validation: "Проверка на outer", full_refit: "Обучение на полном TRAIN",
+    preparing: "Подготовка", startup: "Подготовка исходной модели", baseline: "Подготовка исходной модели",
+    waiting: "Ожидает очереди", not_started: "Следующее задание не запускалось",
+    result: "Результат", finished: "Завершение"})[row.stage] || row.stage;
+  const checks = row.checks && typeof row.checks === "object" ? Object.entries(row.checks) : [];
+  return `<article class="native-profile-card ${row.status === "running" ? "active" : ""}"><div class="native-profile-head"><h3>${esc(NATIVE_NAMES[row.profile] || row.profile)}</h3>${nativeStatus(row.status)}</div><div class="native-profile-metric">${esc(nativeMetric(row.metric))}</div><p class="native-profile-stage">${esc(stage || "Обучение ещё не началось")}${Number.isFinite(row.elapsed_seconds) ? ` · ${duration(row.elapsed_seconds)}` : ""}</p><p class="native-resource">${measured ? `Измеренный пик RAM: ${Number.isFinite(resources.peak_rss_bytes) ? `${number(resources.peak_rss_bytes / 1024 ** 3, 2)} ГиБ` : "не указан"}` : "Измерения ресурсов пока не подтверждены"}</p>${row.continuation_allowed === true ? `<p class="native-admission good">${icon("check")} Обязательные проверки пройдены</p>` : row.continuation_allowed === false ? `<p class="native-admission bad">${icon("missing")} Переход к следующему заданию запрещён</p>` : ""}${row.qualification === "requires_review" ? '<p class="native-review">Результат требует разбора. Это отдельно от технического допуска продолжения.</p>' : ""}${row.error ? `<p class="native-error">${esc(row.error)}</p>` : ""}${checks.length ? `<details class="native-audit" data-profile="${esc(row.profile)}"><summary>Проверки завершения · ${checks.filter(([, value]) => value === true).length}/${checks.length}</summary><ul>${checks.map(([name, value]) => `<li><span>${esc(nativeCheckLabel(name))}</span>${badge(value === true ? "Пройдено" : value === false ? "Не пройдено" : "Неизвестно", value === true ? "green" : value === false ? "red" : "gray")}</li>`).join("")}</ul></details>` : ""}</article>`;
+}
+function nativeComparison(comparison) {
+  if (!comparison || comparison.status === "incomplete") return '<div class="native-comparison"><h3>Сравнение OFF / ON</h3><p>Появится после двух успешно проверенных прогонов регрессии.</p></div>';
+  if (comparison.status !== "comparable") return '<div class="native-comparison"><h3>Сравнение OFF / ON</h3><p>Результаты не подтверждены как совместимые. Изучите отчёты каждого задания.</p></div>';
+  return `<div class="native-comparison"><h3>Сравнение OFF / ON</h3><div class="native-comparison-values"><span>OFF<strong>${esc(nativeMetric(comparison.off))}</strong></span><span>ON<strong>${esc(nativeMetric(comparison.on))}</strong></span><span>RMSE · ON − OFF<strong>${Number.isFinite(comparison.on_minus_off) ? number(comparison.on_minus_off, 6) : "—"}</strong></span></div><p>Отрицательная разница RMSE означает меньшую ошибку ON в этой проверке.</p>${comparison.rescue_exercised === false ? badge("Rescue был пропущен", "amber") : comparison.rescue_exercised === true ? badge("Rescue был запущен", "gray") : badge("Выполнение rescue не подтверждено", "gray")}<p>Одна пара на известных данных не доказывает общий прирост качества.</p></div>`;
+}
+function nativeDetailHTML(queue) {
+  const rows = NATIVE_PROFILES.map((profile) => {
+    const row = (queue.profiles || []).find((item) => item.profile === profile) || {profile, status: "pending"};
+    return row.status === "pending" && ["stopped", "cancelled", "interrupted", "failed", "cleanup_pending"].includes(queue.status)
+      ? {...row, status: "not_started", stage: "not_started"} : row;
+  });
+  const stopLabel = queue.status === "cleanup_pending" ? "Повторить остановку" : "Остановить всю очередь";
+  return `<section class="panel native-detail"><div class="panel-head"><div><h2>Серия ${esc(queue.id.slice(0, 8))}</h2><p>${esc(date(queue.created_at))} · до ${duration(queue.total_native_seconds || queue.time_budget_seconds * 3)} обучения</p></div>${nativeStatus(queue.status)}</div><div class="panel-body"><div class="native-series-actions">${nativeRunning(queue) ? `<button class="button danger" data-action="native-stop" data-native-id="${esc(queue.id)}" ${queue.status === "stopping" ? "disabled" : ""}>${icon("missing")} ${stopLabel}</button>` : ""}${queue.artifact_available ? `<a class="button" href="${nativePath(queue.id)}/evidence" download>${icon("download")} Скачать отчёты ZIP</a>` : '<span class="subtle-text">Архив появится после сохранения отчётов. При прерывании часть файлов может быть доступна только в папке результатов.</span>'}</div>${queue.error ? `<div class="warning-box native-error">${esc(queue.error)}</div>` : ""}<div class="native-profile-grid">${rows.map(nativeProfileCard).join("")}</div>${nativeComparison(queue.comparison)}<p class="native-hint">Метрики рассчитаны на известных проверочных строках TRAIN и не равны баллам платформы.</p><details class="native-location"><summary>Версия и папка результатов</summary><p>Версия агента <code>${esc(queue.release_sha || "Не подтверждена")}</code></p><p>Результаты <code>${esc(queue.output_dir || "Папка ещё не назначена")}</code></p><p>Прерванные серии сохраняются в истории. Продолжение старого обучения автоматически не запускается.</p></details></div></section>`;
+}
+function renderNativeHistory() {
+  const node = $("#native-history");
+  if (!node) return;
+  node.innerHTML = state.nativeQueues.length ? state.nativeQueues.map((queue) => `<button class="native-history-item ${queue.id === state.nativeSelectedQueue ? "selected" : ""}" data-native-queue="${esc(queue.id)}" aria-pressed="${queue.id === state.nativeSelectedQueue}"><span><strong>Серия ${esc(queue.id.slice(0, 8))}</strong><small>${esc(date(queue.created_at))}</small></span>${nativeStatus(queue.status)}</button>`).join("") : '<div class="job-empty"><h3>Серий пока нет</h3><p>Выберите две задачи и проверьте готовность компьютера.</p></div>';
+}
+function updateNativeLaunchState() {
+  const block = nativeLaunchBlock(), start = $("#native-start");
+  if (start) {
+    start.disabled = Boolean(block);
+    start.innerHTML = `${icon("activity")} ${state.nativeStartBusy ? "Запускаем…" : "Запустить три задания"}`;
+  }
+  const note = $("#native-launch-block");
+  if (note) note.textContent = block || "Задания выполняются по одному. Ошибка обязательной проверки остановит очередь.";
+}
+async function loadNativePage(generation) {
+  const [history, tasks, session, preflight] = await Promise.all([
+    api("/api/native-queues"), api("/api/tasks"), api("/api/session"),
+    state.nativePreflight ? Promise.resolve(state.nativePreflight) : api("/api/native-queues/preflight").catch((error) => ({ready: false, errors: [error.message]})),
+  ]);
+  if (generation !== state.generation || state.view !== "native") return;
+  state.tasks = Array.isArray(tasks.tasks) ? tasks.tasks : [];
+  if (!state.tasks.some((task) => task.id === state.task)) state.task = state.tasks.find((task) => task.available)?.id || state.tasks[0]?.id || null;
+  const taskSelect = $("#task-select");
+  taskSelect.innerHTML = state.tasks.length ? state.tasks.map((task) => `<option value="${esc(task.id)}">${esc(taskName(task))}</option>`).join("") : "<option>Задач пока нет</option>";
+  taskSelect.value = state.task || "";
+  taskSelect.disabled = !state.tasks.length;
+  state.session = session;
+  setCampaignActive(session.active_campaign);
+  state.nativePreflight = preflight;
+  state.nativeQueues = Array.isArray(history.queues) ? history.queues : [];
+  setNativeActive(history.active_queue);
+  if (!nativeTasks("regression").some((task) => task.id === state.nativeRegressionTask)) state.nativeRegressionTask = nativeTasks("regression")[0]?.id || null;
+  if (!nativeTasks("classification").some((task) => task.id === state.nativeClassificationTask)) state.nativeClassificationTask = nativeTasks("classification")[0]?.id || null;
+  if (!state.nativeQueues.some((queue) => queue.id === state.nativeSelectedQueue)) state.nativeSelectedQueue = state.nativeActiveQueue?.id || state.nativeQueues[0]?.id || null;
+  main.innerHTML = nativeShell();
+  renderNativeHistory();
+  if (state.nativeSelectedQueue) await loadNativeDetail(state.nativeSelectedQueue, generation);
+  else $("#native-queue-detail").innerHTML = empty("Готово к ночным тестам", "После запуска здесь появятся этапы, метрики и проверки каждого задания.", "clock", false);
+}
+async function checkNativePreflight() {
+  if (state.nativePreflightBusy) return;
+  state.nativePreflightBusy = true;
+  const generation = state.generation;
+  $("#native-readiness").innerHTML = nativePreflightPanel();
+  try {
+    const [value, session] = await Promise.all([api("/api/native-queues/preflight"), api("/api/session")]);
+    if (generation === state.generation && state.view === "native") {
+      state.nativePreflight = value;
+      state.session = session;
+    }
+  } catch (error) {
+    if (generation === state.generation) state.nativePreflight = {ready: false, errors: [error.message]};
+  } finally {
+    state.nativePreflightBusy = false;
+    if (generation === state.generation && state.view === "native") {
+      $("#native-readiness").innerHTML = nativePreflightPanel();
+      updateNativeLaunchState();
+    }
+  }
+}
+async function loadNativeDetail(id, generation = state.generation) {
+  const request = ++state.nativeDetailGeneration;
+  const response = await api(nativePath(id));
+  if (generation !== state.generation || state.view !== "native" || state.nativeSelectedQueue !== id || request !== state.nativeDetailGeneration) return;
+  const queue = response.queue;
+  state.nativeDetail = queue;
+  const open = new Set($$(".native-audit[open]").map((node) => node.dataset.profile));
+  $("#native-queue-detail").innerHTML = nativeDetailHTML(queue);
+  $$(".native-audit").forEach((node) => { node.open = open.has(node.dataset.profile); });
+  $("#native-log-panel").hidden = false;
+  $("#native-log-kind").value = state.nativeLogKind;
+  $("#native-log-profile").value = state.nativeLogProfile;
+  $("#native-log-profile-field").hidden = state.nativeLogKind === "coordinator";
+  await loadNativeLog(id, generation);
+}
+async function loadNativeLog(id = state.nativeSelectedQueue, generation = state.generation) {
+  if (!id) return;
+  const kind = state.nativeLogKind, profile = state.nativeLogProfile, request = ++state.nativeLogGeneration;
+  const query = new URLSearchParams({kind});
+  if (kind !== "coordinator") query.set("profile", profile);
+  try {
+    const response = await api(`${nativePath(id)}/logs?${query}`);
+    if (generation !== state.generation || state.view !== "native" || state.nativeSelectedQueue !== id || kind !== state.nativeLogKind || profile !== state.nativeLogProfile || request !== state.nativeLogGeneration) return;
+    const node = $("#native-log"), atEnd = node.scrollTop + node.clientHeight >= node.scrollHeight - 10;
+    node.textContent = response.text || (kind === "coordinator" ? "В журнале пока нет записей." : "Итоговый журнал появится после завершения задания.");
+    if (atEnd) node.scrollTop = node.scrollHeight;
+    $("#native-log-caption").textContent = kind === "coordinator" ? "Журнал координатора · обновляется во время работы" : `${kind} · ${NATIVE_NAMES[profile]} · ${response.finalized ? "сохранённый итоговый журнал" : "будет сохранён после завершения задания"}`;
+  } catch (error) {
+    if (generation === state.generation && state.view === "native" && state.nativeSelectedQueue === id && request === state.nativeLogGeneration)
+      $("#native-log").textContent = error.message;
+  }
+}
+async function startNativeQueue(event) {
+  event.preventDefault();
+  if (nativeLaunchBlock()) return;
+  const generation = state.generation, errorNode = $("#native-launch-error");
+  errorNode.textContent = "";
+  let payload;
+  try { payload = nativePayload(state.nativeRegressionTask, state.nativeClassificationTask, state.nativeBudgetSeconds); }
+  catch (error) { errorNode.textContent = error.message; return; }
+  state.nativeStartBusy = true;
+  updateNativeLaunchState();
+  try {
+    const response = await post("/api/native-queues", payload);
+    setNativeActive(response.queue);
+    state.nativeSelectedQueue = response.queue.id;
+    if (generation === state.generation && state.view === "native") await loadNativePage(generation);
+    toast("Серия запущена. Задания выполняются последовательно.");
+  } catch (error) {
+    if (generation === state.generation && state.view === "native") errorNode.textContent = error.message;
+    else toast(error.message);
+  } finally {
+    state.nativeStartBusy = false;
+    if (state.view === "native") updateNativeLaunchState();
+  }
+}
+async function stopNativeQueue(id, button) {
+  button.disabled = true;
+  try {
+    const response = await post(`${nativePath(id)}/stop`, {});
+    if (!nativeRunning(response.queue)) setNativeActive(null);
+    if (state.view === "native" && state.nativeSelectedQueue === id) await loadNativeDetail(id);
+    toast("Остановка всей очереди запрошена.");
+  } catch (error) { toast(error.message); }
+  finally { if (button.isConnected) button.disabled = false; }
+}
+async function pollNativeQueues() {
+  if (document.hidden || state.view !== "native" || state.nativePollBusy) return;
+  const generation = state.generation;
+  state.nativePollBusy = true;
+  try {
+    const [response, session] = await Promise.all([api("/api/native-queues"), api("/api/session")]);
+    if (generation !== state.generation || state.view !== "native") return;
+    state.session = session;
+    setCampaignActive(session.active_campaign);
+    state.nativeQueues = Array.isArray(response.queues) ? response.queues : [];
+    setNativeActive(response.active_queue);
+    renderNativeHistory();
+    updateNativeLaunchState();
+    if (state.nativeSelectedQueue) await loadNativeDetail(state.nativeSelectedQueue, generation);
+    $("#native-refresh-time").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+  } catch {
+    if (generation === state.generation && $("#native-refresh-time")) $("#native-refresh-time").textContent = "Нет обновления. Сохранённые результаты остаются на экране.";
+  } finally { state.nativePollBusy = false; }
+}
+async function syncNativeActivity() {
+  if (state.nativeActivityBusy || Date.now() - state.nativeActivityUpdated < 3000) return;
+  state.nativeActivityBusy = true;
+  try {
+    const session = await api("/api/session");
+    state.session = session;
+    setNativeActive(session.active_queue);
+    setCampaignActive(session.active_campaign);
+  }
+  catch { /* The server remains authoritative if activity cannot be refreshed. */ }
+  finally { state.nativeActivityBusy = false; }
+}
 function typeName(type) {
   return (
     {
@@ -206,18 +871,25 @@ async function loadTasks() {
   const generation = ++state.generation;
   main.innerHTML = loading("Ищем локальные задачи…");
   try {
-    const [data, session] = await Promise.all([
+    const [data, session, native] = await Promise.all([
       api("/api/tasks"),
       api("/api/session"),
+      api("/api/native-queues").catch(() => ({active_queue: null})),
     ]);
     if (generation === state.generation) state.session = session;
     if (generation !== state.generation) return;
+    setNativeActive(native.active_queue);
+    setCampaignActive(session.active_campaign);
     state.tasks = Array.isArray(data.tasks) ? data.tasks : [];
     const select = $("#task-select");
     if (!state.tasks.length) {
       state.task = null;
       select.innerHTML = "<option>Задач пока нет</option>";
       select.disabled = true;
+      if (["overview", "campaigns", "native"].includes(state.view)) {
+        await renderView();
+        return;
+      }
       main.innerHTML =
         heading(
           "ОБЗОР ДАННЫХ",
@@ -260,7 +932,7 @@ async function renderView() {
   state.fileGeneration++;
   state.jobGeneration++;
   state.lastRunFingerprint = null;
-  const names = { data: "Данные", runs: "Запуски", result: "Результат" };
+  const names = {overview: "Обзор", data: "Данные", runs: "Эксперименты", result: "Результаты", campaigns: "Серии тестов", native: "Проверка агента"};
   $$(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === state.view);
     if (button.dataset.view === state.view)
@@ -268,6 +940,25 @@ async function renderView() {
     else button.removeAttribute("aria-current");
   });
   $("#crumb-name").textContent = names[state.view];
+  if (["overview", "campaigns"].includes(state.view)) {
+    main.innerHTML = loading(state.view === "overview" ? "Открываем обзор лаборатории…" : "Открываем серии тестов…");
+    try {
+      if (state.view === "overview") await loadOverview(generation);
+      else await loadCampaignPage(generation);
+    } catch (error) {
+      if (generation === state.generation) main.innerHTML = errorView(error, "Не удалось открыть раздел");
+    }
+    return;
+  }
+  if (state.view === "native") {
+    main.innerHTML = loading("Открываем серии тестов…");
+    try {
+      await loadNativePage(generation);
+    } catch (error) {
+      if (generation === state.generation) main.innerHTML = errorView(error, "Не удалось открыть проверку агента");
+    }
+    return;
+  }
   if (!state.task) {
     if (state.view === "runs") await loadJobsPage(generation);
     else await loadTasks();
@@ -299,6 +990,7 @@ async function renderView() {
     else if (state.view === "runs") await loadRuns(generation);
     else await loadResult(generation);
     if (generation === state.generation) mountWorkflow();
+    applyNativeLaneControls();
   } catch (error) {
     if (generation === state.generation) main.innerHTML = errorView(error);
   }
@@ -861,7 +1553,7 @@ async function refresh() {
   await loadTasks();
 }
 function navigate(view) {
-  if (!["data", "runs", "result"].includes(view)) return;
+  if (!["overview", "data", "runs", "result", "campaigns", "native"].includes(view)) return;
   state.view = view;
   history.replaceState(null, "", `#${view}`);
   renderView();
@@ -903,7 +1595,33 @@ $("#help-dialog").addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
-  if (button.dataset.closeDialog) $("#" + button.dataset.closeDialog)?.close();
+  if (button.dataset.campaignPreset) selectCampaignPreset(button.dataset.campaignPreset);
+  else if (button.dataset.campaignMove !== undefined) moveCampaignStep(Number(button.dataset.campaignMove), Number(button.dataset.direction));
+  else if (button.dataset.campaignRemove !== undefined) {
+    const index = Number(button.dataset.campaignRemove);
+    if (Number.isInteger(index) && index >= 0 && index < state.campaignDraft.steps.length) {
+      state.campaignDraft.steps.splice(index, 1); campaignChanged();
+    }
+  } else if (button.dataset.action === "campaign-add") {
+    const draft = state.campaignDraft, task_id = draft.task_ids[0] || readyTasks()[0]?.id;
+    if (draft.steps.length >= 12 || !task_id) return;
+    draft.steps.push({task_id, action: "automl", minutes: 30, validation: {strategy: "auto"}}); campaignChanged();
+  } else if (button.dataset.action === "campaign-preview") previewCampaign();
+  else if (button.dataset.action === "campaign-start") startCampaign();
+  else if (button.dataset.campaignControl) controlCampaign(button.dataset.campaignId, button.dataset.campaignControl, button);
+  else if (button.dataset.campaignOpen) {
+    state.campaignSelected = button.dataset.campaignOpen;
+    if (state.view !== "campaigns") navigate("campaigns");
+    else { renderCampaignHistory(); loadCampaignDetail(button.dataset.campaignOpen).catch((error) => toast(error.message)); }
+  } else if (button.dataset.overviewTask) {
+    state.task = button.dataset.overviewTask; $("#task-select").value = state.task; state.workflow = null; navigate("data");
+  } else if (button.dataset.nativeQueue) {
+    state.nativeSelectedQueue = button.dataset.nativeQueue;
+    renderNativeHistory();
+    loadNativeDetail(button.dataset.nativeQueue).catch((error) => toast(error.message));
+  } else if (button.dataset.action === "native-preflight") checkNativePreflight();
+  else if (button.dataset.action === "native-stop") stopNativeQueue(button.dataset.nativeId, button);
+  else if (button.dataset.closeDialog) $("#" + button.dataset.closeDialog)?.close();
   else if (button.dataset.launch) showLaunch(button.dataset.launch);
   else if (button.dataset.editJob) editJobSettings(button.dataset.editJob);
   else if (button.dataset.openJob)
@@ -944,7 +1662,44 @@ document.addEventListener("click", (event) => {
 });
 window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
 setInterval(pollWorkspace, 1500);
-if (["data", "runs", "result"].includes(location.hash.slice(1)))
+setInterval(pollNativeQueues, 3000);
+setInterval(pollWorkbench, 3000);
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target.dataset.campaignIndex !== undefined) changeCampaignField(Number(target.dataset.campaignIndex), target.dataset.campaignField, target.value);
+  else if (target.dataset.campaignTask !== undefined) {
+    const id = target.dataset.campaignTask, draft = state.campaignDraft;
+    const ids = target.checked ? [...draft.task_ids.filter((item) => item !== id), id] : draft.task_ids.filter((item) => item !== id);
+    if (ids.length > 2) { target.checked = false; toast("Выберите не больше двух задач для одной серии."); return; }
+    draft.task_ids = ids;
+    draft.steps = draft.preset === "custom" ? draft.steps.filter((step) => ids.includes(step.task_id)) : campaignDefaultSteps(draft.preset, ids);
+    if (draft.preset === "custom") for (const task_id of ids) if (!draft.steps.some((step) => step.task_id === task_id) && draft.steps.length < 12) draft.steps.push({task_id, action: "automl", minutes: 30, validation: {strategy: "auto"}});
+    invalidateCampaignPreview(); renderCampaignEditor();
+  } else if (target.id === "campaign-name") { state.campaignDraft.name = target.value; invalidateCampaignPreview(); renderCampaignEditor(); }
+  else if (target.id === "campaign-max-hours") { state.campaignDraft.max_hours = Number(target.value); invalidateCampaignPreview(); renderCampaignEditor(); }
+  else if (event.target.id === "native-regression-task") state.nativeRegressionTask = event.target.value;
+  else if (event.target.id === "native-classification-task") state.nativeClassificationTask = event.target.value;
+  else if (event.target.id === "native-budget") {
+    state.nativeBudgetSeconds = Number(event.target.value);
+    $("#native-total-budget").textContent = duration(state.nativeBudgetSeconds * 3);
+  } else if (event.target.id === "native-log-kind") {
+    if (!["coordinator", "stdout", "stderr"].includes(event.target.value)) return;
+    state.nativeLogKind = event.target.value;
+    $("#native-log-profile-field").hidden = state.nativeLogKind === "coordinator";
+    loadNativeLog();
+  } else if (event.target.id === "native-log-profile") {
+    if (!NATIVE_PROFILES.includes(event.target.value)) return;
+    state.nativeLogProfile = event.target.value;
+    loadNativeLog();
+  }
+});
+document.addEventListener("submit", (event) => {
+  if (event.target.id === "native-launch-form") startNativeQueue(event);
+});
+document.addEventListener("toggle", (event) => {
+  if (event.target.id === "campaign-step-editor") state.campaignEditorOpen = event.target.open;
+}, true);
+if (["overview", "data", "runs", "result", "campaigns", "native"].includes(location.hash.slice(1)))
   state.view = location.hash.slice(1);
 loadTasks();
 
@@ -1041,6 +1796,7 @@ function workflowStrip() {
   return `<div class="workflow-strip" id="workflow-strip" aria-label="Этапы работы">${steps.map((step, i) => `<button class="workflow-step ${step.done ? "done" : ""} ${step.active ? "active" : ""}" data-workflow-view="${step.view}"><span class="workflow-number">${step.done ? icon("check") : i + 1}</span><span><strong>${step.name}</strong><small>${esc(step.detail)}</small></span></button>`).join("")}</div>`;
 }
 function mountWorkflow() {
+  applyNativeLaneControls();
   if (!state.task) return;
   const current = $("#workflow-strip");
   if (current) current.outerHTML = workflowStrip();
@@ -1786,6 +2542,10 @@ function updateLaunchFields() {
   if ($("#model-fields")) $("#model-fields").disabled = !fixedRecipe;
 }
 async function showLaunch(action = "automl", editReference = null) {
+  if (nativeRunning(state.nativeActiveQueue) || campaignRunning(state.campaignActive)) {
+    toast("Очередь CPU занята серией. Продолжите её или остановите в соответствующем разделе.");
+    return;
+  }
   if (action === "prepare") {
     startPrepare();
     return;
@@ -1887,6 +2647,10 @@ $("#launch-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget,
     button = $("#launch-submit");
   if (button.disabled) return;
+  if (nativeRunning(state.nativeActiveQueue) || campaignRunning(state.campaignActive)) {
+    $("#launch-error").textContent = "Серия занимает очередь CPU. Дождитесь завершения или остановите её.";
+    return;
+  }
   const action = $('input[name="recipe"]:checked', form)?.value,
     author = form.elements.author.value.trim(),
     hypothesis = form.elements.hypothesis.value.trim(),
@@ -2151,7 +2915,9 @@ $("#report-file").addEventListener("change", async (event) => {
   }
 });
 async function pollWorkspace() {
+  if (["overview", "campaigns", "native"].includes(state.view)) return;
   if (document.hidden || state.jobPollBusy || state.pollBusy) return;
+  await syncNativeActivity();
   const generation = state.generation,
     task = state.task;
   if (state.view === "runs") {
