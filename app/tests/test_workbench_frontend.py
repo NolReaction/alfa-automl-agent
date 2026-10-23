@@ -117,7 +117,7 @@ async function main() {
     html = get("campaignDetailHTML")({...campaign, status: "pausing"});
     assert.doesNotMatch(html, /data-campaign-control="pause"|data-campaign-control="resume"/);
     assert.match(html, /Текущее задание продолжает работу/);
-    html = get("campaignDetailHTML")({...campaign, status: "paused"});
+    html = get("campaignDetailHTML")({...campaign, status: "paused", steps: [{status: "pending", action: "automl", task_id: "reg", minutes: 5}]});
     assert.match(html, /data-campaign-control="resume"/); assert.match(html, /только оставшиеся задания/);
     html = get("campaignDetailHTML")({...campaign, status: "completed"});
     assert.doesNotMatch(html, /data-campaign-control=/);
@@ -125,6 +125,34 @@ async function main() {
     assert.match(html, /Повторить остановку/); assert.doesNotMatch(html, /resume/);
     assert.equal(get("campaignCompleted")({steps: [{status: "completed"}, {status: "cancelled"}, {status: "pending"}]}), 1,
       "Unstarted cancelled steps must not inflate the completed task count");
+  } else if (which === "ordinary_cleanup") {
+    const state = campaignSetup(), job = {id, task_id: "reg", action: "baseline", status: "cleanup_pending", stage: "cleanup", source: "local"};
+    state.session.active_job = job;
+    assert.equal(get("runningJob")(job), true);
+    assert.match(get("statusBadge")(job.status), /Остановка требует проверки/);
+    assert.match(get("campaignLaunchBlock")(), /отдельный эксперимент/);
+    assert.match(get("nativeLaunchBlock")(), /другой запуск/);
+    assert.match(get("overviewActivity")({active_job: job}), /Остановка требует проверки/);
+    state.view = "runs"; state.task = "reg"; state.selectedJob = id;
+    responder = () => ({job, stdout: "", stderr: ""});
+    await get("loadJobDetail")(id);
+    assert.match(element("#job-detail").innerHTML, /data-action="stop-job">Повторить остановку/);
+    assert.equal(state.jobDetail.job.status, "cleanup_pending");
+  } else if (which === "interrupted_resume") {
+    campaignSetup();
+    const campaign = {id, status: "interrupted", deadline_at: "2026-10-24T08:00:00Z", steps: [
+      {status: "interrupted", task_id: "reg", action: "automl", minutes: 30},
+      {status: "pending", task_id: "cls", action: "automl", minutes: 30},
+    ]};
+    let html = get("campaignDetailHTML")(campaign);
+    assert.match(html, /data-campaign-control="resume"/);
+    assert.match(html, /прежнее обучение не повторяется/);
+    assert.match(html, /первоначальный срок серии/);
+    assert.match(html, /время после закрытия приложения его не продлевают/);
+    html = get("campaignDetailHTML")({...campaign, steps: campaign.steps.slice(0, 1)});
+    assert.doesNotMatch(html, /data-campaign-control="resume"/);
+    for (const status of ["completed", "stopped", "failed", "cleanup_pending"])
+      assert.doesNotMatch(get("campaignDetailHTML")({...campaign, status}), /data-campaign-control="resume"/);
   } else if (which === "comparison_scope") {
     campaignSetup();
     const group = {task_id: "reg", dataset_fingerprint: "e".repeat(64), comparison_key: "f".repeat(64),
@@ -136,6 +164,9 @@ async function main() {
     assert.match(get("campaignComparisonsHTML")([{...group, comparison_key: null}]), /Сравнение появится/);
     assert.doesNotMatch(get("campaignComparisonsHTML")([{...group, jobs: [{job_id: id, action: "automl", minutes: 30, value: NaN}]}]), /★|<polyline/);
     assert.doesNotMatch(get("campaignCurve")(group, [{job_id: id, action: "baseline", minutes: 30, value: 1}]), /<polyline/);
+    const single = get("campaignComparisonsHTML")([{...group, comparison_available: false, jobs: [group.jobs[0]], best_job_id: id}]);
+    assert.match(single, /Пока один результат/);
+    assert.doesNotMatch(single, /Лучший в этой локальной группе|★|<polyline/);
     const detail = {id, steps: [{id: "s1", job_id: id, action: "automl"}, {id: "s2", job_id: otherId, action: "automl"}]};
     const report = {campaign: {id}, groups: [{...group, best: {job_id: otherId}, budget_curve: [
       {step_id: "s1", job_id: id, minutes: 30, metric: {value: 10}},
@@ -185,7 +216,7 @@ main().catch((error) => {console.error(error.stack || error); process.exitCode =
 class WorkbenchFrontendTests(unittest.TestCase):
     def test_workbench_behavior_and_boundaries(self):
         for case in ("presets_payload", "draft_validation", "edit_invalidates", "frozen_start", "stale_preview",
-                     "preview_failure", "paused_lane", "controls", "comparison_scope", "telemetry",
+                     "preview_failure", "paused_lane", "controls", "ordinary_cleanup", "interrupted_resume", "comparison_scope", "telemetry",
                      "stale_detail", "poll_scope", "overview_empty"):
             with self.subTest(case=case):
                 result = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "app/static/app.js"), case],

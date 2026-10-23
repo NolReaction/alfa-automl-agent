@@ -134,7 +134,8 @@ class CampaignManager:
         job = capsule["job"]
         step.update(job_id=job["id"], job=job)
         status = job.get("status")
-        step["status"] = status if isinstance(status, str) and status in STEP_STATES else "interrupted"
+        step["status"] = ("launching" if status == "queued" else status
+                          if isinstance(status, str) and status in STEP_STATES else "interrupted")
 
     def _restore(self):
         folders = [path for path in self.root.iterdir()
@@ -343,11 +344,6 @@ class CampaignManager:
                 raise ValueError("Настройки проверки должны относиться к выбранным задачам.")
             source = self._identity()
             runtime = self._runtime_identity()
-            fingerprints, choices, task_types, sizes = {}, {}, {}, {}
-            for task_id in task_ids:
-                fingerprints[task_id] = self.catalog.fingerprint(task_id)
-                choices[task_id], task_types[task_id] = self._validation(task_id, mapping.get(task_id))
-                sizes[task_id] = self._input_size(task_id)
             if preset == "custom":
                 raw_steps = body.get("steps")
                 if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= 12:
@@ -360,6 +356,10 @@ class CampaignManager:
                     recipes = [(action, 30) for action in ACTIONS[1:]]
                 raw_steps = [{"task_id": task_id, "action": action, "minutes": minutes}
                              for action, minutes in recipes for task_id in task_ids]
+            fingerprints, sizes, validations = {}, {}, {}
+            for task_id in task_ids:
+                fingerprints[task_id] = self.catalog.fingerprint(task_id)
+                sizes[task_id] = self._input_size(task_id)
             steps = []
             for index, item in enumerate(raw_steps):
                 if not isinstance(item, dict) or set(item) - {"task_id", "action", "minutes", "validation", "model_params", "label"}:
@@ -372,17 +372,24 @@ class CampaignManager:
                 label = item.get("label", "")
                 if not isinstance(label, str) or len(label) > 100:
                     raise ValueError("Подпись шага: до 100 символов.")
-                validation = choices[task_id]
-                if "validation" in item:
-                    validation, _ = self._validation(task_id, item["validation"])
+                # Resolve only this step's actual request. An explicit split
+                # must not first pass an unused automatic split, and it must
+                # never become the default for another step that omitted one.
+                requested = item.get("validation", mapping.get(task_id))
+                requested = (None if requested is None or requested == {"strategy": "auto"}
+                             else normalize_validation(requested))
+                validation_key = (task_id, _hash(requested))
+                if validation_key not in validations:
+                    validations[validation_key] = self._validation(task_id, requested)
+                validation, task_type = validations[validation_key]
                 parameters = item.get("model_params")
                 if action == "automl" and parameters is not None:
                     raise ValueError("AutoML сам выбирает параметры моделей.")
                 if action != "automl":
-                    config = make_model_config(action, task_types[task_id], parameters)
+                    config = make_model_config(action, task_type, parameters)
                     parameters = config["parameters"]
                 step = {"task_id": task_id, "action": action, "minutes": minutes,
-                        "validation": validation, "model_params": parameters, "label": label,
+                        "validation": deepcopy(validation), "model_params": parameters, "label": label,
                         "worker_timeout_seconds": minutes * 60 + 30 if action == "automl" else LOCAL_TIMEOUT}
                 step["id"] = _hash({"index": index, **step})[:32]
                 steps.append(step)

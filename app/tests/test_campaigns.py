@@ -160,6 +160,29 @@ class CampaignTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "preview_token"):
             self.manager.start(self.body())
 
+    def test_custom_explicit_split_skips_unused_auto_and_never_changes_omitted_default(self):
+        train = self.data / "classification/nested/participants/train.csv"
+        train.write_text("row_key,x,kind,answer\n" + "".join(
+            f"train-{index:03d},{index % 2},kind-{index % 2},{index % 2}\n" for index in range(60)),
+            encoding="utf-8")
+        # Each class occupies one duplicate group: grouped auto is infeasible,
+        # while an explicitly chosen stratified random holdout remains legal.
+        self.assertFalse(self.manager.preview({"preset": "smoke", "task_ids": ["classification"]})["ready"])
+        explicit = {"task_id": "classification", "action": "automl", "minutes": 5,
+                    "validation": {"strategy": "random"}}
+        body = self.body(task_ids=["classification"], steps=[explicit, deepcopy(explicit)])
+        with patch.object(self.manager, "_validation", wraps=self.manager._validation) as resolve:
+            preview = self.manager.preview(body)
+        self.assertTrue(preview["ready"], preview)
+        self.assertEqual(resolve.call_count, 1)
+        self.assertTrue(all(step["validation"] == {"strategy": "random"} for step in preview["steps"]))
+        omitted = {key: value for key, value in explicit.items() if key != "validation"}
+        self.assertFalse(self.manager.preview({**body, "steps": [explicit, omitted]})["ready"])
+        mapped = self.manager.preview({**body, "steps": [omitted],
+            "validation_by_task": {"classification": {"strategy": "random"}}})
+        self.assertTrue(mapped["ready"], mapped)
+        self.assertEqual(self.jobs.calls, [])
+
     def test_runtime_versions_are_frozen_and_drift_excludes_the_result(self):
         identifier, active = self.queued()
         detail = self.manager.detail(identifier)
@@ -209,6 +232,21 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(len(detail["comparisons"]), 1)
         self.assertEqual(detail["comparisons"][0]["best_job_id"], detail["steps"][0]["job_id"])
         self.assertIsNone(self.manager.active_campaign())
+
+    def test_queued_owned_job_is_launching_without_false_interruption(self):
+        identifier, _ = self.queued(self.body(count=1))
+        record = self.manager._records[identifier]
+        step = record["steps"][0]
+        self.jobs.auto_complete = False
+        self.jobs.start(step["task_id"], step["action"],
+            campaign_owner={"campaign_id": identifier, "step_id": step["id"]})
+        capsule = self.jobs.owners[(identifier, step["id"])]
+        capsule["job"].update(status="queued", stage="preparing")
+        self.manager._attach(record, step, capsule)
+        detail = self.manager.detail(identifier)
+        self.assertEqual(detail["steps"][0]["status"], "launching")
+        self.assertEqual(detail["steps"][0]["job"]["status"], "queued")
+        self.assertIsNone(detail["steps"][0]["admissible"])
 
     def test_pause_waits_for_current_job_resume_only_runs_pending_steps(self):
         identifier, active = self.queued()
