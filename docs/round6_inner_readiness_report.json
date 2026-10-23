@@ -1,0 +1,2203 @@
+{
+  "schema_version": "round6-inner-readiness/1",
+  "scope": "actual_host_inner_fit_only_oof_structure",
+  "statement": "Фактический INNER fit канонического host v3 на временной копии задачи: авто outer, его research fit, INNER fit/held. Это не INNER-контекст для Qwen и не допуск модели. Модели не обучаются, identity probe не запускается, API не вызывается. Структурная готовность не означает, что OOF повысит Macro F1.",
+  "source_commit": "97302482a9f538426f31fdd0514134bbecbaab1e",
+  "pr51_source": {
+    "branch": "origin/work/round5-oof-host-v1",
+    "commit": "25e5967",
+    "file": "agent/round5_classification_host.py",
+    "use": "read-only source; not imported or run"
+  },
+  "inputs": {
+    "task.md": {
+      "sha256": "eebb55ebb8deb8257a2c012330ecc015e8d3a0bc3619c40da6c2a6ab200709bf",
+      "bytes": 4699
+    },
+    "multiclass/participants/data_dictionary.csv": {
+      "sha256": "13d2651c5fe02b7fc30f0e7290af45606aad5de76c2f7b69217abc270dbbcef4",
+      "bytes": 3532
+    },
+    "multiclass/participants/sample_submission.csv": {
+      "sha256": "4d23642fcff01e49b0ef5a9f018b2381c12fad97282fa586285ad49b01e9623e",
+      "bytes": 565229
+    },
+    "multiclass/participants/test.csv": {
+      "sha256": "b825449603931b5f05a8855e3d92b57775221c93ed4730ac6b4c75b9ea608862",
+      "bytes": 7556373
+    },
+    "multiclass/participants/train.csv": {
+      "sha256": "171a8915070b7575b729a32f70a45d1ad7b6f43c65b4ce12a0a68af30d5cb4e0",
+      "bytes": 16567584
+    }
+  },
+  "inputs_unchanged": true,
+  "copy_matches_inputs": true,
+  "copy_unchanged_during_run": true,
+  "host": {
+    "path": "agent/research_v3.py:264-265 prepare_research -> ResearchWorkspace(task_path, workspace)",
+    "outer": {
+      "strategy": "grouped",
+      "validation_reason": "Найдены одинаковые строки признаков: группы дублей разделены между обучением и проверкой.",
+      "split": {
+        "strategy": "grouped",
+        "seed": 42,
+        "train_fraction": 0.8002167217976502,
+        "validation_fraction": 0.19978327820234973,
+        "shuffle": true,
+        "stratified": true,
+        "train_rows": 70155,
+        "validation_rows": 17515,
+        "group_count": 54228,
+        "train_groups": 43384,
+        "validation_groups": 10844,
+        "group_overlap": 0,
+        "n_splits": 5,
+        "fold": 0
+      },
+      "fit_rows": 70155,
+      "holdout_rows": 17515
+    },
+    "inner": {
+      "available": true,
+      "unavailable_reason": null,
+      "split": {
+        "strategy": "grouped",
+        "seed": 42,
+        "train_fraction": 0.7974485068776281,
+        "validation_fraction": 0.2025514931223719,
+        "shuffle": true,
+        "stratified": true,
+        "train_rows": 55945,
+        "validation_rows": 14210,
+        "group_count": 43384,
+        "train_groups": 34718,
+        "validation_groups": 8666,
+        "group_overlap": 0,
+        "n_splits": 5,
+        "fold": 0
+      },
+      "fit_rows": 55945,
+      "held_rows": 14210
+    },
+    "test_reads": [
+      "load_task -> load_data открывает и проверяет test.csv (agent/task_spec.py:285-286, offline_baseline.py:128-145).",
+      "load_task_data снова читает test.csv; data_fingerprint хеширует его (agent/research_workspace.py:292-294, :438).",
+      "choose_validation для классификации смотрит только на дубли признаков TRAIN (agent/automl.py:158-163); для регрессии она сравнивает периоды TEST (agent/automl.py:164-182).",
+      "Ограничения PR #51 по форме полного refit используют число строк TEST (PR #51 :97-103).",
+      "audit_oof_fit не читает файлов и TEST: только переданные X_fit, y_fit, context."
+    ]
+  },
+  "fit_table": {
+    "source": "PR #51 25e5967 agent/round5_classification_host.py:169-171 gate.research_train.iloc[gate.fit_rows]",
+    "candidate_view": "agent/research_candidate.py:299-300 fit.csv; driver :214 dtype=str keep_default_na=False, :224",
+    "rows": 55945,
+    "feature_count": 42,
+    "features_sha256": "4ce19d98f1407deba91f7d2548d08859efddffb44ea0d480887e07633546fdf3",
+    "row_hashes_sha256": "9819ca9ed56ff21af833a12f444dda50fa9132cbb4599a804ceef761d455ecda",
+    "labels_sha256": "50049e51e68ade6371095cc9cf95bbea0ae82749c788553400f3e1c089dad2db",
+    "ids_sha256": "3da3897f06ada869a33216a60f052c118c10a06fb040767ee67841657664f826",
+    "fit_csv_sha256": "2439cb9da16e342bdc0e457778d206643172e031faba7019a9cc69f5e52b67f8",
+    "same_features": true,
+    "same_rows_order_and_values": true,
+    "same_labels": true,
+    "same_ids": true
+  },
+  "decision": "structurally_compatible",
+  "reasons": [],
+  "first_fit": {
+    "host_prerequisites": "passed",
+    "runtime": "unknown",
+    "runtime_conditions": [
+      "adaptive_search_on",
+      "measured_baseline",
+      "probe_reserve",
+      "ordinary_catboost_slot",
+      "identity_probe_completed",
+      "cost_admission"
+    ],
+    "structural": "starts",
+    "deciding_check": "oof_support_gates",
+    "reason": "first_fit_reached_without_training",
+    "source": "agent/oof_classification.py:296-320; последний gate перед первым callback — класс в B ≥ min_selection_class_count (:319)"
+  },
+  "recipe": {
+    "variant": "oof",
+    "sha256": "cde4de874b1b236c9dc485d25b4be01a59788666b91ffe8f4341069525fa9dfc",
+    "frozen_public_sha256": "cde4de874b1b236c9dc485d25b4be01a59788666b91ffe8f4341069525fa9dfc",
+    "matches_frozen_public": true,
+    "classes_equal_frozen_public": true,
+    "explanation": null,
+    "source": "PR #51 25e5967 :318 checked_recipe(make_recipe(fixed_incumbent_recipe(), classes, variant='oof'))"
+  },
+  "host_prerequisites": [
+    {
+      "id": "macro_f1_labels",
+      "status": "passed",
+      "observed": "Macro F1",
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:71-73"
+    },
+    {
+      "id": "task_semantics",
+      "status": "passed",
+      "observed": true,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:74-75"
+    },
+    {
+      "id": "inner_available",
+      "status": "passed",
+      "observed": true,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:78-79"
+    },
+    {
+      "id": "grouped_policy",
+      "status": "passed",
+      "observed": [
+        "grouped",
+        "grouped"
+      ],
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:80-82"
+    },
+    {
+      "id": "class_count_and_order",
+      "status": "passed",
+      "observed": 10,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:83-87"
+    },
+    {
+      "id": "feature_roles",
+      "status": "passed",
+      "observed": 42,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:88-95"
+    },
+    {
+      "id": "row_caps",
+      "status": "passed",
+      "observed": {
+        "inner": [
+          55945,
+          14210
+        ],
+        "outer": [
+          70155,
+          17515
+        ],
+        "full_refit": [
+          87670,
+          41166
+        ]
+      },
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:97-101"
+    },
+    {
+      "id": "feature_matrix_caps",
+      "status": "passed",
+      "observed": {
+        "features": 42,
+        "largest_rows": 87670,
+        "cells": 3682140
+      },
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:102-103"
+    },
+    {
+      "id": "adaptive_search_on",
+      "status": "unknown",
+      "observed": null,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:68-69"
+    },
+    {
+      "id": "measured_baseline",
+      "status": "unknown",
+      "observed": null,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:76-77"
+    },
+    {
+      "id": "probe_reserve",
+      "status": "unknown",
+      "observed": null,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:104-105, :345-346"
+    },
+    {
+      "id": "ordinary_catboost_slot",
+      "status": "unknown",
+      "observed": null,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:306-308"
+    },
+    {
+      "id": "identity_probe_completed",
+      "status": "unknown",
+      "observed": null,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:359-376"
+    },
+    {
+      "id": "cost_admission",
+      "status": "unknown",
+      "observed": null,
+      "source": "PR #51 25e5967 agent/round5_classification_host.py:377-383"
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "outer_partition",
+      "status": "passed",
+      "fit_rows": 70155,
+      "holdout_rows": 17515,
+      "shared_rows": 0,
+      "uncovered_rows": 0
+    },
+    {
+      "id": "research_is_outer_fit",
+      "status": "passed",
+      "rows": 70155
+    },
+    {
+      "id": "outer_groups_disjoint",
+      "status": "passed",
+      "shared_groups": 0,
+      "strategy": "grouped"
+    },
+    {
+      "id": "inner_partition",
+      "status": "passed",
+      "fit_rows": 55945,
+      "held_rows": 14210,
+      "shared_rows": 0,
+      "uncovered_rows": 0
+    },
+    {
+      "id": "inner_outside_outer_holdout",
+      "status": "passed",
+      "fit_rows_in_holdout": 0,
+      "held_rows_in_holdout": 0
+    },
+    {
+      "id": "inner_groups_disjoint",
+      "status": "passed",
+      "shared_groups": 0,
+      "strategy": "grouped"
+    },
+    {
+      "id": "audit_input_is_inner_fit",
+      "status": "passed",
+      "rows": 55945
+    },
+    {
+      "id": "ab_partition",
+      "status": "passed",
+      "A_rows": 44800,
+      "B_rows": 11145,
+      "shared_rows": 0,
+      "uncovered_rows": 0,
+      "shared_groups": 0
+    },
+    {
+      "id": "fold_1",
+      "status": "passed",
+      "fit_rows": 30108,
+      "held_rows": 14692,
+      "rows_outside_A": 0,
+      "shared_rows": 0,
+      "shared_groups": 0
+    },
+    {
+      "id": "fold_2",
+      "status": "passed",
+      "fit_rows": 29693,
+      "held_rows": 15107,
+      "rows_outside_A": 0,
+      "shared_rows": 0,
+      "shared_groups": 0
+    },
+    {
+      "id": "fold_3",
+      "status": "passed",
+      "fit_rows": 29799,
+      "held_rows": 15001,
+      "rows_outside_A": 0,
+      "shared_rows": 0,
+      "shared_groups": 0
+    },
+    {
+      "id": "folds_hold_A_once",
+      "status": "passed",
+      "fold_count": 3,
+      "A_rows_held_once": 44800,
+      "B_rows_held": 0
+    }
+  ],
+  "support": [
+    {
+      "part": "allowed",
+      "class": "Analysis",
+      "rows": 647,
+      "groups": 576,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 574
+    },
+    {
+      "part": "allowed",
+      "class": "Backdoor",
+      "rows": 560,
+      "groups": 529,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 527
+    },
+    {
+      "part": "allowed",
+      "class": "DoS",
+      "rows": 3929,
+      "groups": 1645,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 1643
+    },
+    {
+      "part": "allowed",
+      "class": "Exploits",
+      "rows": 10661,
+      "groups": 7047,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 7045
+    },
+    {
+      "part": "allowed",
+      "class": "Fuzzers",
+      "rows": 5816,
+      "groups": 5412,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 5410
+    },
+    {
+      "part": "allowed",
+      "class": "Generic",
+      "rows": 12423,
+      "groups": 2248,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 2246
+    },
+    {
+      "part": "allowed",
+      "class": "Normal",
+      "rows": 17884,
+      "groups": 16899,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 16897
+    },
+    {
+      "part": "allowed",
+      "class": "Reconnaissance",
+      "rows": 3618,
+      "groups": 2637,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 2635
+    },
+    {
+      "part": "allowed",
+      "class": "Shellcode",
+      "rows": 366,
+      "groups": 359,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 357
+    },
+    {
+      "part": "allowed",
+      "class": "Worms",
+      "rows": 41,
+      "groups": 41,
+      "threshold_on": "groups",
+      "threshold": 2,
+      "source": "agent/splits.py:89",
+      "margin": 39
+    },
+    {
+      "part": "A",
+      "class": "Analysis",
+      "rows": 524,
+      "groups": 464,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 519
+    },
+    {
+      "part": "A",
+      "class": "Backdoor",
+      "rows": 454,
+      "groups": 432,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 449
+    },
+    {
+      "part": "A",
+      "class": "DoS",
+      "rows": 3150,
+      "groups": 1324,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 3145
+    },
+    {
+      "part": "A",
+      "class": "Exploits",
+      "rows": 8489,
+      "groups": 5622,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 8484
+    },
+    {
+      "part": "A",
+      "class": "Fuzzers",
+      "rows": 4668,
+      "groups": 4335,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 4663
+    },
+    {
+      "part": "A",
+      "class": "Generic",
+      "rows": 10086,
+      "groups": 1787,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 10081
+    },
+    {
+      "part": "A",
+      "class": "Normal",
+      "rows": 14380,
+      "groups": 13575,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 14375
+    },
+    {
+      "part": "A",
+      "class": "Reconnaissance",
+      "rows": 2726,
+      "groups": 2084,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 2721
+    },
+    {
+      "part": "A",
+      "class": "Shellcode",
+      "rows": 287,
+      "groups": 282,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 282
+    },
+    {
+      "part": "A",
+      "class": "Worms",
+      "rows": 36,
+      "groups": 36,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:303 min_tuning_class_count",
+      "margin": 31
+    },
+    {
+      "part": "B",
+      "class": "Analysis",
+      "rows": 123,
+      "groups": 112,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 118
+    },
+    {
+      "part": "B",
+      "class": "Backdoor",
+      "rows": 106,
+      "groups": 97,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 101
+    },
+    {
+      "part": "B",
+      "class": "DoS",
+      "rows": 779,
+      "groups": 321,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 774
+    },
+    {
+      "part": "B",
+      "class": "Exploits",
+      "rows": 2172,
+      "groups": 1425,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 2167
+    },
+    {
+      "part": "B",
+      "class": "Fuzzers",
+      "rows": 1148,
+      "groups": 1077,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 1143
+    },
+    {
+      "part": "B",
+      "class": "Generic",
+      "rows": 2337,
+      "groups": 461,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 2332
+    },
+    {
+      "part": "B",
+      "class": "Normal",
+      "rows": 3504,
+      "groups": 3324,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 3499
+    },
+    {
+      "part": "B",
+      "class": "Reconnaissance",
+      "rows": 892,
+      "groups": 553,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 887
+    },
+    {
+      "part": "B",
+      "class": "Shellcode",
+      "rows": 79,
+      "groups": 77,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 74
+    },
+    {
+      "part": "B",
+      "class": "Worms",
+      "rows": 5,
+      "groups": 5,
+      "threshold_on": "rows",
+      "threshold": 5,
+      "source": "agent/oof_classification.py:319 min_selection_class_count",
+      "margin": 0
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Analysis",
+      "rows": 360,
+      "groups": 320,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 359
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Backdoor",
+      "rows": 319,
+      "groups": 302,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 318
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "DoS",
+      "rows": 2147,
+      "groups": 873,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 2146
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Exploits",
+      "rows": 5721,
+      "groups": 3732,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 5720
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Fuzzers",
+      "rows": 3120,
+      "groups": 2885,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 3119
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Generic",
+      "rows": 6737,
+      "groups": 1219,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 6736
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Normal",
+      "rows": 9665,
+      "groups": 9093,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 9664
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Reconnaissance",
+      "rows": 1826,
+      "groups": 1372,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 1825
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Shellcode",
+      "rows": 192,
+      "groups": 188,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 191
+    },
+    {
+      "part": "fold_1_fit",
+      "class": "Worms",
+      "rows": 21,
+      "groups": 21,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 20
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Analysis",
+      "rows": 164,
+      "groups": 144,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Backdoor",
+      "rows": 135,
+      "groups": 130,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "DoS",
+      "rows": 1003,
+      "groups": 451,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Exploits",
+      "rows": 2768,
+      "groups": 1890,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Fuzzers",
+      "rows": 1548,
+      "groups": 1450,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Generic",
+      "rows": 3349,
+      "groups": 568,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Normal",
+      "rows": 4715,
+      "groups": 4482,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Reconnaissance",
+      "rows": 900,
+      "groups": 712,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Shellcode",
+      "rows": 95,
+      "groups": 94,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_1_held",
+      "class": "Worms",
+      "rows": 15,
+      "groups": 15,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Analysis",
+      "rows": 331,
+      "groups": 292,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 330
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Backdoor",
+      "rows": 298,
+      "groups": 284,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 297
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "DoS",
+      "rows": 2054,
+      "groups": 889,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 2053
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Exploits",
+      "rows": 5597,
+      "groups": 3756,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 5596
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Fuzzers",
+      "rows": 3071,
+      "groups": 2857,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 3070
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Generic",
+      "rows": 6782,
+      "groups": 1169,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 6781
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Normal",
+      "rows": 9549,
+      "groups": 9075,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 9548
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Reconnaissance",
+      "rows": 1793,
+      "groups": 1381,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 1792
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Shellcode",
+      "rows": 192,
+      "groups": 188,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 191
+    },
+    {
+      "part": "fold_2_fit",
+      "class": "Worms",
+      "rows": 26,
+      "groups": 26,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 25
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Analysis",
+      "rows": 193,
+      "groups": 172,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Backdoor",
+      "rows": 156,
+      "groups": 148,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "DoS",
+      "rows": 1096,
+      "groups": 435,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Exploits",
+      "rows": 2892,
+      "groups": 1866,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Fuzzers",
+      "rows": 1597,
+      "groups": 1478,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Generic",
+      "rows": 3304,
+      "groups": 618,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Normal",
+      "rows": 4831,
+      "groups": 4500,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Reconnaissance",
+      "rows": 933,
+      "groups": 703,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Shellcode",
+      "rows": 95,
+      "groups": 94,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_2_held",
+      "class": "Worms",
+      "rows": 10,
+      "groups": 10,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Analysis",
+      "rows": 357,
+      "groups": 316,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 356
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Backdoor",
+      "rows": 291,
+      "groups": 278,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 290
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "DoS",
+      "rows": 2099,
+      "groups": 886,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 2098
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Exploits",
+      "rows": 5660,
+      "groups": 3756,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 5659
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Fuzzers",
+      "rows": 3145,
+      "groups": 2928,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 3144
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Generic",
+      "rows": 6653,
+      "groups": 1186,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 6652
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Normal",
+      "rows": 9546,
+      "groups": 8982,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 9545
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Reconnaissance",
+      "rows": 1833,
+      "groups": 1415,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 1832
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Shellcode",
+      "rows": 190,
+      "groups": 188,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 189
+    },
+    {
+      "part": "fold_3_fit",
+      "class": "Worms",
+      "rows": 25,
+      "groups": 25,
+      "threshold_on": "rows",
+      "threshold": 1,
+      "source": "agent/oof_classification.py:305 fit_missing_class",
+      "margin": 24
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Analysis",
+      "rows": 167,
+      "groups": 148,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Backdoor",
+      "rows": 163,
+      "groups": 154,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "DoS",
+      "rows": 1051,
+      "groups": 438,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Exploits",
+      "rows": 2829,
+      "groups": 1866,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Fuzzers",
+      "rows": 1523,
+      "groups": 1407,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Generic",
+      "rows": 3433,
+      "groups": 601,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Normal",
+      "rows": 4834,
+      "groups": 4593,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Reconnaissance",
+      "rows": 893,
+      "groups": 669,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Shellcode",
+      "rows": 97,
+      "groups": 94,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    },
+    {
+      "part": "fold_3_held",
+      "class": "Worms",
+      "rows": 11,
+      "groups": 11,
+      "threshold_on": null,
+      "threshold": null,
+      "source": null,
+      "margin": null
+    }
+  ],
+  "minimum_margin": {
+    "margin": 0,
+    "at": [
+      {
+        "part": "B",
+        "class": "Worms",
+        "threshold_on": "rows",
+        "threshold": 5,
+        "rows": 5,
+        "groups": 5
+      }
+    ]
+  },
+  "part_constraints": [
+    {
+      "id": "fit_rows",
+      "source": "probability caps.max_fit_rows",
+      "limit": "max",
+      "threshold": 100000,
+      "observed": 55945,
+      "satisfied": true
+    },
+    {
+      "id": "declared_classes",
+      "source": "probability caps.max_classes",
+      "limit": "max",
+      "threshold": 50,
+      "observed": 10,
+      "satisfied": true
+    },
+    {
+      "id": "A_rows",
+      "source": "DEFAULT_GUARD_OPTIONS.min_tuning_samples",
+      "limit": "min",
+      "threshold": 100,
+      "observed": 44800,
+      "satisfied": true
+    },
+    {
+      "id": "A_min_class_rows",
+      "source": "DEFAULT_GUARD_OPTIONS.min_tuning_class_count",
+      "limit": "min",
+      "threshold": 5,
+      "observed": 36,
+      "classes_below": [],
+      "satisfied": true
+    },
+    {
+      "id": "fold_fit_min_class_rows",
+      "source": "oof_classification: every class in each fold fit",
+      "limit": "min",
+      "threshold": 1,
+      "observed": 21,
+      "satisfied": true
+    },
+    {
+      "id": "B_rows",
+      "source": "DEFAULT_GUARD_OPTIONS.min_selection_samples",
+      "limit": "min",
+      "threshold": 60,
+      "observed": 11145,
+      "satisfied": true
+    },
+    {
+      "id": "B_min_class_rows",
+      "source": "DEFAULT_GUARD_OPTIONS.min_selection_class_count",
+      "limit": "min",
+      "threshold": 5,
+      "observed": 5,
+      "classes_below": [],
+      "satisfied": true
+    }
+  ],
+  "audit": {
+    "scope": "explicit_fit_only_oof_structure",
+    "decision": "structurally_compatible",
+    "reasons": [],
+    "model_acceptance": "not_evaluated",
+    "rows": 55945,
+    "feature_count": 42,
+    "raw_feature_groups": 34718,
+    "classes": [
+      "Analysis",
+      "Backdoor",
+      "DoS",
+      "Exploits",
+      "Fuzzers",
+      "Generic",
+      "Normal",
+      "Reconnaissance",
+      "Shellcode",
+      "Worms"
+    ],
+    "duplicates": {
+      "policy": "same_raw_features_same_group_any_labels; duplicates_are_not_an_error",
+      "duplicate_groups": 3710,
+      "rows_in_duplicate_groups": 24937,
+      "extra_copies": 21227,
+      "conflicting_label_groups": 947,
+      "rows_in_conflicting_groups": 9516,
+      "conflicting_rows_by_class": {
+        "Analysis": 466,
+        "Backdoor": 394,
+        "DoS": 3101,
+        "Exploits": 4160,
+        "Fuzzers": 607,
+        "Generic": 100,
+        "Normal": 99,
+        "Reconnaissance": 587,
+        "Shellcode": 1,
+        "Worms": 1
+      }
+    },
+    "split": {
+      "available": true,
+      "reason": "structured_grouped_split",
+      "refusal": null,
+      "metadata": {
+        "strategy": "grouped",
+        "seed": 42,
+        "train_fraction": 0.8007864867280364,
+        "validation_fraction": 0.19921351327196354,
+        "shuffle": true,
+        "stratified": true,
+        "train_rows": 44800,
+        "validation_rows": 11145,
+        "group_count": 34718,
+        "train_groups": 27788,
+        "validation_groups": 6930,
+        "group_overlap": 0,
+        "n_splits": 5,
+        "fold": 0
+      }
+    },
+    "layout": {
+      "A": {
+        "rows": 44800,
+        "groups": 27788
+      },
+      "B": {
+        "rows": 11145,
+        "groups": 6930
+      },
+      "ab_group_overlap": 0,
+      "ab_row_overlap": 0,
+      "rows_outside_ab": 0,
+      "folds": [
+        {
+          "fit": {
+            "rows": 30108,
+            "groups": 18526
+          },
+          "held": {
+            "rows": 14692,
+            "groups": 9262
+          },
+          "group_overlap": 0,
+          "row_overlap": 0,
+          "rows_outside_A": 0
+        },
+        {
+          "fit": {
+            "rows": 29693,
+            "groups": 18521
+          },
+          "held": {
+            "rows": 15107,
+            "groups": 9267
+          },
+          "group_overlap": 0,
+          "row_overlap": 0,
+          "rows_outside_A": 0
+        },
+        {
+          "fit": {
+            "rows": 29799,
+            "groups": 18529
+          },
+          "held": {
+            "rows": 15001,
+            "groups": 9259
+          },
+          "group_overlap": 0,
+          "row_overlap": 0,
+          "rows_outside_A": 0
+        }
+      ],
+      "held_coverage": {
+        "A_rows": 44800,
+        "exactly_once": 44800,
+        "never": 0,
+        "more_than_once": 0
+      }
+    },
+    "support": {
+      "allowed": {
+        "Analysis": {
+          "rows": 647,
+          "groups": 576
+        },
+        "Backdoor": {
+          "rows": 560,
+          "groups": 529
+        },
+        "DoS": {
+          "rows": 3929,
+          "groups": 1645
+        },
+        "Exploits": {
+          "rows": 10661,
+          "groups": 7047
+        },
+        "Fuzzers": {
+          "rows": 5816,
+          "groups": 5412
+        },
+        "Generic": {
+          "rows": 12423,
+          "groups": 2248
+        },
+        "Normal": {
+          "rows": 17884,
+          "groups": 16899
+        },
+        "Reconnaissance": {
+          "rows": 3618,
+          "groups": 2637
+        },
+        "Shellcode": {
+          "rows": 366,
+          "groups": 359
+        },
+        "Worms": {
+          "rows": 41,
+          "groups": 41
+        }
+      },
+      "A": {
+        "Analysis": {
+          "rows": 524,
+          "groups": 464
+        },
+        "Backdoor": {
+          "rows": 454,
+          "groups": 432
+        },
+        "DoS": {
+          "rows": 3150,
+          "groups": 1324
+        },
+        "Exploits": {
+          "rows": 8489,
+          "groups": 5622
+        },
+        "Fuzzers": {
+          "rows": 4668,
+          "groups": 4335
+        },
+        "Generic": {
+          "rows": 10086,
+          "groups": 1787
+        },
+        "Normal": {
+          "rows": 14380,
+          "groups": 13575
+        },
+        "Reconnaissance": {
+          "rows": 2726,
+          "groups": 2084
+        },
+        "Shellcode": {
+          "rows": 287,
+          "groups": 282
+        },
+        "Worms": {
+          "rows": 36,
+          "groups": 36
+        }
+      },
+      "B": {
+        "Analysis": {
+          "rows": 123,
+          "groups": 112
+        },
+        "Backdoor": {
+          "rows": 106,
+          "groups": 97
+        },
+        "DoS": {
+          "rows": 779,
+          "groups": 321
+        },
+        "Exploits": {
+          "rows": 2172,
+          "groups": 1425
+        },
+        "Fuzzers": {
+          "rows": 1148,
+          "groups": 1077
+        },
+        "Generic": {
+          "rows": 2337,
+          "groups": 461
+        },
+        "Normal": {
+          "rows": 3504,
+          "groups": 3324
+        },
+        "Reconnaissance": {
+          "rows": 892,
+          "groups": 553
+        },
+        "Shellcode": {
+          "rows": 79,
+          "groups": 77
+        },
+        "Worms": {
+          "rows": 5,
+          "groups": 5
+        }
+      },
+      "folds": [
+        {
+          "fit": {
+            "Analysis": {
+              "rows": 360,
+              "groups": 320
+            },
+            "Backdoor": {
+              "rows": 319,
+              "groups": 302
+            },
+            "DoS": {
+              "rows": 2147,
+              "groups": 873
+            },
+            "Exploits": {
+              "rows": 5721,
+              "groups": 3732
+            },
+            "Fuzzers": {
+              "rows": 3120,
+              "groups": 2885
+            },
+            "Generic": {
+              "rows": 6737,
+              "groups": 1219
+            },
+            "Normal": {
+              "rows": 9665,
+              "groups": 9093
+            },
+            "Reconnaissance": {
+              "rows": 1826,
+              "groups": 1372
+            },
+            "Shellcode": {
+              "rows": 192,
+              "groups": 188
+            },
+            "Worms": {
+              "rows": 21,
+              "groups": 21
+            }
+          },
+          "held": {
+            "Analysis": {
+              "rows": 164,
+              "groups": 144
+            },
+            "Backdoor": {
+              "rows": 135,
+              "groups": 130
+            },
+            "DoS": {
+              "rows": 1003,
+              "groups": 451
+            },
+            "Exploits": {
+              "rows": 2768,
+              "groups": 1890
+            },
+            "Fuzzers": {
+              "rows": 1548,
+              "groups": 1450
+            },
+            "Generic": {
+              "rows": 3349,
+              "groups": 568
+            },
+            "Normal": {
+              "rows": 4715,
+              "groups": 4482
+            },
+            "Reconnaissance": {
+              "rows": 900,
+              "groups": 712
+            },
+            "Shellcode": {
+              "rows": 95,
+              "groups": 94
+            },
+            "Worms": {
+              "rows": 15,
+              "groups": 15
+            }
+          }
+        },
+        {
+          "fit": {
+            "Analysis": {
+              "rows": 331,
+              "groups": 292
+            },
+            "Backdoor": {
+              "rows": 298,
+              "groups": 284
+            },
+            "DoS": {
+              "rows": 2054,
+              "groups": 889
+            },
+            "Exploits": {
+              "rows": 5597,
+              "groups": 3756
+            },
+            "Fuzzers": {
+              "rows": 3071,
+              "groups": 2857
+            },
+            "Generic": {
+              "rows": 6782,
+              "groups": 1169
+            },
+            "Normal": {
+              "rows": 9549,
+              "groups": 9075
+            },
+            "Reconnaissance": {
+              "rows": 1793,
+              "groups": 1381
+            },
+            "Shellcode": {
+              "rows": 192,
+              "groups": 188
+            },
+            "Worms": {
+              "rows": 26,
+              "groups": 26
+            }
+          },
+          "held": {
+            "Analysis": {
+              "rows": 193,
+              "groups": 172
+            },
+            "Backdoor": {
+              "rows": 156,
+              "groups": 148
+            },
+            "DoS": {
+              "rows": 1096,
+              "groups": 435
+            },
+            "Exploits": {
+              "rows": 2892,
+              "groups": 1866
+            },
+            "Fuzzers": {
+              "rows": 1597,
+              "groups": 1478
+            },
+            "Generic": {
+              "rows": 3304,
+              "groups": 618
+            },
+            "Normal": {
+              "rows": 4831,
+              "groups": 4500
+            },
+            "Reconnaissance": {
+              "rows": 933,
+              "groups": 703
+            },
+            "Shellcode": {
+              "rows": 95,
+              "groups": 94
+            },
+            "Worms": {
+              "rows": 10,
+              "groups": 10
+            }
+          }
+        },
+        {
+          "fit": {
+            "Analysis": {
+              "rows": 357,
+              "groups": 316
+            },
+            "Backdoor": {
+              "rows": 291,
+              "groups": 278
+            },
+            "DoS": {
+              "rows": 2099,
+              "groups": 886
+            },
+            "Exploits": {
+              "rows": 5660,
+              "groups": 3756
+            },
+            "Fuzzers": {
+              "rows": 3145,
+              "groups": 2928
+            },
+            "Generic": {
+              "rows": 6653,
+              "groups": 1186
+            },
+            "Normal": {
+              "rows": 9546,
+              "groups": 8982
+            },
+            "Reconnaissance": {
+              "rows": 1833,
+              "groups": 1415
+            },
+            "Shellcode": {
+              "rows": 190,
+              "groups": 188
+            },
+            "Worms": {
+              "rows": 25,
+              "groups": 25
+            }
+          },
+          "held": {
+            "Analysis": {
+              "rows": 167,
+              "groups": 148
+            },
+            "Backdoor": {
+              "rows": 163,
+              "groups": 154
+            },
+            "DoS": {
+              "rows": 1051,
+              "groups": 438
+            },
+            "Exploits": {
+              "rows": 2829,
+              "groups": 1866
+            },
+            "Fuzzers": {
+              "rows": 1523,
+              "groups": 1407
+            },
+            "Generic": {
+              "rows": 3433,
+              "groups": 601
+            },
+            "Normal": {
+              "rows": 4834,
+              "groups": 4593
+            },
+            "Reconnaissance": {
+              "rows": 893,
+              "groups": 669
+            },
+            "Shellcode": {
+              "rows": 97,
+              "groups": 94
+            },
+            "Worms": {
+              "rows": 11,
+              "groups": 11
+            }
+          }
+        }
+      ]
+    },
+    "checks": [
+      {
+        "id": "contract",
+        "status": "passed",
+        "reason": null,
+        "source": "round4 checked_recipe, class order, task semantics, schema and labels"
+      },
+      {
+        "id": "grouped_split",
+        "status": "passed",
+        "reason": "structured_grouped_split",
+        "source": "round4_classification_candidate.coverage"
+      },
+      {
+        "id": "ab_disjoint",
+        "status": "passed",
+        "reason": null,
+        "source": "recount of coverage A/B"
+      },
+      {
+        "id": "folds_disjoint",
+        "status": "passed",
+        "reason": null,
+        "source": "recount of coverage folds"
+      },
+      {
+        "id": "held_cover_A_once",
+        "status": "passed",
+        "reason": null,
+        "source": "recount of coverage folds"
+      },
+      {
+        "id": "oof_support_gates",
+        "status": "passed",
+        "reason": "first_fit_reached_without_training",
+        "source": "oof_classification.fit_oof_guarded_rule (pre-callback gates)"
+      },
+      {
+        "id": "child_input_caps",
+        "status": "passed",
+        "reason": null,
+        "source": "round4_classification_probability input checks per planned child fit"
+      }
+    ],
+    "child_inputs": [
+      {
+        "child": "fold_1",
+        "status": "passed",
+        "reason": null
+      },
+      {
+        "child": "fold_2",
+        "status": "passed",
+        "reason": null
+      },
+      {
+        "child": "fold_3",
+        "status": "passed",
+        "reason": null
+      },
+      {
+        "child": "selection",
+        "status": "passed",
+        "reason": null
+      },
+      {
+        "child": "final_fit_side",
+        "status": "passed",
+        "reason": null
+      }
+    ],
+    "constraints": [
+      {
+        "id": "fit_rows",
+        "source": "probability caps.max_fit_rows",
+        "limit": "max",
+        "threshold": 100000,
+        "observed": 55945,
+        "satisfied": true
+      },
+      {
+        "id": "declared_classes",
+        "source": "probability caps.max_classes",
+        "limit": "max",
+        "threshold": 50,
+        "observed": 10,
+        "satisfied": true
+      },
+      {
+        "id": "A_rows",
+        "source": "DEFAULT_GUARD_OPTIONS.min_tuning_samples",
+        "limit": "min",
+        "threshold": 100,
+        "observed": 44800,
+        "satisfied": true
+      },
+      {
+        "id": "A_min_class_rows",
+        "source": "DEFAULT_GUARD_OPTIONS.min_tuning_class_count",
+        "limit": "min",
+        "threshold": 5,
+        "observed": 36,
+        "classes_below": [],
+        "satisfied": true
+      },
+      {
+        "id": "fold_fit_min_class_rows",
+        "source": "oof_classification: every class in each fold fit",
+        "limit": "min",
+        "threshold": 1,
+        "observed": 21,
+        "satisfied": true
+      },
+      {
+        "id": "B_rows",
+        "source": "DEFAULT_GUARD_OPTIONS.min_selection_samples",
+        "limit": "min",
+        "threshold": 60,
+        "observed": 11145,
+        "satisfied": true
+      },
+      {
+        "id": "B_min_class_rows",
+        "source": "DEFAULT_GUARD_OPTIONS.min_selection_class_count",
+        "limit": "min",
+        "threshold": 5,
+        "observed": 5,
+        "classes_below": [],
+        "satisfied": true
+      }
+    ],
+    "not_evaluated": [
+      {
+        "id": "selection_macro_f1_gain",
+        "status": "unknown",
+        "requirement": "Δ Macro F1 на B ≥ 0.01",
+        "reason": "нужны OOF-вероятности; аудит не обучает модели"
+      },
+      {
+        "id": "selection_class_f1_drop",
+        "status": "unknown",
+        "requirement": "падение F1 любого класса на B ≤ 0.02",
+        "reason": "нужны OOF-вероятности; аудит не обучает модели"
+      },
+      {
+        "id": "time_admission",
+        "status": "unknown",
+        "requirement": "4·probe·1.5 + max(120, 2·probe) ≤ 600 с (docs/round4_classification_integration.md)",
+        "reason": "нужен измеренный wall time identity probe на этом fit"
+      },
+      {
+        "id": "fresh_full_refit",
+        "status": "unknown",
+        "requirement": "успешный финальный fit на всех строках fit",
+        "reason": "проверяется только обучением"
+      },
+      {
+        "id": "final_predict_caps",
+        "status": "unknown",
+        "requirement": "≤ 500000 predict-строк и ≤ 10000000 ячеек",
+        "reason": "predict-таблица host не входит в fit-only режим"
+      },
+      {
+        "id": "memory",
+        "status": "unknown",
+        "requirement": "RSS дерева процессов ≤ 6442450944 байт",
+        "reason": "без обучения потребление памяти моделью не измеряется"
+      },
+      {
+        "id": "host_inner_equivalence",
+        "status": "unknown",
+        "requirement": "переданный fit совпадает с будущим host INNER",
+        "reason": "проверяется на fit, который передаст host"
+      }
+    ],
+    "planned_physical_fits": {
+      "planned": 10,
+      "cap": 10
+    },
+    "recipe": {
+      "variant": "oof",
+      "sha256": "cde4de874b1b236c9dc485d25b4be01a59788666b91ffe8f4341069525fa9dfc",
+      "split": {
+        "strategy": "grouped",
+        "inner_seed": 42,
+        "oof_folds": 3,
+        "oof_seed": 42
+      },
+      "guard_options": {
+        "regularization": 0.01,
+        "min_selection_gain": 0.01,
+        "max_selection_class_f1_drop": 0.02,
+        "min_tuning_samples": 100,
+        "min_tuning_class_count": 5,
+        "min_selection_samples": 60,
+        "min_selection_class_count": 5,
+        "max_rounds": 2,
+        "max_candidates": 128
+      },
+      "candidate_caps": {
+        "trial_seconds": 600,
+        "callback_seconds": 90,
+        "final_reserve_seconds": 120,
+        "max_physical_fits": 10,
+        "memory_limit_bytes": 6442450944,
+        "max_threads": 8
+      },
+      "probability_caps": {
+        "max_fit_rows": 100000,
+        "max_predict_rows": 500000,
+        "max_output_features": 512,
+        "max_matrix_cells": 10000000,
+        "max_classes": 50,
+        "max_components": 2,
+        "max_threads": 8
+      }
+    }
+  },
+  "not_evaluated": [
+    {
+      "id": "selection_macro_f1_gain",
+      "status": "unknown",
+      "requirement": "Δ Macro F1 на B ≥ 0.01",
+      "reason": "нужны OOF-вероятности; аудит не обучает модели"
+    },
+    {
+      "id": "selection_class_f1_drop",
+      "status": "unknown",
+      "requirement": "падение F1 любого класса на B ≤ 0.02",
+      "reason": "нужны OOF-вероятности; аудит не обучает модели"
+    },
+    {
+      "id": "time_admission",
+      "status": "unknown",
+      "requirement": "4·probe·1.5 + max(120, 2·probe) ≤ 600 с (docs/round4_classification_integration.md)",
+      "reason": "нужен измеренный wall time identity probe на этом fit"
+    },
+    {
+      "id": "fresh_full_refit",
+      "status": "unknown",
+      "requirement": "успешный финальный fit на всех строках fit",
+      "reason": "проверяется только обучением"
+    },
+    {
+      "id": "final_predict_caps",
+      "status": "unknown",
+      "requirement": "≤ 500000 predict-строк и ≤ 10000000 ячеек",
+      "reason": "predict-таблица host не входит в fit-only режим"
+    },
+    {
+      "id": "memory",
+      "status": "unknown",
+      "requirement": "RSS дерева процессов ≤ 6442450944 байт",
+      "reason": "без обучения потребление памяти моделью не измеряется"
+    },
+    {
+      "id": "identity_probe_seconds",
+      "status": "unknown",
+      "requirement": "identity probe ≤ 120 с (PR #51 :21, :360)",
+      "reason": "identity probe обучает модель и здесь не запускается"
+    },
+    {
+      "id": "cost_admission",
+      "status": "unknown",
+      "requirement": "4·probe·1.5 + max(120, 2·probe) ≤ доступного research-времени (PR #51 :377-383)",
+      "reason": "нужен измеренный wall time identity probe"
+    },
+    {
+      "id": "startup_baseline",
+      "status": "unknown",
+      "requirement": "измеренный baseline до OOF (PR #51 :76-77)",
+      "reason": "стартовый поиск host обучает модели (agent/research_v3.py prepare_baseline)"
+    },
+    {
+      "id": "pr51_preflight_subprocess",
+      "status": "not_evaluated",
+      "requirement": "preflight PR #51 ≤ 60 с в отдельном процессе (PR #51 :22, :157-194)",
+      "reason": "код PR #51 не запускается; та же coverage измерена в этом процессе"
+    },
+    {
+      "id": "platform_admission",
+      "status": "unknown",
+      "requirement": "приём решения платформой",
+      "reason": "платформа не вызывается"
+    }
+  ],
+  "sources": {
+    "host_path": "agent/research_v3.py:264-265 prepare_research -> ResearchWorkspace(task_path, workspace)",
+    "task_and_data": "agent/research_workspace.py:290-297 load_task, data_fingerprint, load_task_data",
+    "outer_split": "agent/research_workspace.py:299-301 choose_validation, split_rows; agent/automl.py:158-163",
+    "outer_fields": "agent/research_workspace.py:323-338 outer_fit_rows, outer_holdout_rows, research_train",
+    "inner_fields": "agent/research_workspace.py:340-349 inner_split_rows -> fit_rows, held_rows; agent/search.py:19-36",
+    "pr51_preflight_table": "PR #51 25e5967 agent/round5_classification_host.py:169-171 gate.research_train.iloc[gate.fit_rows]",
+    "pr51_probe_and_oof": "PR #51 25e5967 agent/round5_classification_host.py:360, :397 -> agent/research_v3.py:231-238 measure_inner(fit_frame=research_train.iloc[fit_rows])",
+    "candidate_view": "agent/research_candidate.py:299-300 fit.csv; driver :214 dtype=str keep_default_na=False, :224",
+    "recipe": "PR #51 25e5967 :318 checked_recipe(make_recipe(fixed_incumbent_recipe(), classes, variant='oof'))",
+    "audit": "experiment_round5_data_readiness.py:655 audit_oof_fit (PR #52)",
+    "coverage": "agent/round4_classification_candidate.py:84-120 coverage",
+    "gates": "agent/oof_classification.py:296-320; agent/classification_decision.py:32-39 DEFAULT_GUARD_OPTIONS",
+    "raw_groups": "agent/splits.py:83 pandas.util.hash_pandas_object(train[features], index=False)"
+  },
+  "limitations": [
+    "Группа — хеш всех raw-признаков строки, как в agent.splits.split_rows; копии строки с любыми labels остаются в одной группе.",
+    "Время вложенных вызовов внутри конструктора ResearchWorkspace и audit_oof_fit измерено обёртками вызова без изменения кода; этапы эксклюзивны, их сумма не превышает общего времени.",
+    "Время одного прогона на этом компьютере. Стартовый baseline-поиск host, LLM-диалог, dependency_snapshot и subprocess preflight PR #51 не входят: они обучают модели или запускают процессы.",
+    "Память — пик этого процесса за весь прогон, если платформа его отдаёт; это не RSS дерева процессов кандидата."
+  ],
+  "config": {
+    "schema_version": "round6-inner-readiness/1",
+    "frozen_public_recipe_sha256": "cde4de874b1b236c9dc485d25b4be01a59788666b91ffe8f4341069525fa9dfc",
+    "min_groups_per_class": 2,
+    "pr51_caps": {
+      "fit_rows": 100000,
+      "predict_rows": 500000,
+      "features": 512,
+      "cells": 10000000
+    },
+    "guard_options": {
+      "regularization": 0.01,
+      "min_selection_gain": 0.01,
+      "max_selection_class_f1_drop": 0.02,
+      "min_tuning_samples": 100,
+      "min_tuning_class_count": 5,
+      "min_selection_samples": 60,
+      "min_selection_class_count": 5,
+      "max_rounds": 2,
+      "max_candidates": 128
+    }
+  },
+  "config_sha256": "ed77a2aa87affcf72d9ddc16fc54d64b222fd81a39faef69ac25087ddfa65af9",
+  "content_sha256": "4295acdf251f4c4969d342112ed87d7bb89df67a26293c034811e486dcc0c2af",
+  "generated": {
+    "generated_at": "2026-10-23T11:02:12+00:00",
+    "timing": {
+      "seconds": {
+        "task_copy_and_hashes": 0.671,
+        "task_spec_and_data_load": 2.965,
+        "outer_workspace": 30.048,
+        "inner_extraction": 23.053,
+        "fit_table_equivalence": 0.73,
+        "coverage": 25.396,
+        "guard_cap_audit": 0.963,
+        "boundary_checks": 1.475,
+        "source_checks": 0.055
+      },
+      "of_which": {
+        "outer_choose_validation": 0.313,
+        "outer_split_rows": 27.631,
+        "inner_split_rows": 21.704,
+        "fit_table_csv_staging": 1.349
+      },
+      "host_preparation_model_free_seconds": 80.114,
+      "host_preparation_scope": "TaskSpec/data load + ResearchWorkspace (outer, INNER split, файлы workspace) + coverage на INNER fit; без стартового baseline, LLM, dependency_snapshot и subprocess preflight PR #51",
+      "total_seconds": 85.536,
+      "export_render_seconds": 0.003
+    },
+    "control_repeat": {
+      "content_equal": true,
+      "timing": {
+        "seconds": {
+          "task_copy_and_hashes": 0.369,
+          "task_spec_and_data_load": 2.859,
+          "outer_workspace": 29.283,
+          "inner_extraction": 23.132,
+          "fit_table_equivalence": 0.712,
+          "coverage": 25.455,
+          "guard_cap_audit": 1.096,
+          "boundary_checks": 1.57,
+          "source_checks": 0.057
+        },
+        "of_which": {
+          "outer_choose_validation": 0.329,
+          "outer_split_rows": 26.717,
+          "inner_split_rows": 21.824,
+          "fit_table_csv_staging": 1.308
+        },
+        "host_preparation_model_free_seconds": 79.421,
+        "host_preparation_scope": "TaskSpec/data load + ResearchWorkspace (outer, INNER split, файлы workspace) + coverage на INNER fit; без стартового baseline, LLM, dependency_snapshot и subprocess preflight PR #51",
+        "total_seconds": 84.706
+      }
+    },
+    "memory": {
+      "peak_bytes": 555307008,
+      "method": "psutil peak_wset",
+      "scope": "this_process_whole_run"
+    }
+  },
+  "files": {
+    "round6_inner_readiness_support.csv": "3226ec04dd05d8443bc399c8de3d57d3bb65631ec1989ec1f51be8a061ee3d6a",
+    "round6_inner_readiness_summary.md": "2889cf2c7fc1a06aa008168faff7e583c5661264eeaa5f7cca3e7500f7b199d5"
+  }
+}

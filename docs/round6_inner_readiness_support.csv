@@ -1,0 +1,91 @@
+part,class,rows,groups,threshold_on,threshold,margin,source
+allowed,Analysis,647,576,groups,2,574,agent/splits.py:89
+allowed,Backdoor,560,529,groups,2,527,agent/splits.py:89
+allowed,DoS,3929,1645,groups,2,1643,agent/splits.py:89
+allowed,Exploits,10661,7047,groups,2,7045,agent/splits.py:89
+allowed,Fuzzers,5816,5412,groups,2,5410,agent/splits.py:89
+allowed,Generic,12423,2248,groups,2,2246,agent/splits.py:89
+allowed,Normal,17884,16899,groups,2,16897,agent/splits.py:89
+allowed,Reconnaissance,3618,2637,groups,2,2635,agent/splits.py:89
+allowed,Shellcode,366,359,groups,2,357,agent/splits.py:89
+allowed,Worms,41,41,groups,2,39,agent/splits.py:89
+A,Analysis,524,464,rows,5,519,agent/oof_classification.py:303 min_tuning_class_count
+A,Backdoor,454,432,rows,5,449,agent/oof_classification.py:303 min_tuning_class_count
+A,DoS,3150,1324,rows,5,3145,agent/oof_classification.py:303 min_tuning_class_count
+A,Exploits,8489,5622,rows,5,8484,agent/oof_classification.py:303 min_tuning_class_count
+A,Fuzzers,4668,4335,rows,5,4663,agent/oof_classification.py:303 min_tuning_class_count
+A,Generic,10086,1787,rows,5,10081,agent/oof_classification.py:303 min_tuning_class_count
+A,Normal,14380,13575,rows,5,14375,agent/oof_classification.py:303 min_tuning_class_count
+A,Reconnaissance,2726,2084,rows,5,2721,agent/oof_classification.py:303 min_tuning_class_count
+A,Shellcode,287,282,rows,5,282,agent/oof_classification.py:303 min_tuning_class_count
+A,Worms,36,36,rows,5,31,agent/oof_classification.py:303 min_tuning_class_count
+B,Analysis,123,112,rows,5,118,agent/oof_classification.py:319 min_selection_class_count
+B,Backdoor,106,97,rows,5,101,agent/oof_classification.py:319 min_selection_class_count
+B,DoS,779,321,rows,5,774,agent/oof_classification.py:319 min_selection_class_count
+B,Exploits,2172,1425,rows,5,2167,agent/oof_classification.py:319 min_selection_class_count
+B,Fuzzers,1148,1077,rows,5,1143,agent/oof_classification.py:319 min_selection_class_count
+B,Generic,2337,461,rows,5,2332,agent/oof_classification.py:319 min_selection_class_count
+B,Normal,3504,3324,rows,5,3499,agent/oof_classification.py:319 min_selection_class_count
+B,Reconnaissance,892,553,rows,5,887,agent/oof_classification.py:319 min_selection_class_count
+B,Shellcode,79,77,rows,5,74,agent/oof_classification.py:319 min_selection_class_count
+B,Worms,5,5,rows,5,0,agent/oof_classification.py:319 min_selection_class_count
+fold_1_fit,Analysis,360,320,rows,1,359,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Backdoor,319,302,rows,1,318,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,DoS,2147,873,rows,1,2146,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Exploits,5721,3732,rows,1,5720,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Fuzzers,3120,2885,rows,1,3119,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Generic,6737,1219,rows,1,6736,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Normal,9665,9093,rows,1,9664,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Reconnaissance,1826,1372,rows,1,1825,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Shellcode,192,188,rows,1,191,agent/oof_classification.py:305 fit_missing_class
+fold_1_fit,Worms,21,21,rows,1,20,agent/oof_classification.py:305 fit_missing_class
+fold_1_held,Analysis,164,144,,,,
+fold_1_held,Backdoor,135,130,,,,
+fold_1_held,DoS,1003,451,,,,
+fold_1_held,Exploits,2768,1890,,,,
+fold_1_held,Fuzzers,1548,1450,,,,
+fold_1_held,Generic,3349,568,,,,
+fold_1_held,Normal,4715,4482,,,,
+fold_1_held,Reconnaissance,900,712,,,,
+fold_1_held,Shellcode,95,94,,,,
+fold_1_held,Worms,15,15,,,,
+fold_2_fit,Analysis,331,292,rows,1,330,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Backdoor,298,284,rows,1,297,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,DoS,2054,889,rows,1,2053,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Exploits,5597,3756,rows,1,5596,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Fuzzers,3071,2857,rows,1,3070,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Generic,6782,1169,rows,1,6781,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Normal,9549,9075,rows,1,9548,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Reconnaissance,1793,1381,rows,1,1792,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Shellcode,192,188,rows,1,191,agent/oof_classification.py:305 fit_missing_class
+fold_2_fit,Worms,26,26,rows,1,25,agent/oof_classification.py:305 fit_missing_class
+fold_2_held,Analysis,193,172,,,,
+fold_2_held,Backdoor,156,148,,,,
+fold_2_held,DoS,1096,435,,,,
+fold_2_held,Exploits,2892,1866,,,,
+fold_2_held,Fuzzers,1597,1478,,,,
+fold_2_held,Generic,3304,618,,,,
+fold_2_held,Normal,4831,4500,,,,
+fold_2_held,Reconnaissance,933,703,,,,
+fold_2_held,Shellcode,95,94,,,,
+fold_2_held,Worms,10,10,,,,
+fold_3_fit,Analysis,357,316,rows,1,356,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Backdoor,291,278,rows,1,290,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,DoS,2099,886,rows,1,2098,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Exploits,5660,3756,rows,1,5659,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Fuzzers,3145,2928,rows,1,3144,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Generic,6653,1186,rows,1,6652,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Normal,9546,8982,rows,1,9545,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Reconnaissance,1833,1415,rows,1,1832,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Shellcode,190,188,rows,1,189,agent/oof_classification.py:305 fit_missing_class
+fold_3_fit,Worms,25,25,rows,1,24,agent/oof_classification.py:305 fit_missing_class
+fold_3_held,Analysis,167,148,,,,
+fold_3_held,Backdoor,163,154,,,,
+fold_3_held,DoS,1051,438,,,,
+fold_3_held,Exploits,2829,1866,,,,
+fold_3_held,Fuzzers,1523,1407,,,,
+fold_3_held,Generic,3433,601,,,,
+fold_3_held,Normal,4834,4593,,,,
+fold_3_held,Reconnaissance,893,669,,,,
+fold_3_held,Shellcode,97,94,,,,
+fold_3_held,Worms,11,11,,,,
