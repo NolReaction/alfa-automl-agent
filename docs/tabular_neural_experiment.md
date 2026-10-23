@@ -62,7 +62,7 @@ if ($LASTEXITCODE -ne 0) { throw "TabM run incomplete; inspect $output\report.js
 
 ```python
 import pandas as pd
-from agent.tabular_neural import TabMModel
+from research_lab.tabular_neural import TabMModel
 
 model = TabMModel.load(r"C:\aq-neural\RUN\model", device="cpu")
 raw = model.predict_raw(pd.read_csv(r"C:\aq-public\YOUR_TASK\inputs\test.csv", keep_default_na=False))

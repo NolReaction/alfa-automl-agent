@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from agent.tabular_neural import (FoldPreprocessor, NeuralConfig, TabMModel, availability,
+from research_lab.tabular_neural import (FoldPreprocessor, NeuralConfig, TabMModel, availability,
                                    run_neural_experiment)
 
 
@@ -53,7 +53,7 @@ class PreprocessingTests(unittest.TestCase):
             TabMModel(numeric=["x"], categorical=[], device="gpu")
 
     def test_package_probe_does_not_import_torch(self):
-        with patch("agent.tabular_neural.importlib.util.find_spec", return_value=None):
+        with patch("research_lab.tabular_neural.importlib.util.find_spec", return_value=None):
             state = availability()
         self.assertFalse(state["available"])
         self.assertEqual(state["missing"], ["torch", "tabm"])
@@ -100,7 +100,7 @@ class ProtocolTests(unittest.TestCase):
             root = Path(temporary)
             task = make_task(root)
             (root / "submission.csv").write_text("existing submission", encoding="utf-8")
-            with patch("agent.tabular_neural._backend"), patch("agent.tabular_neural.TabMModel", FakeModel):
+            with patch("research_lab.tabular_neural._backend"), patch("research_lab.tabular_neural.TabMModel", FakeModel):
                 report = run_neural_experiment(task, root / "run", time_budget=60,
                                                validation={"strategy": "time", "time_column": "period"})
             self.assertEqual(report["status"], "completed")
@@ -117,7 +117,7 @@ class ProtocolTests(unittest.TestCase):
     def test_backend_failure_leaves_honest_report_without_metric(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with patch("agent.tabular_neural._backend", side_effect=RuntimeError("CUDA unavailable")):
+            with patch("research_lab.tabular_neural._backend", side_effect=RuntimeError("CUDA unavailable")):
                 with self.assertRaisesRegex(RuntimeError, "CUDA"):
                     run_neural_experiment(root / "missing.md", root / "run", device="cuda")
             report = json.loads((root / "run" / "report.json").read_text(encoding="utf-8"))
@@ -166,7 +166,7 @@ class TorchSmokeTests(unittest.TestCase):
 
     def test_explicit_cuda_does_not_fallback(self):
         import torch
-        from agent.tabular_neural import _backend
+        from research_lab.tabular_neural import _backend
         with patch.object(torch.cuda, "is_available", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "fallback is disabled"):
                 _backend("cuda")

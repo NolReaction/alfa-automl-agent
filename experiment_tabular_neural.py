@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from agent.tabular_neural import NeuralConfig, availability, run_neural_experiment
+from research_lab.tabular_neural import NeuralConfig, availability, run_neural_experiment
 
 
 def main(argv=None):
