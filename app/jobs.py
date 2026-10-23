@@ -21,6 +21,8 @@ import threading
 import time
 from uuid import uuid4
 
+import psutil
+
 from app.profiling import DataCatalog, _task_semantics
 from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
@@ -31,12 +33,14 @@ from app.research_summary import validate_research_summary
 from app.supervisor import process_inventory_matches
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
 from agent.llm import API_FIELDS, DEFAULT_MODEL, REQUIRED_API_FIELDS
+from agent.resources import ProcessTreeMonitor, DEFAULT_MEMORY_LIMIT_BYTES
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl", "agent", "prepare"}
 OFFLINE_ACTIONS = ACTIONS - {"agent", "prepare"}
-ACTIVE = {"queued", "running"}
+ACTIVE = {"queued", "running", "cleanup_pending"}
+WINDOWS = os.name == "nt"
 JOB_ID = re.compile(r"[0-9a-f]{32}\Z")
 MAX_LOG_BYTES = 20 * 1024 * 1024
 LOG_TAIL_BYTES = 128 * 1024
@@ -53,13 +57,60 @@ MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
 SPLIT_FIELDS = {"seed", "validation_fraction", "stratified", "validation_rows", "validation_hash",
                 "train_fraction", "shuffle", "train_rows", "strategy", *SPLIT_TEXT_FIELDS, *SPLIT_COUNT_FIELDS}
+
+
+def _campaign_owner(value):
+    if (not isinstance(value, dict) or set(value) != {"campaign_id", "step_id"}
+            or any(not isinstance(item, str) or not JOB_ID.fullmatch(item) for item in value.values())):
+        raise ValueError("Некорректная принадлежность запуска шагу кампании.")
+    return dict(value)
+
+
+def _resource_summary(value):
+    """Only bounded observations from the trusted process monitor reach the UI."""
+    if not isinstance(value, dict) or type(value.get("available")) is not bool:
+        raise ValueError("Некорректные наблюдения ресурсов.")
+    result = {"available": value["available"], "scope": "sampled_owned_process_tree"}
+    for name in ("peak_rss_bytes", "cpu_seconds", "memory_limit_bytes", "sample_count", "tracked_processes"):
+        number = value.get(name)
+        if number is not None and (type(number) not in (int, float) or not math.isfinite(number)
+                                   or not 0 <= number <= (1 << 53) - 1):
+            raise ValueError("Некорректное измерение ресурсов.")
+        if name != "cpu_seconds" and number is not None and type(number) is not int:
+            raise ValueError("Некорректный счётчик ресурсов.")
+        result[name] = number
+    cleanup = value.get("cleanup_complete")
+    if cleanup is not None and type(cleanup) is not bool:
+        raise ValueError("Некорректное подтверждение очистки дерева.")
+    result["cleanup_complete"] = cleanup
+    reason = value.get("unavailable_reason")
+    if reason is not None and (not isinstance(reason, str) or len(reason) > 2000):
+        raise ValueError("Некорректная причина недоступности наблюдений.")
+    result["unavailable_reason"] = reason
+    if result["available"] and (result["peak_rss_bytes"] is None or result["cpu_seconds"] is None
+                                or not result["sample_count"] or not result["tracked_processes"]):
+        raise ValueError("Доступность ресурсов не подтверждена измерениями.")
+    return result
+
+
+def _resources_ok(resources, execution):
+    if execution.get("memory_limit_exceeded") or execution.get("external_timeout"):
+        return False
+    if not resources or resources.get("available") is not True:
+        return None
+    if resources.get("cleanup_complete") is not True:
+        return resources.get("cleanup_complete")
+    peak, limit = resources.get("peak_rss_bytes"), resources.get("memory_limit_bytes")
+    if peak is None or limit is None:
+        return None
+    return peak <= limit
 
 
 def _job_validation(action, value=None):
@@ -347,6 +398,7 @@ class JobManager:
         self.jobs_root = _safe(self.state_root / "jobs", self.state_root)
         self.jobs_root.mkdir(exist_ok=True)
         self._lock = threading.RLock()
+        self._cleanup_lock = threading.RLock()
         self._active = None
         self._closed = False
         self._jobs = {}
@@ -400,17 +452,14 @@ class JobManager:
                 if not self._valid_stored_job(job, folder.name):
                     continue
                 job = {key: value for key, value in job.items() if key in PUBLIC_FIELDS or key in {
-                    "_runtime", "_published_sha256", "_output_sha256", "_previous_submission", "_holdout_sha256"}}
+                    "_runtime", "_published_sha256", "_output_sha256", "_previous_submission", "_holdout_sha256",
+                    "_campaign_owner", "_execution"}}
+                self._jobs[job["id"]] = job
                 if job["status"] in ACTIVE:
                     runtime = job.get("_runtime") or {}
-                    pid, identity = runtime.get("pid"), runtime.get("identity")
-                    if isinstance(pid, int) and pid > 1 and identity and _identity(pid) == identity:
-                        _kill_tree(pid)
-                    job.update(status="interrupted", stage="finished", finished_at=_now(),
-                               error="Сервер был перезапущен во время выполнения.")
-                    job.pop("_runtime", None)
-                    self._save(job)
-                self._jobs[job["id"]] = job
+                    status = runtime.get("terminal_status", "interrupted")
+                    error = runtime.get("terminal_error", "Сервер был перезапущен во время выполнения.")
+                    self._settle(job, None, status, error)
             except (OSError, ValueError, TypeError):
                 continue
 
@@ -528,6 +577,25 @@ class JobManager:
         if runtime is not None and (not isinstance(runtime, dict) or type(runtime.get("pid")) is not int
                 or runtime["pid"] <= 1 or runtime.get("identity") is not None and not isinstance(runtime["identity"], str)):
             return False
+        if runtime is not None and (runtime.get("terminal_status", "interrupted") not in {
+                "completed", "failed", "cancelled", "interrupted"}
+                or runtime.get("terminal_error") is not None and not isinstance(runtime["terminal_error"], str)):
+            return False
+        try:
+            if "_campaign_owner" in job:
+                _campaign_owner(job["_campaign_owner"])
+            if "resources" in job:
+                _resource_summary(job["resources"])
+        except ValueError:
+            return False
+        execution = job.get("_execution")
+        if execution is not None:
+            if (not isinstance(execution, dict) or set(execution) - {
+                    "cleanup_confirmed", "resources_ok", "memory_limit_exceeded", "external_timeout"}
+                    or any(value is not None and type(value) is not bool for value in execution.values())):
+                return False
+            if execution.get("resources_ok") is True and _resources_ok(job.get("resources"), execution) is not True:
+                return False
         return True
 
     def _save(self, job):
@@ -535,6 +603,8 @@ class JobManager:
 
     def _summary(self, job):
         summary = {key: deepcopy(value) for key, value in job.items() if key in PUBLIC_FIELDS}
+        if "resources" in summary:
+            summary["resources"] = _resource_summary(summary["resources"])
         if isinstance(summary.get("metric"), dict):
             summary["metric"] = {key: value for key, value in summary["metric"].items()
                                  if key in {"name", "value", "higher_is_better"}}
@@ -607,12 +677,33 @@ class JobManager:
 
     def active_job(self):
         with self._lock:
-            return self._summary(self._jobs[self._active["id"]]) if self._active else None
+            if self._active:
+                return self._summary(self._jobs[self._active["id"]])
+            return next((self._summary(job) for job in self._jobs.values() if job.get("status") in ACTIVE), None)
+
+    def campaign_job(self, campaign_id, step_id):
+        owner = _campaign_owner({"campaign_id": campaign_id, "step_id": step_id})
+        with self._lock:
+            matches = [job for job in self._jobs.values() if job.get("_campaign_owner") == owner]
+            if len(matches) > 1:
+                raise RuntimeError("Найдено несколько запусков одного шага кампании; повторный запуск запрещён.")
+            if not matches:
+                return None
+            job = matches[0]
+            execution = job.get("_execution") or {}
+            return {"job": self._summary(job), "cleanup_confirmed": execution.get("cleanup_confirmed"),
+                    "resources_ok": execution.get("resources_ok")}
 
     def list(self, task_id=None):
         with self._lock:
             jobs = [job for job in self._jobs.values() if task_id is None or job["task_id"] == task_id]
             return [self._summary(job) for job in sorted(jobs, key=lambda x: x["started_at"], reverse=True)[:200]]
+
+    def history_counts(self):
+        with self._lock:
+            return {"total": len(self._jobs),
+                    "completed": sum(job.get("status") == "completed" for job in self._jobs.values()),
+                    "failed": sum(job.get("status") == "failed" for job in self._jobs.values())}
 
     def _job(self, task_id, job_id):
         if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
@@ -623,7 +714,11 @@ class JobManager:
         _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
         return job
 
-    def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None):
+    def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None,
+              *, campaign_owner=None):
+        owner = None if campaign_owner is None else _campaign_owner(campaign_owner)
+        if owner is not None and (not isinstance(action, str) or action not in OFFLINE_ACTIONS):
+            raise ValueError("Шаг кампании поддерживает только локальные модели и AutoML.")
         if not isinstance(action, str) or action not in ACTIONS:
             raise ValueError("Неизвестный рецепт запуска.")
         if validation is not None and action not in OFFLINE_ACTIONS:
@@ -641,9 +736,15 @@ class JobManager:
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 175:
             raise ValueError("Бюджет запуска должен быть целым числом от 1 до 175 минут.")
         with self._lock:
+            if owner is not None:
+                previous = self.campaign_job(**owner)
+                if previous is not None:
+                    if previous["job"]["task_id"] != task_id or previous["job"]["action"] != action:
+                        raise ValueError("Этот шаг кампании уже связан с другим запуском.")
+                    return previous["job"]
             if self._closed:
                 raise RuntimeError("Менеджер запусков остановлен.")
-            if self._active:
+            if self.active_job():
                 raise RuntimeError("Уже выполняется другой запуск. Дождитесь завершения или остановите его.")
             if action != "prepare":
                 from research_lab.process import coordinator_lock, machine_lock_path
@@ -701,6 +802,10 @@ class JobManager:
                 job["validation"] = validation
             if model_config is not None:
                 job["model_config"] = model_config
+            if owner is not None:
+                job["_campaign_owner"] = owner
+                job["_execution"] = {"cleanup_confirmed": None, "resources_ok": None,
+                                     "memory_limit_exceeded": False, "external_timeout": False}
             self._jobs[job_id] = job
             self._save(job)
             active = {"id": job_id, "cancel": threading.Event(), "process": None,
@@ -708,9 +813,13 @@ class JobManager:
             if active["key"]:
                 self._secrets[job_id] = active["key"]
             self._active = active
-            thread = threading.Thread(target=self._run, args=(job_id, active, minutes, values), daemon=True)
-            active["thread"] = thread
-            thread.start()
+            try:
+                thread = threading.Thread(target=self._run, args=(job_id, active, minutes, values), daemon=True)
+                active["thread"] = thread
+                thread.start()
+            except Exception as error:
+                self._settle(job, active, "failed", "Не удалось запустить поток: " + _redact(error, active["key"]))
+                raise RuntimeError("Не удалось запустить поток; запись сохранена в истории.") from error
             return self._summary(job)
 
     def _check_prepare_paths(self):
@@ -790,6 +899,145 @@ class JobManager:
             job.update(updates)
             self._save(job)
 
+    @staticmethod
+    def _runtime_state(runtime):
+        pid, birth = runtime.get("pid"), runtime.get("identity")
+        if type(pid) is not int or pid <= 1:
+            return "unknown"
+        try:
+            current = _identity(pid)
+        except (OSError, RuntimeError):
+            current = None
+        if current:
+            if not birth:
+                return "unknown"
+            if current != birth:
+                return "gone"
+            try:
+                if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                    return "gone"
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                return "gone"
+            except (OSError, psutil.AccessDenied):
+                pass
+            return "owned"
+        if sys.platform == "linux" and not process_inventory_matches():
+            return "unknown"
+        try:
+            return "unknown" if psutil.pid_exists(pid) else "gone"
+        except (OSError, psutil.Error):
+            return "unknown"
+
+    def _cleanup_recovered(self, runtime):
+        state = self._runtime_state(runtime)
+        if state == "gone":
+            return True
+        if state != "owned":
+            return False
+        _kill_tree(runtime["pid"])
+        for attempt in range(6):
+            if self._runtime_state(runtime) == "gone":
+                return True
+            if attempt < 5:
+                time.sleep(.05)
+        return False
+
+    def _terminate_active(self, active):
+        process, monitor = active.get("process"), active.get("monitor")
+        if process is None:
+            return True
+        if monitor is not None:
+            stopped = monitor.terminate()
+            return stopped and process.poll() is not None
+        if process.poll() is None:
+            birth = active.get("identity")
+            if WINDOWS:
+                process.terminate()  # retained Windows HANDLE, never a bare recovered PID
+            elif birth and _identity(process.pid) == birth:
+                _kill_tree(process.pid)
+            else:
+                # Popen still owns this unreaped child even with an unavailable
+                # inventory. No guessed descendants or recovered PID are used.
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        clean = process.poll() is not None
+        for pid, birth in active.get("children", {}).items():
+            runtime = {"pid": pid, "identity": birth}
+            clean = self._cleanup_recovered(runtime) and clean
+        return clean
+
+    def _settle(self, job, active, status, error):
+        """Do not relinquish a process or durable job until cleanup is known."""
+        with self._cleanup_lock:
+            runtime = dict(job.get("_runtime") or {})
+            execution = dict(job.get("_execution") or {})
+            cleanup_error, clean, resources = None, False, job.get("resources")
+            try:
+                if active is not None:
+                    process = active.get("process")
+                    if process is not None:
+                        runtime.update(pid=process.pid, identity=active.get("identity"))
+                    execution.update(active.get("execution") or {})
+                    clean = self._terminate_active(active)
+                    if active.get("monitor") is not None:
+                        resources = _resource_summary(active["monitor"].summary())
+                elif runtime:
+                    clean = self._cleanup_recovered(runtime)
+                    # A restarted manager cannot reconstruct missed samples or
+                    # certify descendants from a persisted root PID alone.
+                    if resources is not None:
+                        resources = {**resources, "cleanup_complete": None}
+                else:
+                    clean = True  # no retained process; never restart this job
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, psutil.Error) as failure:
+                cleanup_error = _redact(failure, (active or {}).get("key", ""))
+                if active is not None and active.get("monitor") is not None:
+                    try:
+                        resources = _resource_summary(active["monitor"].summary())
+                    except (OSError, RuntimeError, ValueError, psutil.Error):
+                        resources = None
+            with self._lock:
+                execution["cleanup_confirmed"] = clean
+                execution["resources_ok"] = _resources_ok(resources, execution) if clean else False
+                job["_execution"] = execution
+                if resources is not None:
+                    job["resources"] = resources
+                if active is not None:
+                    job["elapsed_seconds"] = round(time.monotonic() - active["started"], 3)
+                    process = active.get("process")
+                    job["exit_code"] = process.returncode if process is not None else None
+                if clean:
+                    job.pop("_runtime", None)
+                    job.update(status=status, stage="finished", finished_at=_now(), error=error)
+                else:
+                    runtime.update(terminal_status=status, terminal_error=error)
+                    if runtime.get("pid") is not None:
+                        job["_runtime"] = runtime
+                    job.update(status="cleanup_pending", stage="cleanup", finished_at=None,
+                               error="Остановка принадлежащего запуску процесса ещё не подтверждена. "
+                                     "Повторите остановку; новый запуск заблокирован."
+                                     + (" " + cleanup_error if cleanup_error else ""))
+                try:
+                    self._save(job)
+                except (OSError, ValueError) as failure:
+                    # Keep the live handle/association if the terminal history
+                    # write fails. A later Stop retries persistence as well.
+                    if runtime.get("pid") is not None:
+                        runtime.update(terminal_status=status, terminal_error=error)
+                        job["_runtime"] = runtime
+                    job.update(status="cleanup_pending", stage="cleanup", finished_at=None,
+                               error="Не удалось сохранить завершение запуска: " + _redact(failure))
+                    return False
+                if clean and self._active is active:
+                    self._active = None
+                if self._closed and not self.active_job():
+                    self._release_lock()
+                return clean
+
     def _run(self, job_id, active, minutes, settings):
         job = self._jobs[job_id]
         folder = self.jobs_root / job_id
@@ -815,10 +1063,25 @@ class JobManager:
                                                start_new_session=os.name != "nt",
                                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
                     active["process"] = process
+                    active["identity"] = None
                     self._set(job_id, status="running", stage=stage,
-                              _runtime={"pid": process.pid, "identity": _identity(process.pid)})
+                              _runtime={"pid": process.pid, "identity": None})
+                    try:
+                        active["identity"] = _identity(process.pid)
+                    except (OSError, RuntimeError):
+                        pass
+                    self._set(job_id, _runtime={"pid": process.pid, "identity": active["identity"]})
+                    if job.get("_campaign_owner") is not None:
+                        active["monitor"] = ProcessTreeMonitor(process, max_memory_bytes=DEFAULT_MEMORY_LIMIT_BYTES)
+                        active["execution"] = {"memory_limit_exceeded": False, "external_timeout": False}
                 launched = time.monotonic()
                 while process.poll() is None:
+                    if active.get("monitor") is not None:
+                        over_limit = active["monitor"].sample()
+                        self._set(job_id, resources=_resource_summary(active["monitor"].summary()))
+                        if over_limit:
+                            active["execution"]["memory_limit_exceeded"] = True
+                            raise MemoryError("Запуск остановлен: превышен лимит памяти 28 GiB.")
                     if os.name != "nt":
                         for pid in _descendants(process.pid):
                             identity = _identity(pid)
@@ -827,6 +1090,7 @@ class JobManager:
                     if active["cancel"].is_set():
                         raise InterruptedError("Запуск остановлен пользователем.")
                     if time.monotonic() - launched > timeout:
+                        active.setdefault("execution", {})["external_timeout"] = True
                         raise TimeoutError("Запуск остановлен: превышен лимит времени.")
                     for name in ("stdout.txt", "stderr.txt"):
                         path = _safe(folder / name, self.state_root, required=True)
@@ -865,30 +1129,14 @@ class JobManager:
         except Exception as exception:
             error = _redact(exception, active["key"])
         finally:
-            if process is not None and process.poll() is None:
-                _kill_tree(process.pid)
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            for pid, identity in active["children"].items():
-                if _identity(pid) == identity:
-                    _kill_tree(pid)
-            self._scrub_logs(folder, active["key"])
-            if job["action"] == "agent":
-                self._collect_agent(job)
-            with self._lock:
-                job.pop("_runtime", None)
-                job.update(status=final_status, stage="finished", finished_at=_now(),
-                           elapsed_seconds=round(time.monotonic() - active["started"], 3), error=error,
-                           exit_code=process.returncode if process is not None else None)
-                try:
-                    self._save(job)
-                finally:
-                    if self._active is active:
-                        self._active = None
-                    if self._closed:
-                        self._release_lock()
+            try:
+                self._scrub_logs(folder, active["key"])
+                if job["action"] == "agent":
+                    self._collect_agent(job)
+            except Exception as failure:
+                final_status, error = "failed", _redact(failure, active["key"])
+            finally:
+                self._settle(job, active, final_status, error)
 
     def _scrub_logs(self, folder, key):
         for name in ("stdout.txt", "stderr.txt"):
@@ -1165,11 +1413,22 @@ class JobManager:
         with self._lock:
             job = self._job(task_id, job_id)
             active = self._active
-            if not active or active["id"] != job_id:
-                return self._summary(job)
-            active["cancel"].set()
-            thread = active["thread"]
-        thread.join(timeout=4)
+            active = active if active and active["id"] == job_id else None
+            if active is not None:
+                active["cancel"].set()
+            thread = active.get("thread") if active else None
+        if thread is not None:
+            try:
+                thread.join(timeout=4)
+            except RuntimeError:
+                pass  # a thread whose start failed has never owned a process
+        with self._lock:
+            pending = job["status"] == "cleanup_pending" or active is None and job["status"] in ACTIVE
+            runtime = job.get("_runtime") or {}
+            status = runtime.get("terminal_status", "interrupted")
+            error = runtime.get("terminal_error")
+        if pending:
+            self._settle(job, active, status, error)
         with self._lock:
             return self._summary(job)
 
@@ -1232,19 +1491,17 @@ class JobManager:
 
     def close(self):
         with self._lock:
-            if self._closed:
-                return
             self._closed = True
             active = self._active
-            if active:
-                active["cancel"].set()
-        if active:
-            active["thread"].join(timeout=4)
+            pending = self._jobs[active["id"]] if active else next(
+                (job for job in self._jobs.values() if job.get("status") in ACTIVE), None)
+        if pending is not None:
+            self.stop(pending["task_id"], pending["id"])
         with self._lock:
             # Keep the process-wide lock while a cancelled thread is still
             # finishing a large input copy/hash/validation. Its finally releases
             # the lock, so another server cannot race the old writer.
-            if self._active is None:
+            if not self.active_job():
                 self._release_lock()
 
 

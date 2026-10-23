@@ -182,7 +182,7 @@ async function main() {
     const state = setup(); state.tasks = []; state.task = null;
     responder = (url) => url === "/api/tasks" ? {tasks: []} : {queues: [], active_queue: null};
     await get("loadNativePage")(state.generation);
-    assert.match(element("#main").innerHTML, /Ночные тесты/);
+    assert.match(element("#main").innerHTML, /Проверка агента/);
     assert.match(element("#main").innerHTML, /Нет готовой задачи/);
     assert.equal(calls.some((call) => /\/workflow$/.test(call.url)), false);
     assert.equal(element("#task-select").disabled, true);
@@ -205,7 +205,7 @@ class NativeFrontendTests(unittest.TestCase):
     def test_native_navigation_is_available_outside_current_task(self):
         html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
         self.assertIn('data-view="native"', html)
-        self.assertIn("Ночные тесты", html)
+        self.assertIn("Проверка агента", html)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import argparse
 from pathlib import Path
 import sys
 import threading
@@ -18,6 +19,15 @@ if str(PROJECT_ROOT) not in sys.path:
 def project_paths(app_dir: Path = APP_DIR) -> tuple[Path, Path]:
     """Use this checkout's data and persistent history regardless of the cwd."""
     return app_dir.parent / "data", app_dir / ".workspace"
+
+
+def launch_paths(argv=None):
+    data_root, state_root = project_paths()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", type=Path, default=data_root)
+    parser.add_argument("--state-dir", type=Path, default=state_root)
+    args = parser.parse_args(argv)
+    return args.data_dir.expanduser().absolute(), args.state_dir.expanduser().absolute()
 
 
 def open_server(server_type, data_root: Path, state_root: Path):
@@ -40,7 +50,8 @@ def _active_record(server, manager_name: str, method_name: str) -> dict | None:
 def owned_work_active(server) -> bool:
     """Include a retained native process whose exit is not yet confirmed."""
     return (_active_record(server, "jobs", "active_job") is not None or
-            _active_record(server, "native_queues", "active_queue") is not None)
+            _active_record(server, "native_queues", "active_queue") is not None or
+            _active_record(server, "campaigns", "active_campaign") is not None)
 
 
 def close_server(server, thread) -> None:
@@ -60,10 +71,21 @@ def close_server(server, thread) -> None:
                     "Не закрывайте это окно. Повторите завершение работы; "
                     "если ошибка повторится, проверьте процессы и отчёты серии."
                 )
-            # JobManager.close requests cancellation but its first wait is bounded.
-            # Keep the owner alive until the final history write/lock release.
+            # Bound the final wait too: retained cleanup_pending ownership must
+            # keep a retryable desktop window, rather than an endless spinner.
+            deadline = time.monotonic() + 10
             while _active_record(server, "jobs", "active_job") is not None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Остановка эксперимента ещё не подтверждена. "
+                        "Не закрывайте это окно; повторите завершение работы."
+                    )
                 time.sleep(0.1)
+            if _active_record(server, "campaigns", "active_campaign") is not None:
+                raise RuntimeError(
+                    "Серия экспериментов ещё завершает работу. "
+                    "Дождитесь сохранения истории и повторите завершение работы."
+                )
         finally:
             if thread is not None:
                 thread.join(timeout=5)
@@ -81,12 +103,13 @@ def visible_error(text: str) -> None:
         print(text, file=sys.stderr or sys.__stderr__)
 
 
-def main() -> int:
+def main(argv=None) -> int:
     root = None
     server = None
     worker = None
     closer = None
     try:
+        data_root, state_root = launch_paths(argv)
         try:
             import tkinter as tk
             from tkinter import messagebox
@@ -105,7 +128,6 @@ def main() -> int:
 
         from app.server import WorkspaceServer
 
-        data_root, state_root = project_paths()
         server = open_server(WorkspaceServer, data_root, state_root)
         worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2},
                                   name="alfa-lab-server", daemon=False)

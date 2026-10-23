@@ -11,6 +11,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
@@ -25,8 +26,11 @@ from app.exports import delivery_archive, result_archive, report_bytes_from_arch
 from app.profiling import DataCatalog
 from app.runs import RunReader
 from app.sharing import ReportStore
+from app.campaign_reports import build_campaign_report, report_bytes
+from app.telemetry import SystemMonitor
+from app.power import SleepGuard
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -48,29 +52,85 @@ class WorkspaceServer(ThreadingHTTPServer):
         self.token = secrets.token_urlsafe(32)
         self.state_root = Path(state_root) if state_root is not None else APP_DIR / ".workspace"
         self.jobs = JobManager(Path(data_root), self.state_root, self.catalog)
-        self.reports = ReportStore(self.state_root)
+        self.reports = None
         self.execution_gate = threading.RLock()
         self.native_queues = None
+        self.campaigns = None
+        self.system = None
+        self.sleep_guard = None
+        self._dashboard_lock = threading.Lock()
+        self._dashboard_cache = None
+        self._dashboard_at = 0
         try:
+            self.reports = ReportStore(self.state_root)
             from app.native_queues import NativeQueueManager
+            from app.campaigns import CampaignManager
             self.native_queues = NativeQueueManager(Path(data_root), self.state_root, self.catalog,
                                                    ordinary_jobs=self.jobs)
+            self.campaigns = CampaignManager(self.state_root, self.catalog, self.jobs,
+                execution_gate=self.execution_gate, native_queues=self.native_queues)
+            self.system = SystemMonitor(PROJECT_ROOT, self.state_root)
             super().__init__(("127.0.0.1", port), WorkspaceHandler)
+            self.sleep_guard = SleepGuard(self._work_needs_awake)
         except Exception:
-            if self.native_queues is not None:
-                self.native_queues.close()
-            self.jobs.close()
+            # Preserve the startup error, but attempt every acquired owner's
+            # cleanup even if an earlier cleanup itself fails.
+            for owner in (self.campaigns, self.native_queues, self.jobs, self.system, self.sleep_guard):
+                if owner is not None:
+                    try:
+                        owner.close()
+                    except Exception:
+                        logging.exception("Workspace startup cleanup failed")
+            if getattr(self, "socket", None) is not None:
+                super().server_close()
             raise
 
     def server_close(self):
         try:
             try:
-                if self.native_queues is not None:
-                    self.native_queues.close()
+                if self.campaigns is not None:
+                    self.campaigns.close()
             finally:
-                self.jobs.close()
+                try:
+                    if self.native_queues is not None:
+                        self.native_queues.close()
+                finally:
+                    self.jobs.close()
         finally:
-            super().server_close()
+            try:
+                if self.system is not None:
+                    self.system.close()
+                # Retain the idle-sleep request while unconfirmed owned work is
+                # still stopping. A later desktop close retries the managers.
+                if self.sleep_guard is not None and not self._work_needs_awake():
+                    self.sleep_guard.close()
+            finally:
+                super().server_close()
+
+    def _work_needs_awake(self):
+        if self.jobs.active_job() or (self.native_queues and self.native_queues.active_queue()):
+            return True
+        campaign = self.campaigns.active_campaign() if self.campaigns else None
+        return bool(campaign and campaign.get("status") != "paused")
+
+    def dashboard(self):
+        with self._dashboard_lock:
+            if self._dashboard_cache is None or time.monotonic() - self._dashboard_at >= 3:
+                tasks, jobs, campaigns = self.catalog.discover(), self.jobs.list(), self.campaigns.list()
+                counts = self.jobs.history_counts()
+                self._dashboard_cache = {
+                    "version": VERSION, "tasks": tasks, "recent_jobs": jobs[:12],
+                    "recent_campaigns": campaigns[:6],
+                    "counts": {"tasks_ready": sum(item.get("available") is True for item in tasks),
+                               "jobs_total": counts["total"], "jobs_completed": counts["completed"],
+                               "jobs_failed": counts["failed"], "campaigns_total": len(campaigns)},
+                    "server": {"data_dir": str(self.catalog.data_root), "state_dir": str(self.state_root)},
+                }
+                self._dashboard_at = time.monotonic()
+            result = dict(self._dashboard_cache)
+        result.update(active_job=self.jobs.active_job(), active_queue=self.native_queues.active_queue(),
+                      active_campaign=self.campaigns.active_campaign())
+        return result
 
     def reader(self, task_id: str) -> RunReader:
         task_dir = self.catalog.resolve(task_id)
@@ -104,6 +164,7 @@ class WorkspaceServer(ThreadingHTTPServer):
             "submission": {name: result["submission"].get(name) for name in ("exists", "valid")},
             "api": api_settings(), "active_job": self.jobs.active_job(),
             "active_queue": self.native_queues.active_queue(),
+            "active_campaign": self.campaigns.active_campaign(),
             "latest_job": jobs[0] if jobs else None,
             "experiments_count": len(jobs) + len(self.reports.list(task_id)),
             "published_job_id": next((item["id"] for item in jobs if item.get("published")), None),
@@ -203,8 +264,41 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             if path == "/api/session":
                 self._json({"token": self.server.token, "api": api_settings(),
                             "active_job": self.server.jobs.active_job(),
+                            "active_campaign": self.server.campaigns.active_campaign(),
                             "active_queue": self.server.native_queues.active_queue(), "version": VERSION})
                 return
+            if path in {"/api/dashboard", "/api/system", "/api/campaign-presets"}:
+                if query:
+                    raise ValueError("Этот запрос не принимает параметры.")
+                if path == "/api/dashboard":
+                    value = self.server.dashboard()
+                elif path == "/api/system":
+                    value = {**self.server.system.snapshot(), "sleep": self.server.sleep_guard.snapshot()}
+                else:
+                    value = self.server.campaigns.presets()
+                self._json(value)
+                return
+            if parts[:2] == ["api", "campaigns"]:
+                if query:
+                    raise ValueError("Этот запрос не принимает параметры.")
+                manager = self.server.campaigns
+                if len(parts) == 2:
+                    self._json({"campaigns": manager.list(), "active_campaign": manager.active_campaign()})
+                    return
+                if len(parts) in {3, 4} and re.fullmatch(r"[0-9a-f]{32}", parts[2]):
+                    if len(parts) == 3:
+                        self._json({"campaign": manager.detail(parts[2])})
+                        return
+                    formats = {"report.json": ("json", "application/json; charset=utf-8"),
+                               "report.csv": ("csv", "text/csv; charset=utf-8"),
+                               "bundle.zip": ("zip", "application/zip")}
+                    if parts[3] in formats:
+                        kind, mime = formats[parts[3]]
+                        report = build_campaign_report(manager.detail(parts[2]))
+                        self._bytes(report_bytes(report, kind), mime,
+                                    filename=f"alfa-campaign-{parts[2][:8]}.{kind}")
+                        return
+                raise FileNotFoundError("Серия экспериментов не найдена.")
             if path == "/api/tasks":
                 self._json({"tasks": self.server.catalog.discover(), "version": VERSION})
                 return
@@ -284,6 +378,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                     self._json({"experiments": self.server.experiments(task_id),
                                 "dataset_fingerprint": self.server.catalog.fingerprint(task_id),
                                 "active_job": self.server.jobs.active_job(),
+                                "active_campaign": self.server.campaigns.active_campaign(),
                                 "active_queue": self.server.native_queues.active_queue()})
                 elif action == "export":
                     envelope = self.server.reports.export(task_id, self.server.catalog.fingerprint(task_id),
@@ -339,25 +434,44 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             is_job = path == "/api/jobs"
             is_delivery = path == "/api/delivery"
             is_native = path == "/api/native-queues"
+            is_campaign = path in {"/api/campaigns", "/api/campaigns/preview"}
+            is_campaign_action = (len(parts) == 4 and parts[:2] == ["api", "campaigns"]
+                                  and re.fullmatch(r"[0-9a-f]{32}", parts[2])
+                                  and parts[3] in {"pause", "resume", "stop"})
             is_native_stop = (len(parts) == 4 and parts[:2] == ["api", "native-queues"]
                               and re.fullmatch(r"[0-9a-f]{32}", parts[2]) and parts[3] == "stop")
             is_job_action = (len(parts) == 4 and parts[:2] == ["api", "jobs"]
                              and SAFE_ID.fullmatch(parts[2]) and parts[3] in {"stop", "publish"})
             is_import = (len(parts) == 4 and parts[:2] == ["api", "tasks"]
                          and SAFE_ID.fullmatch(parts[2]) and parts[3] == "import")
-            if not (is_job or is_job_action or is_import or is_delivery or is_native or is_native_stop):
+            if not (is_job or is_job_action or is_import or is_delivery or is_native or is_native_stop
+                    or is_campaign or is_campaign_action):
                 self._json({"error": "Это действие не поддерживается."}, 405)
                 return
             token = self.headers.get("X-Alfa-Token", "")
             if not hmac.compare_digest(token, self.server.token):
                 raise PermissionError()
             body = self._body(allow_zip=is_import)
-            if is_native:
+            if query:
+                raise ValueError("Действие не принимает параметры в адресе.")
+            if is_campaign:
+                if path.endswith("/preview"):
+                    self._json(self.server.campaigns.preview(body))
+                else:
+                    self._json({"campaign": self.server.campaigns.start(body)}, 202)
+            elif is_campaign_action:
+                if body:
+                    raise ValueError("Управление серией не принимает дополнительные параметры.")
+                action = getattr(self.server.campaigns, parts[3])
+                self._json({"campaign": action(parts[2])})
+            elif is_native:
                 if set(body) - {"regression_task_id", "classification_task_id", "time_budget_seconds"}:
                     raise ValueError("Неизвестные параметры серии тестов.")
                 regression = self._task_value(body.get("regression_task_id"))
                 classification = self._task_value(body.get("classification_task_id"))
                 with self.server.execution_gate:
+                    if self.server.campaigns.active_campaign():
+                        raise RuntimeError("Очередь занята серией экспериментов. Завершите или остановите её.")
                     queue = self.server.native_queues.start(regression, classification,
                                 time_budget_seconds=body.get("time_budget_seconds", 10500))
                 self._json({"queue": queue}, 202)
@@ -378,6 +492,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                     raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
                 with self.server.execution_gate:
+                    if self.server.campaigns.active_campaign():
+                        raise RuntimeError("Очередь занята серией экспериментов. Завершите или остановите её.")
                     if self.server.native_queues.active_queue():
                         raise RuntimeError("Выполняется серия тестов. Дождитесь завершения или остановите её.")
                     job = self.server.jobs.start(task_id, body.get("action"),
@@ -391,8 +507,13 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 if set(body) != {"task_id"}:
                     raise ValueError("Укажите задачу выбранного запуска.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
-                action = self.server.jobs.stop if parts[3] == "stop" else self.server.jobs.publish
-                self._json({"job": action(task_id, parts[2])})
+                with self.server.execution_gate:
+                    campaign = self.server.campaigns.active_campaign()
+                    if parts[3] == "stop" and campaign and any(
+                            step.get("job_id") == parts[2] for step in campaign.get("steps", [])):
+                        raise RuntimeError("Этот запуск принадлежит серии. Используйте «Остановить всю серию» в разделе «Серии».")
+                    action = self.server.jobs.stop if parts[3] == "stop" else self.server.jobs.publish
+                    self._json({"job": action(task_id, parts[2])})
             else:
                 task_id = self._task_value(parts[2])
                 self._json(self.server.reports.import_reports(task_id,
