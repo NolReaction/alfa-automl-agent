@@ -195,6 +195,28 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(result["test_quality"], "unknown")
         self.assertEqual(result["resource_qualification"], "provisional_unknown_telemetry")
 
+    def test_completed_inner_preserves_full_frozen_identity_for_custom_audit(self):
+        import hashlib
+        from agent.round4_classification_candidate import candidate_source, make_recipe
+        from agent.round4_classification_probability import fixed_incumbent_recipe
+        from agent.round5_classification_host import dependency_snapshot
+
+        classes, source = self.spec["classes"], candidate_source()
+        recipe = make_recipe(fixed_incumbent_recipe(), classes, variant="oof")
+        frozen_identity = {"classes": classes, "source": source,
+                           "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+                           "recipe": recipe, "recipe_sha256": native.json_hash(recipe),
+                           "identity_probe_recipe": make_recipe(fixed_incumbent_recipe(), classes, variant="identity"),
+                           "dependency_snapshot": dependency_snapshot()}
+        native.write_json(self.output / "frozen_identity.json", frozen_identity)
+        self.phase("inner_evaluations", "inner_selection", "d" * 32,
+                   "row,x,label\n0,10,a\n", "row,x\n1,20\n", "row,label\n1,b\n")
+        with patch.object(native, "audit_custom_children", wraps=native.audit_custom_children) as custom_audit:
+            result = self.audit()
+        self.assertEqual(len(result["inner_invocations"]), 1)
+        self.assertEqual(result["inner_invocations"]["0"]["nonce"], "d" * 32)
+        self.assertEqual(custom_audit.call_args.args[3], frozen_identity)
+
     def test_wrong_outer_rows_rejected_even_with_valid_output_receipt(self):
         (self.outer / "fit.csv").write_text("row,x,label\n1,20,b\n0,10,a\n")
         with self.assertRaisesRegex(ValueError, "input rows/values/order"):

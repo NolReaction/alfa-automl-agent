@@ -444,8 +444,8 @@ def audit_arm(output, mode, manifest=None):
         context = read_json(context_path)
         receipt_path = context_path.parent / "receipt.json"
         if context.get("phase") == "inner_selection" and receipt_path.is_file():
-            identity = {key: context[key] for key in ("code_hash", "recipe_hash")}
-            _phase(task, run_dir, receipt_path, str(len(inner_proof)), "inner_selection", "", identity, spec,
+            inner_identity = {key: context[key] for key in ("code_hash", "recipe_hash")}
+            _phase(task, run_dir, receipt_path, str(len(inner_proof)), "inner_selection", "", inner_identity, spec,
                    inner_fit, inner_predict, inner_proof)
     custom = audit_custom_children(task, run_dir, spec["classes"], identity)
     require(not custom or helper_proof is not None, "Custom invocation has no sealed host dependency manifest")
