@@ -1,0 +1,186 @@
+{
+  "arms": {
+    "E25": [
+      [
+        "catboost",
+        "all_declared",
+        0.75
+      ],
+      [
+        "lightgbm",
+        "all_declared",
+        0.25
+      ]
+    ],
+    "E50": [
+      [
+        "catboost",
+        "all_declared",
+        0.5
+      ],
+      [
+        "lightgbm",
+        "all_declared",
+        0.5
+      ]
+    ],
+    "E75": [
+      [
+        "catboost",
+        "all_declared",
+        0.25
+      ],
+      [
+        "lightgbm",
+        "all_declared",
+        0.75
+      ]
+    ],
+    "I": [
+      [
+        "catboost",
+        "all_declared",
+        1.0
+      ]
+    ],
+    "LGB": [
+      [
+        "lightgbm",
+        "all_declared",
+        1.0
+      ]
+    ],
+    "N": [
+      [
+        "catboost",
+        "declared_numeric_only",
+        1.0
+      ]
+    ],
+    "N25": [
+      [
+        "catboost",
+        "all_declared",
+        0.75
+      ],
+      [
+        "catboost",
+        "declared_numeric_only",
+        0.25
+      ]
+    ],
+    "N50": [
+      [
+        "catboost",
+        "all_declared",
+        0.5
+      ],
+      [
+        "catboost",
+        "declared_numeric_only",
+        0.5
+      ]
+    ]
+  },
+  "base_commit": "66e9481cb61cb83cfecab53be6984d7d2bf829b3",
+  "base_recipes": {
+    "catboost": {
+      "engine": "catboost",
+      "fallback_iterations": 400,
+      "max_iterations": 2000,
+      "parameters": {
+        "depth": 6,
+        "l2_leaf_reg": 5.0,
+        "learning_rate": 0.05
+      },
+      "period_column": "Year_Factor",
+      "stopping_rounds": 100
+    },
+    "lightgbm": {
+      "engine": "lightgbm",
+      "fallback_iterations": 400,
+      "max_iterations": 2000,
+      "parameters": {
+        "colsample_bytree": 0.9,
+        "learning_rate": 0.04,
+        "max_depth": -1,
+        "min_child_samples": 40,
+        "num_leaves": 31,
+        "reg_lambda": 5.0
+      },
+      "period_column": "Year_Factor",
+      "stopping_rounds": 100
+    }
+  },
+  "calibration_alignment": "legacy_best_iteration_predictions_then_refit_max_50_best",
+  "candidate_family": "round5_regression_ensemble_v1",
+  "component_budget": "equal fixed quotas after min(8sec,5percent remaining) history reserve; no quota transfer; original absolute deadline",
+  "confirmation_cap_seconds": 360,
+  "confirmation_periods": [
+    2,
+    3,
+    4
+  ],
+  "dependency_sha256": {
+    "agent/boosting_candidate.py": "a3430b8e3aacb6ab6ea9fd8b27255430d0bdb7936c9758bf37a6603ef690bbdd",
+    "agent/building_history.py": "f1b02cfd986e044d8930dc35893c3974fa4509a7b8328eeff2373b2feeeeff36",
+    "agent/features.py": "90d397d780e3993989104e3503b1600959550e7ce4e054ca5231c4203da1ff1f",
+    "agent/history_candidate.py": "9b4fc8fa8ab9e63553e93e1cc11a7b504c51b0eb40ac7c6e4a609874c0628f25",
+    "agent/history_discovery.py": "7491b7af172feb8ed7276cade31c9aaa9196b4df362dd86f22093cc23b430ce5",
+    "agent/history_schema_proposer.py": "992873dd92f8943c3ac211d7a362af8a4c92542685d6073936a02f7f261da580",
+    "agent/model_config.py": "e03a31843cd8875e0161cb25abd9fafef4935b86a5f5367d3eae3a897983bec2",
+    "agent/models.py": "6a50538eadef5b53e43294a0819b6c5c8a8988a461a6138c43b8bf8990b43b5c",
+    "agent/regression_base.py": "7906557d45bf6a2ee1fa155737ea091259bd66d53752b38852505d3cc39ced0a",
+    "agent/regression_candidate.py": "0c1451375d916ebc18de84ecdf102a2423ccc76cd7d6a4d79f81442eb7ce2f81",
+    "agent/regression_discovery.py": "fb03b2a358ac0ac0fcd302863c0db70af68d06ac8ecd722d8a87d7777d3b7d25",
+    "agent/regression_history.py": "297153f51481b8b3a3af5a4c944f7e0bb0a4b64381203ac79a35908f50f15891",
+    "agent/round4_regression_base.py": "4ecf44ca5adc3d7e55ab03ca25123e213143d83d7dc42e7c61c28a81b037650f",
+    "agent/round4_regression_candidate.py": "75e7096043f7c4c198a7a84433e8bceb59de8dfc7dd9f6f237048cef4c900ab1",
+    "agent/target_transform.py": "1572b9ba6d00140ff7237e2a5a80c07da485c6fb6dcb7ec442ba1c3d1e420282",
+    "requirements.platform.txt": "9173b0388532fbd2a709e4f4b3029e3b9ccab685fce43a85261ffa1ba95efbe6",
+    "requirements.txt": "94e22e023f514db3177d7d84a9eddd7ce7c3ecd2eb4271f1580511346be4cfc2"
+  },
+  "fallback": "single_period_400_trees; whole_arm_failure_if_component_fails",
+  "heavy_budget_seconds": 10800,
+  "history_discovery": {
+    "exclude_latest_supplied_fit_period": true,
+    "extended": false,
+    "max_cell_visits": 8000000,
+    "max_checked_configs": 48,
+    "scope": "host_inner_fit"
+  },
+  "history_policy": "unchanged_calibrated_19_options_minimum_64_eligible_else_existing_mean_fallback",
+  "input_files": {
+    "regression/participants/data_dictionary.csv": {
+      "bytes": 7408,
+      "sha256": "ffd7a8574fa4b203c43915e26a53e4072637c0dce8f1e6e7bcf93374a89a26a3"
+    },
+    "regression/participants/sample_submission.csv": {
+      "bytes": 222554,
+      "sha256": "0016b18d58c47bbbe842556b4957ba215b3ad50121c9923260537d936a09eae1"
+    },
+    "regression/participants/test.csv": {
+      "bytes": 18346633,
+      "sha256": "a7c64db92a07e1a5b1e7f637bdd434da7a5e98a1676c854ec6a645c9e5827095"
+    },
+    "regression/participants/train.csv": {
+      "bytes": 43416931,
+      "sha256": "096dac951cf44fade5417ddd0465c41beee3009663dbea34e8d464a4d3c7f775"
+    },
+    "task.md": {
+      "bytes": 11089,
+      "sha256": "33f743ead4840336856cb9db8e25867f44512231beebff927326e8580e14d9d0"
+    }
+  },
+  "known5_external_evaluation": false,
+  "maximum_finalists": 2,
+  "metric": "RMSE",
+  "period_column": "Year_Factor",
+  "screen_cap_seconds": 180,
+  "screen_period": 4,
+  "seed": 42,
+  "size_column": "floor_area",
+  "target_scale": "original",
+  "threads": 8,
+  "version": 1
+}
