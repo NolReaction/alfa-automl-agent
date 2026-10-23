@@ -53,8 +53,8 @@ class ModelArtifactTests(unittest.TestCase):
         path = artifacts.artifact_download_path(self.root, "model")
         restored = joblib.load(path)  # Only our own just-produced trusted artifact.
         np.testing.assert_array_equal(restored.predict(frame), expected)
-        manifest = json.loads(artifacts.artifact_download_path(self.root, "manifest").read_text())
-        recipe = json.loads(artifacts.artifact_download_path(self.root, "recipe").read_text())
+        manifest = json.loads(artifacts.artifact_download_path(self.root, "manifest").read_text(encoding="utf-8"))
+        recipe = json.loads(artifacts.artifact_download_path(self.root, "recipe").read_text(encoding="utf-8"))
         self.assertEqual(recipe, arguments["recipe"])
         self.assertEqual(manifest["fit"]["rows"], 40)
         self.assertEqual(manifest["fit"]["validation_split"]["train_rows"], 32)
@@ -79,7 +79,7 @@ class ModelArtifactTests(unittest.TestCase):
             artifacts.artifact_download_path(self.root, "model")
         path.write_bytes(original)
         recipe_path = self.root / artifacts.RECIPE_FILENAME
-        recipe = json.loads(recipe_path.read_text())
+        recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
         recipe["model_config"]["parameters"]["n_estimators"] += 1
         recipe_path.write_text(json.dumps(recipe))
         with self.assertRaises(ValueError):

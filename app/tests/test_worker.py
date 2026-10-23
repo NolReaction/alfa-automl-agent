@@ -198,12 +198,12 @@ class WorkerTests(unittest.TestCase):
                     ["NA", "0", "0", "__MISSING__"], ["0001", "0", "0", ""],
                 ])
                 path, job_dir, staged = self.make_config(source, "extra_trees")
-                config = json.loads(path.read_text())
+                config = json.loads(path.read_text(encoding="utf-8"))
                 config["feature_config"] = normalize_feature_config(feature_options)
                 path.write_text(json.dumps(config))
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(worker.main(["--config", str(path)]), 0)
-                result = json.loads((job_dir / "result.json").read_text())
+                result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
                 self.assertTrue(result["model_artifact"]["available"])
                 self.assertEqual(result["feature_config"], normalize_feature_config(feature_options))
                 self.assertEqual(result["training_device"], "cpu")
@@ -223,7 +223,7 @@ class WorkerTests(unittest.TestCase):
         with patch.object(worker, "save_model_artifacts", side_effect=OSError("disk unavailable")), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(worker.main(["--config", str(path)]), 0)
-        result = json.loads((job_dir / "result.json").read_text())
+        result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
         self.assertTrue(result["output_valid"])
         self.assertFalse(result["model_artifact"]["available"])
         self.assertTrue((staged / "submission.csv").is_file())
