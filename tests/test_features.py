@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import unittest
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,22 @@ from agent.features import (
 
 
 class FeatureTests(unittest.TestCase):
+    def test_wide_feature_expansion_preserves_rows_without_fragmentation_warnings(self):
+        frame = pd.DataFrame({f"x{i}": [i, np.nan, -i] for i in range(120)},
+                             index=[9, 3, 9])
+        original = frame.copy(deep=True)
+        feature = FeatureTransformer(list(frame), [],
+                                     {"missing_indicators": True, "signed_log": True})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", pd.errors.PerformanceWarning)
+            result = feature.fit_transform(frame)
+        self.assertEqual(result.shape, (3, 240))
+        self.assertEqual(result.index.tolist(), [9, 3, 9])
+        self.assertEqual(result.columns.tolist(), feature.get_feature_names_out().tolist())
+        self.assertEqual(result["x119__missing"].tolist(), [0., 1., 0.])
+        self.assertAlmostEqual(result["x119"].iloc[2], -np.log1p(119))
+        pd.testing.assert_frame_equal(frame, original)
+
     def test_rare_vocabulary_is_fitted_only_on_training_rows_and_keeps_missing_separate(self):
         train = pd.DataFrame({"n": [1, 2, 3, 4, 5], "cat": ["NA", "NA", "once", "", None]})
         validation = pd.DataFrame({"n": [6, 7, 8], "cat": ["new", "NA", ""]})

@@ -255,7 +255,8 @@ def _raw_evidence(directory, spec, expected_ids, expected_actuals):
 
 def run_automl(task_path: Path, *, time_budget=600, validation=None,
                dataset_fingerprint=None, progress=None, output_dir=None,
-               stability_splits=1, metric_recipes=False, search_profile="legacy") -> dict:
+               stability_splits=1, metric_recipes=False, search_profile="legacy",
+               search_strategy="legacy", adaptive_max_trials=256) -> dict:
     started = time.monotonic()
     if (type(time_budget) not in {int, float} or not math.isfinite(time_budget)
             or not 0 < time_budget <= 10500):
@@ -267,6 +268,11 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         raise ValueError("metric_recipes must be boolean")
     if not isinstance(search_profile, str) or search_profile not in {"legacy", "strong_v1"}:
         raise ValueError("search_profile must be legacy or strong_v1")
+    if not isinstance(search_strategy, str) or search_strategy not in {"legacy", "adaptive"}:
+        raise ValueError("search_strategy must be legacy or adaptive")
+    from agent.app_adaptive_search import AppAdaptiveSearch
+    if type(adaptive_max_trials) is not int or not 1 <= adaptive_max_trials <= AppAdaptiveSearch.MAX_TRIALS:
+        raise ValueError("adaptive_max_trials must be an integer in [1, 512]")
     task_path = _plain(Path(task_path))
     if not task_path.is_file() or task_path.suffix.lower() != ".md":
         raise ValueError("Передайте существующий task.md.")
@@ -338,8 +344,16 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                                    search_profile=search_profile)
     report["stability"] = {"requested_splits": stability_splits, "scope": "inner_selection",
                            "applied": False, "rounds": [], "reason": "disabled" if stability_splits == 1 else "not_run"}
-    rows, recipes, evidence = {}, {}, {}
+    controller = (AppAdaptiveSearch(classification, spec.metric.name, max_trials=adaptive_max_trials)
+                  if search_strategy == "adaptive" else None)
+    controller_stop_reason = "inner_unavailable" if inner is None and controller is not None else None
+    report["search_policy"]["search_strategy"] = search_strategy
+    if controller is not None:
+        report["search_policy"].update(blend_weight=None, blend_policy="inner_frozen_weighted",
+                                       adaptive_max_trials=adaptive_max_trials)
+    rows, recipes, evidence, selection_evidence = {}, {}, {}, {}
     best = None
+    frozen_blend = None
     phase_counter = 0
 
     def add_recipe(recipe, phase="selection"):
@@ -363,6 +377,11 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         add_recipe(item, "seed" if item["id"] == "seed" else "selection")
 
     def save(stage):
+        if controller is not None:
+            search["controller"] = controller.summary(stop_reason=controller_stop_reason)
+            report["adaptive_search"] = controller.report()
+            report["adaptive_search"].update(stop_reason=search["controller"]["stop_reason"],
+                                             scope="inner_selection", resumable=False)
         search["completed"] = sum(row["status"] == "completed" for row in search["candidates"])
         search["selection_completed"] = sum(row["selection_metric"] is not None for row in search["candidates"])
         search["verified"] = sum(row["metric"] is not None for row in search["candidates"])
@@ -483,7 +502,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         print("Recovered the accepted AutoML checkpoint; no additional model was trained.", flush=True)
         return deepcopy(report)
 
-    def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None):
+    def run_phase(recipe, phase, phase_deadline, shares=1, *, split_override=None, directory_name=None,
+                  timeout_cap=None):
         nonlocal phase_counter
         row = rows[recipe["id"]]
         row.update(phase=phase, status="running", error=None, rejection_reason=None)
@@ -508,6 +528,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             # Staging and progress callbacks are charged to the same deadline.
             remaining = min(phase_deadline, deadline - 2) - time.monotonic()
             timeout = min(1800.0, remaining / max(1, shares))
+            if timeout_cap is not None:
+                timeout = min(timeout, timeout_cap)
             if timeout <= 1:
                 row.update(status="skipped", rejection_reason="insufficient_budget")
                 return None
@@ -563,6 +585,9 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                 if phase == "selection":
                     if split_override is None:
                         row["selection_metric"] = value
+                        # Retain file locations, not hundreds of dense probability
+                        # arrays. Only the frozen shortlist is reloaded for blending.
+                        selection_evidence[recipe["id"]] = {"directory": directory, "value": value}
                 else:
                     row.update(metric=value, verification_metric=value)
             if phase in {"seed", "refit"}:
@@ -586,22 +611,55 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
             evidence["seed"] = record
             publish(seed, record, record["directory"])
         if inner is not None:
-            # Plan six refinement slots up front in the budget, but choose their
-            # families only after all initial INNER results have been observed.
-            # Strong plans already allocate their trials to deeper boosting.
-            # Keep their training shares instead of appending legacy refinements.
-            adaptive = search_profile == "legacy" and len(exploration) >= 5
             selection_deadline = started + time_budget * (.50 if stability_splits > 1 else .60)
+            # The established initial portfolio keeps a broad baseline. In the
+            # local adaptive mode it has a bounded first share; its completion
+            # does not end the search while the selection budget remains.
+            legacy_refinements = (controller is None and search_profile == "legacy" and len(exploration) >= 5)
+            exploration_deadline = (min(selection_deadline, started + time_budget * .30)
+                                    if controller is not None else selection_deadline)
             for index, recipe in enumerate(exploration):
-                run_phase(recipes[recipe["id"]], "selection", selection_deadline,
-                          len(exploration) - index + (6 if adaptive else 0))
+                run_phase(recipes[recipe["id"]], "selection", exploration_deadline,
+                          len(exploration) - index + (6 if legacy_refinements else 0))
             successful = [recipes[item["id"]] for item in exploration if rows[item["id"]]["selection_metric"] is not None]
             ranked_inner = rank(successful, "selection_metric")
-            refinements = refinement_plan(classification, ranked_inner, list(recipes.values())) if adaptive else []
+            refinements = refinement_plan(classification, ranked_inner, list(recipes.values())) if legacy_refinements else []
             for recipe in refinements:
                 add_recipe(recipe)
             for index, recipe in enumerate(refinements):
                 run_phase(recipes[recipe["id"]], "selection", selection_deadline, len(refinements) - index)
+            if controller is not None:
+                while True:
+                    remaining = selection_deadline - time.monotonic()
+                    if remaining <= 1:
+                        controller_stop_reason = "selection_budget"
+                        break
+                    recipe = controller.suggest()
+                    if recipe is None:
+                        controller_stop_reason = controller.report()["stop_reason"]
+                        break
+                    add_recipe(recipe)
+                    cap = controller.trial_timeout(recipe, remaining=remaining,
+                                                   selection_window=selection_deadline - started)
+                    previous_scores = [row["selection_metric"] for row in rows.values()
+                                       if row["selection_metric"] is not None]
+                    previous_best = ((max(previous_scores) if spec.metric.higher_is_better else min(previous_scores))
+                                     if previous_scores else None)
+                    record = run_phase(recipe, "selection", selection_deadline, timeout_cap=cap)
+                    row = rows[recipe["id"]]
+                    improved = record is not None and (previous_best is None or better(record["value"], previous_best))
+                    feedback = {"verified": record is not None, "accepted": improved,
+                                "scope": "inner_selection", "elapsed_seconds": row["elapsed_seconds"],
+                                "reason": ("improved" if improved else "not_better") if record is not None else
+                                "family_blocked" if row["rejection_reason"] == "optional_dependency_unavailable" else
+                                "insufficient_budget" if row["rejection_reason"] == "insufficient_budget" else
+                                "candidate_execution_failed"}
+                    if record is not None:
+                        feedback["metric"] = {"name": spec.metric.name, "value": record["value"],
+                                              "higher_is_better": spec.metric.higher_is_better}
+                    controller.observe(recipe, feedback)
+                    save("training")
+                save("training")
             successful = [recipe for recipe in recipes.values() if rows[recipe["id"]]["selection_metric"] is not None]
             shortlist = select_shortlist(rank(successful, "selection_metric"))
             if stability_splits > 1 and len(shortlist) > 1:
@@ -642,6 +700,33 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                     report["stability"].update(applied=True, reason="paired_inner_mean",
                                                outer_finalist_limit=2)
                     shortlist = [recipes[identifier] for identifier in summary["ranking"][:2]]
+            if controller is not None and len(shortlist) >= 2:
+                from agent.weighted_ensemble import select_weighted_ensemble
+                # These component IDs and weights are frozen before the first
+                # OUTER candidate score is available. Recompute the raw evidence
+                # against the pinned INNER row IDs and answers when loading it.
+                inner_ids = train[id_column].iloc[inner[1]].tolist()
+                inner_actuals = train[target].iloc[inner[1]].tolist()
+                blend_inputs = [{"id": item["id"], "classes": spec.classes,
+                                 "predictions": _raw_evidence(selection_evidence[item["id"]]["directory"],
+                                                              spec, inner_ids, inner_actuals)}
+                                for item in shortlist]
+                choice_deadline = min(started + time_budget * .68,
+                                      time.monotonic() + min(10.0, time_budget * .02))
+                blend_choice = select_weighted_ensemble(spec, inner_actuals, blend_inputs,
+                                                        deadline=choice_deadline)
+                report["weighted_ensemble"] = blend_choice
+                if blend_choice["improved"]:
+                    components = [recipes[identifier] for identifier in blend_choice["selected_ids"]]
+                    frozen_blend = {"id": "weighted_blend", "action": "blend",
+                                    "label": "Ансамбль · веса по внутренней проверке",
+                                    "model_config": {"model": "WeightedBlend", "parameters": {
+                                        "weights": blend_choice["weights"],
+                                        "components": [item["model_config"] for item in components]}},
+                                    "feature_config": normalize_feature_config(), "components": components}
+                    add_recipe(frozen_blend, "blend")
+                    rows["weighted_blend"]["selection_metric"] = blend_choice["score"]
+                del blend_inputs
             for recipe in successful:
                 if recipe not in shortlist:
                     rows[recipe["id"]]["rejection_reason"] = "not_selected"
@@ -655,7 +740,34 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
                     evidence[recipe["id"]] = record
 
         verified = rank([recipes[identifier] for identifier in evidence], "metric")
-        if len(verified) >= 2 and time.monotonic() < started + time_budget * 0.75:
+        if frozen_blend is not None:
+            from agent.weighted_ensemble import apply_weighted_ensemble
+            row = rows["weighted_blend"]
+            component_ids = [item["id"] for item in frozen_blend["components"]]
+            if time.monotonic() >= started + time_budget * .75:
+                row["rejection_reason"] = "insufficient_budget"
+            elif not all(identifier in evidence for identifier in component_ids):
+                row["rejection_reason"] = "invalid_evidence"
+            else:
+                # Only apply INNER-frozen weights here; outer outcomes cannot
+                # change the component list, the grid or the weights.
+                search["phase"] = "blend"
+                directory = run_dir / "weighted_blend" / "blend"
+                directory.mkdir(parents=True)
+                raw = apply_weighted_ensemble(spec, [evidence[identifier]["raw"] for identifier in component_ids],
+                                               frozen_blend["model_config"]["parameters"]["weights"])
+                spec.holdout_frame(expected_ids, expected_actuals, metric_predictions(spec, raw),
+                                   prediction_classes=spec.classes).to_csv(
+                    directory / "holdout_predictions.csv", index=False, encoding="utf-8")
+                value = score_holdout(directory / "holdout_predictions.csv", spec, expected_ids, expected_actuals)
+                row.update(status="completed", metric=value, verification_metric=value)
+                if all(better(value, rows[identifier]["metric"]) for identifier in component_ids):
+                    evidence["weighted_blend"] = {"directory": directory, "value": value, "raw": raw}
+                    verified = rank([*verified, recipes["weighted_blend"]], "metric")
+                else:
+                    row["rejection_reason"] = "not_improved"
+            save("training")
+        if controller is None and len(verified) >= 2 and time.monotonic() < started + time_budget * 0.75:
             left, right = verified[:2]
             blend = {"id": "blend", "action": "blend", "label": "Среднее двух моделей · 50/50",
                      "model_config": {"model": "FixedBlend", "parameters": {
@@ -697,7 +809,7 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         if best is None:
             raise RuntimeError("Автоподбор не получил ни одного проверенного результата. "
                                "Прежний submission.csv сохранён; откройте журнал попыток.")
-        search["status"] = ("time_limit" if any(row["rejection_reason"] in {"timeout", "insufficient_budget"}
+        search["status"] = ("time_limit" if controller_stop_reason == "selection_budget" or any(row["rejection_reason"] in {"timeout", "insufficient_budget"}
                                                or row.get("resources", {}).get("timed_out")
                                                for row in search["candidates"]) else "completed")
         search["phase"] = "finished"
@@ -707,6 +819,8 @@ def run_automl(task_path: Path, *, time_budget=600, validation=None,
         print(f"Report: {output_dir / 'automl_report.json'}", flush=True)
         return deepcopy(report)
     except Exception as error:
+        if controller is not None and controller_stop_reason is None:
+            controller_stop_reason = "interrupted"
         if best is not None and isinstance(error, (OSError, RuntimeError, MemoryError)):
             try:
                 return recover_accepted(error)

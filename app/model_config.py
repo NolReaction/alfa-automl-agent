@@ -18,8 +18,11 @@ def feature_evidence(value, *, model=None):
         result["feature_config"] = validate_feature_config(value["feature_config"])
     if "component_feature_configs" in value:
         components = value["component_feature_configs"]
-        if model != "FixedBlend" or not isinstance(components, list) or len(components) != 2:
-            raise ValueError("Настройки компонентов доступны только для ансамбля двух моделей.")
+        expected = (value.get("model_config") or {}).get("parameters", {}).get("components")
+        valid_count = (len(components) == 2 if model == "FixedBlend" else
+                       2 <= len(components) <= 3 if model == "WeightedBlend" else False) if isinstance(components, list) else False
+        if not valid_count or isinstance(expected, list) and len(components) != len(expected):
+            raise ValueError("Настройки компонентов должны соответствовать моделям ансамбля.")
         result["component_feature_configs"] = [validate_feature_config(item) for item in components]
     return result
 

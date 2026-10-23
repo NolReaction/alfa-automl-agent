@@ -175,7 +175,10 @@ class JobTests(unittest.TestCase):
         self.assertFalse(result["api_used"])
         self.assertFalse(result["published"])
         self.assertEqual((self.task / "submission.csv").read_bytes(), original)
+        self.assertEqual(result["search_strategy"], "adaptive")
         search = result["search"]
+        self.assertEqual(search["controller"]["strategy"], "adaptive")
+        self.assertFalse(search["controller"]["resumable"])
         completed = [row for row in search["candidates"] if row["status"] == "completed"]
         self.assertEqual(search["completed"], len(completed))
         self.assertGreaterEqual(len(completed), 2)
@@ -186,6 +189,7 @@ class JobTests(unittest.TestCase):
         folder = self.state / "jobs" / job["id"]
         config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["time_budget"], 60)
+        self.assertEqual(config["search_strategy"], "adaptive")
         self.assertNotIn("model_params", config)
         reference = self.wait(self.manager.start("example", "extra_trees",
                                                  model_params={"n_estimators": 50}), timeout=60)

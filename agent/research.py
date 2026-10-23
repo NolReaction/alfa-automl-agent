@@ -519,7 +519,8 @@ def run_agent_v2(task_path: Path, client, *, max_steps: int = 12,
 def run_agent(task_path: Path, client, *, max_steps: int = 12,
               time_budget: float = 10500, stability_splits=1, metric_recipes=False,
               search_profile="legacy", history_config=None, history_weight=0.5,
-              local_only=False, history_auto=False, adaptive_search=False, rescue_regression=False) -> Path:
+              local_only=False, history_auto=False, adaptive_search=False, rescue_regression=False,
+              adaptive_budget=False) -> Path:
     """Default to v3; retain the explicitly unverified legacy unknown-metric route."""
     from agent.task_contract import parse_task_metric
 
@@ -529,6 +530,10 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
         raise ValueError("history_auto must be a boolean")
     if type(adaptive_search) is not bool:
         raise ValueError("adaptive_search must be a boolean")
+    if type(adaptive_budget) is not bool:
+        raise ValueError("adaptive_budget must be a boolean")
+    if adaptive_budget and not adaptive_search:
+        raise ValueError("adaptive_budget requires v3 adaptive search")
     if type(rescue_regression) is not bool:
         raise ValueError("rescue_regression must be a boolean")
     if rescue_regression and not adaptive_search:
@@ -540,7 +545,7 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
             raise
         if (stability_splits != 1 or metric_recipes or search_profile != "legacy"
                 or history_config is not None or history_weight != 0.5 or local_only or history_auto or adaptive_search
-                or rescue_regression):
+                or rescue_regression or adaptive_budget):
             raise ValueError("Quality experiment options require a supported task metric") from error
         return run_agent_v2(task_path, client, max_steps=max_steps, time_budget=time_budget)
     from agent.research_v3 import run_agent_v3
@@ -556,6 +561,8 @@ def run_agent(task_path: Path, client, *, max_steps: int = 12,
         options["history_auto"] = True
     if adaptive_search:
         options["adaptive_search"] = True
+    if adaptive_budget:
+        options["adaptive_budget"] = True
     if rescue_regression:
         options["rescue_regression"] = True
     return run_agent_v3(task_path, client, max_steps=max_steps, time_budget=time_budget, **options)

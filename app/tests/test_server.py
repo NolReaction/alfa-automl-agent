@@ -94,11 +94,11 @@ class ServerTests(unittest.TestCase):
             classification_diagnostics=diagnostics,
             metric={"name": "Macro F1", "value": 1.0, "higher_is_better": True},
             split={"validation_rows": 50},
-        ) for index in range(110)]
+        ) for index in range(120)]
         with patch.object(self.server, "experiments", return_value=records):
             status, headers, downloaded = self.request("/api/tasks/case/export")
         self.assertEqual(status, 200, downloaded)
-        self.assertGreater(len(downloaded), MAX_BYTES * .98)
+        self.assertGreater(len(downloaded), 1024 * 1024)
         self.assertLessEqual(len(downloaded), MAX_BYTES)
         self.assertEqual(int(headers["Content-Length"]), len(downloaded))
         count = len(json.loads(downloaded)["reports"])

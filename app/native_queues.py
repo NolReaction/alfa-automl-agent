@@ -163,12 +163,15 @@ class NativeQueueManager:
                     or not SHA.fullmatch(record["release_sha"])
                     or type(record.get("time_budget_seconds")) is not int
                     or not 301 <= record["time_budget_seconds"] <= 10500
+                    or record.get("research_search", "adaptive") not in ("adaptive", "adaptive-budget")
                     or not isinstance(record.get("created_at"), str)):
                 continue
             # Retain only known metadata. Never trust a persisted arbitrary path.
             record = {key: record.get(key) for key in (
                 "version", "id", "status", "created_at", "finished_at", "time_budget_seconds",
-                "release_sha", "regression_task_id", "classification_task_id", "error", "_runtime")}
+                "release_sha", "regression_task_id", "classification_task_id", "error", "_runtime",
+                "research_search")}
+            record["research_search"] = record.get("research_search") or "adaptive"
             self._records[record["id"]] = record
             if record["status"] in ACTIVE:
                 self._settle(record, None, "interrupted",
@@ -263,8 +266,8 @@ class NativeQueueManager:
                 "free_disk_bytes": free, "lane_available": lane}
 
     def start(self, regression_task_id, classification_task_id, time_budget_seconds=10500):
-        if type(time_budget_seconds) is not int or not 301 <= time_budget_seconds <= 10500:
-            raise ValueError("Лимит каждой native-задачи должен быть целым числом от 301 до 10500 секунд.")
+        if type(time_budget_seconds) is not int or not 360 <= time_budget_seconds <= 10500:
+            raise ValueError("Лимит каждой native-задачи должен быть целым числом от 360 до 10500 секунд.")
         with self._lock:
             checked = self.preflight()
             if not checked["ready"]:
@@ -288,7 +291,8 @@ class NativeQueueManager:
             record = {"version": 1, "id": identifier, "status": "queued", "created_at": _now(),
                       "finished_at": None, "time_budget_seconds": time_budget_seconds,
                       "release_sha": checked["release_sha"], "regression_task_id": regression_task_id,
-                      "classification_task_id": classification_task_id, "error": None}
+                      "classification_task_id": classification_task_id, "error": None,
+                      "research_search": "adaptive-budget"}
             self._records[identifier] = record
             self._prune_history()
             self._save(record)
@@ -410,7 +414,8 @@ class NativeQueueManager:
                     sys.executable, "-u", str(self.source_root / "experiment_round5_overnight.py"),
                     "--release-commit", record["release_sha"], "--regression-task", str(regression),
                     "--classification-task", str(classification), "--output", str(self._output(identifier)),
-                    "--time-budget", str(record["time_budget_seconds"])]
+                    "--time-budget", str(record["time_budget_seconds"]),
+                    "--research-search", record.get("research_search", "adaptive")]
             environment = sanitized_environment(8)
             # The Windows CPU lane is scoped by USERNAME. Keep that same owner
             # in the coordinator while still excluding API credentials.
@@ -534,6 +539,7 @@ class NativeQueueManager:
         return {"id": identifier, "status": record["status"], "created_at": record["created_at"],
             "finished_at": record.get("finished_at"), "time_budget_seconds": record["time_budget_seconds"],
             "total_native_seconds": 3 * record["time_budget_seconds"], "release_sha": record["release_sha"],
+            "research_search": record.get("research_search", "adaptive"),
             "profiles": [self._profile(identifier, name, items.get(name, {}), record) for name in PROFILES],
             "comparison": comparison, "error": _text(record.get("error")),
             "artifact_available": self._artifact_available(identifier), "output_dir": str(output)}

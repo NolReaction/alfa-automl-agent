@@ -330,11 +330,15 @@ class WorkerTests(unittest.TestCase):
         loaded = worker.load_config(path)
         self.assertEqual(loaded["validation"], {"strategy": "auto"})
         self.assertEqual(loaded["time_budget"], 600)
+        self.assertEqual(loaded["search_strategy"], "adaptive")
+        path.write_text(json.dumps({**config, "search_strategy": "legacy"}), encoding="utf-8")
+        self.assertEqual(worker.load_config(path)["search_strategy"], "legacy")
         for updates in (
             {"model_params": None}, {"model_params": {"n_estimators": 50}},
             {"time_budget": True}, {"time_budget": "60"}, {"time_budget": 0},
             {"time_budget": float("nan")}, {"time_budget": 10501},
             {"validation": {"strategy": "auto", "time_column": "x"}},
+            {"search_strategy": "unknown"}, {"search_strategy": {}},
         ):
             with self.subTest(updates=updates):
                 path.write_text(json.dumps({**config, **updates}), encoding="utf-8")

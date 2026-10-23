@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from app.model_config import make_model_config
-from app.search_summary import validate_search_summary
+from app.search_summary import validate_search_summary, MAX_SEARCH_CANDIDATES, normalize_search_strategy
 
 
 def completed_search(count):
@@ -27,9 +27,69 @@ class SearchSummaryBoundTests(unittest.TestCase):
         self.assertEqual(len(validated["candidates"]), 22)
         self.assertEqual(validated["candidates"][-1]["id"], "candidate-21")
 
-    def test_twenty_three_recipe_plan_is_rejected(self):
+    def test_extended_adaptive_plan_is_accepted_without_truncation(self):
+        summary = completed_search(258)
+        summary["controller"] = {"strategy": "adaptive", "max_trials": 256, "proposed": 256,
+            "observed": 256, "stop_reason": "trial_limit", "optimizer": "optuna_tpe", "resumable": False}
+        validated = validate_search_summary(summary)
+        self.assertEqual(len(validated["candidates"]), 258)
+        self.assertEqual(validated["controller"], summary["controller"])
+
+    def test_plan_beyond_safety_cap_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "число попыток"):
-            validate_search_summary(completed_search(23))
+            validate_search_summary(completed_search(MAX_SEARCH_CANDIDATES + 1))
+
+    def test_controller_cannot_claim_resume_or_more_observations_than_proposals(self):
+        controller = {"strategy": "adaptive", "max_trials": 256, "proposed": 2,
+            "observed": 2, "stop_reason": "selection_budget", "optimizer": "optuna_tpe", "resumable": False}
+        for change in ({"resumable": True}, {"observed": 3}, {"max_trials": 513},
+                       {"optimizer": "fake"}, {"stop_reason": "mystery"}, {"proposed": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_search_summary({**completed_search(2), "controller": {**controller, **change}})
+
+    def test_strategy_is_explicit_and_only_applies_to_automl(self):
+        self.assertEqual(normalize_search_strategy(), "adaptive")
+        self.assertEqual(normalize_search_strategy("legacy"), "legacy")
+        self.assertIsNone(normalize_search_strategy(None, action="catboost"))
+        for value, action in (("other", "automl"), ({}, "automl"), ("adaptive", "catboost")):
+            with self.subTest(value=value, action=action), self.assertRaises(ValueError):
+                normalize_search_strategy(value, action=action)
+
+    def test_long_adaptive_report_survives_export_import_and_retains_strategy(self):
+        import json
+        from agent.features import normalize_feature_config
+        from app.sharing import ReportStore
+        from app.tests.test_sharing import FINGERPRINT, job
+
+        summary = completed_search(514)
+        summary["controller"] = {"strategy": "adaptive", "max_trials": 512, "proposed": 512,
+            "observed": 512, "stop_reason": "trial_limit", "optimizer": "optuna_tpe", "resumable": False}
+        for row in summary["candidates"]:
+            row["feature_config"] = normalize_feature_config()
+        original = job(action="automl", model="Ridge", search_strategy="adaptive",
+            model_config=summary["candidates"][0]["model_config"], search=summary,
+            feature_config=normalize_feature_config(),
+            metric={"name": "RMSE", "value": 0.0, "higher_is_better": False})
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReportStore(Path(directory) / ".workspace")
+            envelope = store.export("regression", FINGERPRINT, [original])
+            self.assertGreater(len(json.dumps(envelope).encode()), 128 * 1024)
+            self.assertEqual(store.import_reports("regression", FINGERPRINT, envelope), {"imported": 1, "skipped": 0})
+            imported, = store.list("regression")
+            self.assertEqual(len(imported["search"]["candidates"]), 514)
+            self.assertEqual(imported["search_strategy"], "adaptive")
+
+    def test_weighted_blend_requires_matching_component_feature_count(self):
+        from agent.features import normalize_feature_config
+        from app.model_config import feature_evidence
+
+        config = {"model": "WeightedBlend", "parameters": {"weights": [.2, .3, .5], "components": [
+            make_model_config("linear", "regression", {"alpha": value}) for value in (1, 2, 3)]}}
+        evidence = {"model_config": config, "component_feature_configs": [normalize_feature_config()] * 3}
+        self.assertEqual(feature_evidence(evidence, model="WeightedBlend"),
+                         {"component_feature_configs": evidence["component_feature_configs"]})
+        with self.assertRaisesRegex(ValueError, "соответствовать"):
+            feature_evidence({**evidence, "component_feature_configs": evidence["component_feature_configs"][:2]}, model="WeightedBlend")
 
 
 class RecoveredSearchSummaryTests(unittest.TestCase):

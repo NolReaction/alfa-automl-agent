@@ -151,9 +151,10 @@ def main() -> int:
                         help="Seconds; default 10500 in every mode; maximum 10500")
     parser.add_argument("--search-profile", choices=("legacy", "strong_v1"), default="legacy",
                         help="CPU search plan; strong_v1 is an experimental deeper boosting plan")
-    parser.add_argument("--research-search", choices=("adaptive", "legacy"), default="adaptive",
-                        help="adaptive (default): use spare long-run CPU time for measured local research; "
-                             "legacy keeps the original finite search; budgets <=300s retain short-run behavior")
+    parser.add_argument("--research-search", choices=("adaptive", "adaptive-budget", "legacy"), default="adaptive",
+                        help="adaptive (default): up to 64 measured local trials; "
+                             "adaptive-budget: deadline-bound search with a 256-trial safety ceiling; "
+                             "legacy keeps the original finite search; adaptive-budget requires >300s and auto validation")
     parser.add_argument("--validation", choices=("auto", "random", "grouped", "time"), default=None,
                         help="Offline holdout strategy; defaults to auto")
     parser.add_argument("--time-column", help="Numeric period feature for --validation time")
@@ -224,7 +225,7 @@ def main() -> int:
         if not task_path.is_file():
             raise FileNotFoundError(f"Task file not found: {task_path}")
         parsed_metric = None
-        if (args.research_search == "adaptive" and time_budget > 300
+        if (args.research_search in {"adaptive", "adaptive-budget"} and time_budget > 300
                 and args.validation in {None, "auto"} and args.time_column is None):
             from agent.task_contract import parse_task_metric
 
@@ -237,6 +238,11 @@ def main() -> int:
                 print("Adaptive search unavailable for this task metric; retaining the legacy solver.", flush=True)
             else:
                 quality_options["adaptive_search"] = True
+                if args.research_search == "adaptive-budget":
+                    quality_options["adaptive_budget"] = True
+        if args.research_search == "adaptive-budget" and not quality_options.get("adaptive_budget"):
+            raise ValueError("adaptive-budget requires a supported task metric, auto validation "
+                             "and a time-budget greater than 300 seconds.")
         if args.rescue_regression is True:
             if quality_options.get("adaptive_search") is not True:
                 raise ValueError("--rescue-regression requires supported v3 adaptive search, auto validation "

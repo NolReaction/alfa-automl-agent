@@ -121,7 +121,8 @@ def audit_job(job, plan):
     }
     checks["source_identity_unchanged"] = check_identity(plan["release"]) is not None
     require(config["profile"] == job.name and config["time_budget_seconds"] == cap
-            and config["task_dir"] == str(task) and config["solver_root"] == plan["flat_root"],
+            and config["task_dir"] == str(task) and config["solver_root"] == plan["flat_root"]
+            and config.get("research_search", "adaptive") == plan.get("research_search", "adaptive"),
             "Job configuration differs from sealed plan")
     require(plan["job_seals"][job.name] == {"config": file_hash(job / "config.json"),
                                             "inputs": file_hash(job / "inputs.json")},
@@ -140,8 +141,16 @@ def audit_job(job, plan):
     observed = [item for item in worker.get("observations", []) if item.get("phase") == "run_agent"]
     checks["one_adaptive_offline_invocation"] = (len(observed) == 1
         and observed[0].get("local_only") is True and observed[0].get("adaptive_search") is True
+        and observed[0].get("adaptive_budget", False) is (plan.get("research_search", "adaptive") == "adaptive-budget")
         and observed[0].get("time_budget_seconds") == native_budget
         and native.get("coordinator", {}).get("active") is True)
+    if plan.get("research_search", "adaptive") == "adaptive-budget":
+        coordinator = native.get("coordinator", {})
+        checks["budget_search_policy_recorded"] = (
+            native.get("quality_options", {}).get("adaptive_budget") is True
+            and coordinator.get("search_policy") == "adaptive-budget"
+            and coordinator.get("local_trial_limit") == 256
+            and coordinator.get("trial_limit_kind") == "safety")
     cli_budget = worker.get("cli_time_budget_seconds")
     end, deadline = worker.get("native_ended_monotonic"), worker.get("original_deadline_monotonic")
     checks["original_deadline_respected"] = (number(cli_budget) and number(native_budget)
@@ -255,14 +264,19 @@ def run_queue(output, plan, queue):
     print("Evidence:", export_summary(output), flush=True)
 
 
-def start(expected_sha, regression, classification, output, budget=10500):
+def start(expected_sha, regression, classification, output, budget=10500, *, research_search="adaptive"):
+    require(research_search in {"adaptive", "adaptive-budget"}, "Unknown research search mode")
+    if research_search == "adaptive-budget":
+        require(type(budget) in (int, float) and math.isfinite(budget) and 360 <= budget <= 10500,
+                "Budget search requires 360–10500 seconds, including bootstrap and finalization reserves")
     output = safe_path(output)
     with coordinator_lock(machine_lock_path()):
         plan = preflight(expected_sha, output, budget)
         output.mkdir(parents=True, exist_ok=False)
         plan.update(version=1, created_at=utc_now(), profiles=list(PROFILES), threads=THREADS,
                     native_seconds_per_job=budget, sampled_tree_rss_limit_bytes=MEMORY_BYTES,
-                    watchdog_seconds_per_job=budget + 30, scope=SCOPE, job_seals={})
+                    watchdog_seconds_per_job=budget + 30, scope=SCOPE, job_seals={},
+                    research_search=research_search)
         with (output / "build.txt").open("w", encoding="utf-8") as stream:
             subprocess.run([sys.executable, str(ROOT / "build_submission.py"), "--output", str(output / "solution.zip")],
                            cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True)
@@ -283,7 +297,8 @@ def start(expected_sha, regression, classification, output, budget=10500):
             write_json(job / "inputs.json", seal)
             config = {"version": 1, "job_id": profile, "profile": profile, "task_dir": str(task),
                       "task_path": str(task / "task.md"), "solver_root": str(flat),
-                      "worker_output": str(job / "worker_evidence.json"), "time_budget_seconds": budget}
+                      "worker_output": str(job / "worker_evidence.json"), "time_budget_seconds": budget,
+                      "research_search": research_search}
             write_json(job / "config.json", config)
             plan["job_seals"][profile] = {"config": file_hash(job / "config.json"), "inputs": file_hash(job / "inputs.json")}
         off = read_json(output / "jobs" / "regression_off" / "inputs.json")
@@ -304,9 +319,11 @@ def main():
     parser.add_argument("--classification-task", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--time-budget", type=int, default=10500)
+    parser.add_argument("--research-search", choices=("adaptive", "adaptive-budget"), default="adaptive")
     args = parser.parse_args()
     try:
-        start(args.release_commit, args.regression_task, args.classification_task, args.output, args.time_budget)
+        start(args.release_commit, args.regression_task, args.classification_task, args.output, args.time_budget,
+              research_search=args.research_search)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print("Queue stopped:", error, "Preserve:", args.output, file=sys.stderr)
         return 2

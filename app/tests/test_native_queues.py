@@ -142,7 +142,7 @@ class NativeQueueTests(unittest.TestCase):
             self.assertFalse(self.manager.preflight()["ready"])
 
     def test_start_validates_task_roles_budget_and_ordinary_exclusion_before_spawn(self):
-        for budget in (True, 300, 10501, 600.0):
+        for budget in (True, 300, 301, 305, 359, 10501, 600.0):
             with self.subTest(budget=budget), self.assertRaises(ValueError):
                 self.manager.start("regression", "classification", budget)
         with self.assertRaisesRegex(ValueError, "RMSE"):
@@ -177,6 +177,7 @@ class NativeQueueTests(unittest.TestCase):
             self.assertNotIn(str(self.repo / "app/worker.py"), argv)
             self.assertEqual(argv[argv.index("--release-commit") + 1], "a" * 40)
             self.assertEqual(argv[argv.index("--time-budget") + 1], "600")
+            self.assertEqual(argv[argv.index("--research-search") + 1], "adaptive-budget")
             self.assertEqual(argv[argv.index("--output") + 1], str(output))
             self.assertEqual(kwargs["creationflags"], native.subprocess.CREATE_NEW_PROCESS_GROUP)
             self.assertEqual(kwargs["env"]["CUDA_VISIBLE_DEVICES"], "")
