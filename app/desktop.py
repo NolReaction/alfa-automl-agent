@@ -30,6 +30,19 @@ def open_server(server_type, data_root: Path, state_root: Path):
         return server_type(data_root, 0, state_root)
 
 
+def _active_record(server, manager_name: str, method_name: str) -> dict | None:
+    manager = getattr(server, manager_name, None)
+    method = getattr(manager, method_name, None)
+    record = method() if callable(method) else None
+    return record if isinstance(record, dict) else None
+
+
+def owned_work_active(server) -> bool:
+    """Include a retained native process whose exit is not yet confirmed."""
+    return (_active_record(server, "jobs", "active_job") is not None or
+            _active_record(server, "native_queues", "active_queue") is not None)
+
+
 def close_server(server, thread) -> None:
     if server is None:
         return
@@ -37,15 +50,25 @@ def close_server(server, thread) -> None:
         if thread is not None and thread.is_alive():
             server.shutdown()
     finally:
-        server.server_close()
-        # JobManager.close requests cancellation but its first wait is bounded.
-        # Keep the owning process alive until the final history write/lock release.
-        while server.jobs.active_job() is not None:
-            time.sleep(0.1)
-        if thread is not None:
-            thread.join(timeout=5)
-            if thread.is_alive():
-                raise RuntimeError("Сервер ещё завершает работу. Дождитесь остановки приложения.")
+        try:
+            server.server_close()
+            # NativeQueueManager.close already waits for its bounded stop attempt.
+            # Keep the desktop open for an explicit retry if exit is unconfirmed.
+            if _active_record(server, "native_queues", "active_queue") is not None:
+                raise RuntimeError(
+                    "Не удалось подтвердить остановку ночной серии. "
+                    "Не закрывайте это окно. Повторите завершение работы; "
+                    "если ошибка повторится, проверьте процессы и отчёты серии."
+                )
+            # JobManager.close requests cancellation but its first wait is bounded.
+            # Keep the owner alive until the final history write/lock release.
+            while _active_record(server, "jobs", "active_job") is not None:
+                time.sleep(0.1)
+        finally:
+            if thread is not None:
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    raise RuntimeError("Сервер ещё завершает работу. Дождитесь остановки приложения.")
 
 
 def visible_error(text: str) -> None:
@@ -147,10 +170,10 @@ def main() -> int:
             nonlocal closer
             if closer is not None:
                 return
-            active = server.jobs.active_job()
-            if active and not messagebox.askyesno(
+            if owned_work_active(server) and not messagebox.askyesno(
                 "Завершить работу?",
-                "Сейчас выполняется эксперимент. Остановить его и закрыть лабораторию?",
+                "Сейчас выполняется эксперимент или серия тестов. "
+                "Остановить работу и закрыть лабораторию?",
                 parent=root,
             ):
                 return

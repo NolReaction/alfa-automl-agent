@@ -209,6 +209,16 @@ def api_settings():
             "model_configured": bool(values["OPENAI_MODEL"])}
 
 
+def _job_environment(settings):
+    from agent.execution import child_environment
+    environment = child_environment()
+    environment.update(settings)
+    if os.name == "nt" and os.environ.get("USERNAME"):
+        # The contained supervisor must use the same user-specific OS lane.
+        environment["USERNAME"] = os.environ["USERNAME"]
+    return environment
+
+
 def _redact(text, key=""):
     text = str(text)
     for secret in (key, os.environ.get("OPENAI_API_KEY", "")):
@@ -635,6 +645,10 @@ class JobManager:
                 raise RuntimeError("Менеджер запусков остановлен.")
             if self._active:
                 raise RuntimeError("Уже выполняется другой запуск. Дождитесь завершения или остановите его.")
+            if action != "prepare":
+                from research_lab.process import coordinator_lock, machine_lock_path
+                with coordinator_lock(machine_lock_path()):
+                    pass
             values = _settings_values() if action == "agent" else {}
             if action == "agent" and any(not values.get(name) for name in REQUIRED_API_FIELDS):
                 raise ValueError("Для Qwen заполните OPENAI_API_KEY и OPENAI_BASE_URL в окружении или локальном .env.")
@@ -786,16 +800,16 @@ class JobManager:
             if active["cancel"].is_set():
                 raise InterruptedError("Запуск остановлен пользователем.")
             command = self._command(job, task_path, minutes)
-            from agent.execution import child_environment
-            environment = child_environment()
-            environment.update(settings)
+            environment = _job_environment(settings)
             timeout = PREPARE_TIMEOUT if job["action"] == "prepare" else minutes * 60 + 30 if job["action"] in {"agent", "automl"} else LOCAL_TIMEOUT
             stage = {"prepare": "downloading", "agent": "research"}.get(job["action"], "training")
             with (folder / "stdout.txt").open("xb") as stdout, (folder / "stderr.txt").open("xb") as stderr:
                 with self._lock:
                     if self._closed or active["cancel"].is_set():
                         raise InterruptedError("Запуск остановлен пользователем.")
-                    supervised = [sys.executable, "-u", str(ROOT / "app" / "supervisor.py"), "--", *command]
+                    lane_args = [] if job["action"] == "prepare" else ["--cpu-lane"]
+                    supervised = [sys.executable, "-u", str(ROOT / "app" / "supervisor.py"),
+                                  *lane_args, "--", *command]
                     process = subprocess.Popen(supervised, cwd=ROOT, env=environment,
                                                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                                                start_new_session=os.name != "nt",
