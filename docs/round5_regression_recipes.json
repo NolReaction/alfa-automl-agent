@@ -1,0 +1,523 @@
+{
+  "decision": {
+    "action": "retain_incumbent",
+    "full_train_refit": "not_required_no_qualified_candidate",
+    "history_admission": "not_established",
+    "incumbent_family": "rescue_regression_v1",
+    "known_year5": "not_executed_forbidden",
+    "native_admission": false,
+    "new_candidate_recommended": false,
+    "new_family_activation": false,
+    "reason": "E75 significant Residential p2 SSE veto; LGB fold/segment vetoes and two-period stop; numeric arms failed screen."
+  },
+  "published_source_sha": "41f0b09c766682515684d4838c6c91dfa95bb154",
+  "recipes": {
+    "E25": {
+      "arm": "E25",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "catboost_all",
+          "weight": 0.75
+        },
+        {
+          "base": {
+            "engine": "lightgbm",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "colsample_bytree": 0.9,
+              "learning_rate": 0.04,
+              "max_depth": -1,
+              "min_child_samples": 40,
+              "num_leaves": 31,
+              "reg_lambda": 5.0
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "lightgbm_all",
+          "weight": 0.25
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          0.5,
+          0.5
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    },
+    "E50": {
+      "arm": "E50",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "catboost_all",
+          "weight": 0.5
+        },
+        {
+          "base": {
+            "engine": "lightgbm",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "colsample_bytree": 0.9,
+              "learning_rate": 0.04,
+              "max_depth": -1,
+              "min_child_samples": 40,
+              "num_leaves": 31,
+              "reg_lambda": 5.0
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "lightgbm_all",
+          "weight": 0.5
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          0.5,
+          0.5
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    },
+    "E75": {
+      "arm": "E75",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "catboost_all",
+          "weight": 0.25
+        },
+        {
+          "base": {
+            "engine": "lightgbm",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "colsample_bytree": 0.9,
+              "learning_rate": 0.04,
+              "max_depth": -1,
+              "min_child_samples": 40,
+              "num_leaves": 31,
+              "reg_lambda": 5.0
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "lightgbm_all",
+          "weight": 0.75
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          0.5,
+          0.5
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    },
+    "I": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "family": "rescue_regression_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "LGB": {
+      "arm": "LGB",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "lightgbm",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "colsample_bytree": 0.9,
+              "learning_rate": 0.04,
+              "max_depth": -1,
+              "min_child_samples": 40,
+              "num_leaves": 31,
+              "reg_lambda": 5.0
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "lightgbm_all",
+          "weight": 1.0
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          1.0
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    },
+    "N": {
+      "arm": "N",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "declared_numeric",
+          "id": "catboost_numeric",
+          "weight": 1.0
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          1.0
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    },
+    "N25": {
+      "arm": "N25",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "catboost_all",
+          "weight": 0.75
+        },
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "declared_numeric",
+          "id": "catboost_numeric",
+          "weight": 0.25
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          0.5,
+          0.5
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    },
+    "N50": {
+      "arm": "N50",
+      "calibration": {
+        "history_order": "select_on_aligned_mixture_before_all_component_refits",
+        "minimum_final_iterations": 50,
+        "position_alignment": "original_iloc_sorted_exact_sets",
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "legacy_best_vs_min50_refit"
+      },
+      "components": [
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "all_declared",
+          "id": "catboost_all",
+          "weight": 0.5
+        },
+        {
+          "base": {
+            "engine": "catboost",
+            "fallback_iterations": 400,
+            "max_iterations": 2000,
+            "parameters": {
+              "depth": 6,
+              "l2_leaf_reg": 5.0,
+              "learning_rate": 0.05
+            },
+            "period_column": "Year_Factor",
+            "stopping_rounds": 100
+          },
+          "feature_subset": "declared_numeric",
+          "id": "catboost_numeric",
+          "weight": 0.5
+        }
+      ],
+      "fallback": {
+        "component_failure": "raise_no_partial_ensemble",
+        "history_calibration_unavailable": "fixed_mean_weight_0.5",
+        "no_history_schema": "base_ensemble",
+        "no_internal_split": "fixed_400_trees_per_component"
+      },
+      "family": "round5_regression_ensemble_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "component_quota": "cumulative_staging_and_refit_wall_seconds",
+        "component_time_shares": [
+          0.5,
+          0.5
+        ],
+        "deadline": "one_supplied_absolute_deadline",
+        "device": "CPU",
+        "execution": "sequential",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "unused_component_time": "not_transferred"
+      },
+      "version": 1
+    }
+  },
+  "tested_source_sha": "c0ba45118c41dfa4b0ad0360f925874692dd3082"
+}

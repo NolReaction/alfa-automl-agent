@@ -2,12 +2,21 @@
 
 Base: `66e9481cb61cb83cfecab53be6984d7d2bf829b3`.
 Family: `round5_regression_ensemble_v1`, version 1.
-The candidate is inactive. This PR does not add a scheduler/CLI hook, change a
-default, replace the integrated rescue, or establish native admission. The
-final recommendation, tested source/dependency hashes and frozen recipe are in
+**Decision: retain the integrated `rescue_regression_v1` incumbent.** No new arm
+passed the preregistered gates. E75 improved pooled development RMSE by 0.7233%
+and won two of three transitions, but period-2 Residential SSE increased by
+18.6023% across 6,449 rows (10,123,578.07 to 12,006,794.63; +1,883,216.56).
+That material segment failure prevents recommendation. LGB had material
+segment failures on periods 2 and 3 and stopped before confirmation period 4.
+No threshold, weight or recipe was changed after those outcomes.
+
+The candidate remains inactive. This PR does not add a scheduler/CLI hook,
+change a default, replace the integrated rescue, or establish native admission.
+No selected finalist was frozen for full TRAIN, and no new full-TRAIN refit or
+known-period-5 compatibility evaluation was run. The final source/dependency
+hashes, recipes and complete negative evidence are in
 `round5_regression_results.md` and the accompanying machine-readable results.
-An unsuccessful development result means retain the existing rescue; the mere
-presence of this interface is not a request to activate it.
+This interface is retained for audit and reproduction, not activation.
 
 ## Candidate and frozen inputs
 
@@ -119,21 +128,68 @@ sandbox; unknown resource telemetry remains unknown.
 
 ## Measured cost and owner hook
 
-The isolated harness charges 180 seconds per screen invocation and 360 seconds
-per confirmation invocation, including all components. These are direct
-supplied-fit experiments, not timings of the complete adaptive scheduler.
-Per-component actual fits/times and all failed attempts are recorded in the
-result JSON/CSV and the data-free evidence archive.
+The isolated harness charged 180 seconds per screen invocation and 360 seconds
+per confirmation invocation, including all components. The measured source was
+`c0ba45118c41dfa4b0ad0360f925874692dd3082`. These are direct supplied-fit
+experiments, not timings of the complete adaptive scheduler. All eight
+confirmation invocations below completed their actual started fits. LGB's
+missing period-4 confirmation was a preregistered stop, not a successful
+zero-cost run; its earlier 180-second screen does not substitute for it.
+
+| Period / fit → predict rows | Arm | Actual completed fits | Host preparation, s | Through candidate completion, s | Post-prediction diagnostics, s | Whole invocation, s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 2 / 2,117 → 9,058 | I | 1 | 0.359 | 2.791 | 1.069 | 3.860 |
+| 2 / 2,117 → 9,058 | E75 | 2 | 0.355 | 3.354 | 1.599 | 4.954 |
+| 2 / 2,117 → 9,058 | LGB | 1 | 0.370 | 2.341 | 1.390 | 3.731 |
+| 3 / 11,175 → 10,879 | I | 2 | 0.596 | 4.275 | 1.676 | 5.952 |
+| 3 / 11,175 → 10,879 | E75 | 4 | 0.751 | 5.620 | 2.561 | 8.182 |
+| 3 / 11,175 → 10,879 | LGB | 2 | 0.752 | 3.540 | 2.164 | 5.704 |
+| 4 / 22,054 → 12,946 | I | 2 | 0.787 | 5.272 | 2.356 | 7.628 |
+| 4 / 22,054 → 12,946 | E75 | 4 | 1.134 | 7.661 | 3.853 | 11.514 |
+| 4 / 22,054 → 12,946 | LGB | Not executed | — | — | — | — |
+
+"Through candidate completion" already includes host preparation; whole time
+also includes diagnostics and final bookkeeping. Do not add these nested
+columns. The worker run directory's `full_refit` phase label means refitting
+the **supplied development fit**, not a final full-TRAIN fit or native admission.
+
+For E75 confirmation period 4, the internal fit had 11,175 rows and calibration
+had 10,879; each fresh component refit used all 22,054 supplied rows. The actual
+fit ledger orders CatBoost internal, LightGBM internal, CatBoost fresh refit,
+LightGBM fresh refit. Component timings were:
+
+| Component | Staging including internal block, s | Internal block, s | Actual internal engine fit, s | Fresh pipeline fit, s | Actual refit engine fit, s | Final pipeline prediction, s | Best / final trees |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CatBoost, weight .25 | 1.707 | 1.061 | 0.761 | 0.551 | 0.274 | 0.171 | 66 / 66 |
+| LightGBM, weight .75 | 1.380 | 0.700 | 0.344 | 0.465 | 0.167 | 0.209 | 31 / 50 |
+
+These are nested timers, not additive phases: staging contains input validation,
+canonical preparation and the complete internal block; pipeline fitting
+includes preprocessing and the nested engine fit; pipeline prediction includes
+feature transformation and engine prediction. Additional per-component input
+copies took 0.010/0.008 seconds. The complete candidate implementation took
+4.527 seconds, including alignment and the no-schema history path. There were
+no calibration recheck fits. Full stage events, preprocessing transforms,
+prediction timers, original deadlines and actual fit ledgers are retained in
+the result JSON and the data-free evidence archive; CSV contains aggregate rows.
+
+All development schemas were `None`. Exact cold/history gates remain unknown,
+base/mean/calibrated outputs coincide, and these measurements do not validate
+history admission. CPU time, peak RSS and cleanup telemetry were unavailable:
+the native sampler reported `RuntimeError: process inspection unavailable`
+with zero samples. The configured 8 GiB cap is not a measured peak or an
+8 GiB resource-qualification pass.
 
 | Cost boundary | Evidence status |
 | --- | --- |
-| Isolated supplied-fit screen/confirmation | See final measured result table; no synthetic time estimate substitutes |
-| Fresh selected full-TRAIN refit | Required only if a finalist passes; otherwise not executed |
+| Isolated supplied-fit screen/confirmation | Measured above and in final results; no synthetic time estimate substitutes |
+| Fresh selected full-TRAIN refit | Not executed: no finalist passed promotion gates |
 | Native host INNER phase | Not measured/admitted in this PR |
 | Native outer admission phase | Not measured/admitted in this PR |
 | Native selected full-refit phase | Not measured/admitted in this PR |
 
-If the captain later authorizes a host integration, the hook belongs where the
+There is **no recommended host activation from this result**. If a future,
+separately reviewed experiment earns admission, the hook belongs where the
 existing regression candidate is proposed/frozen after ordinary eligibility
 and allowed INNER-fit schema discovery. It should freeze the reviewed source
 and exact recipe, submit it to the unchanged evaluation/admission/refit path,
