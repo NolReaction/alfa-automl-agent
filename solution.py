@@ -154,6 +154,9 @@ def main() -> int:
     parser.add_argument("--research-search", choices=("adaptive", "legacy"), default="adaptive",
                         help="adaptive (default): use spare long-run CPU time for measured local research; "
                              "legacy keeps the original finite search; budgets <=300s retain short-run behavior")
+    parser.add_argument("--classification-round4-mode", choices=("off", "on"), default="off",
+                        help="off (default): retain ordinary research; on: request the frozen guarded OOF "
+                             "classification candidate, subject to host eligibility and the original budget")
     parser.add_argument("--validation", choices=("auto", "random", "grouped", "time"), default=None,
                         help="Offline holdout strategy; defaults to auto")
     parser.add_argument("--time-column", help="Numeric period feature for --validation time")
@@ -184,6 +187,8 @@ def main() -> int:
             return 0
         selected_mode = select_mode(args.mode)
         quality_options = {}
+        if args.classification_round4_mode != "off":
+            quality_options["classification_round4_mode"] = args.classification_round4_mode
         if args.stability_splits != 1:
             quality_options["stability_splits"] = args.stability_splits
         if args.metric_recipes:
@@ -237,6 +242,9 @@ def main() -> int:
                 print("Adaptive search unavailable for this task metric; retaining the legacy solver.", flush=True)
             else:
                 quality_options["adaptive_search"] = True
+        if args.classification_round4_mode == "on" and quality_options.get("adaptive_search") is not True:
+            raise ValueError("--classification-round4-mode on requires supported v3 adaptive search, auto validation "
+                             "and a time-budget greater than 300 seconds.")
         if args.rescue_regression is True:
             if quality_options.get("adaptive_search") is not True:
                 raise ValueError("--rescue-regression requires supported v3 adaptive search, auto validation "

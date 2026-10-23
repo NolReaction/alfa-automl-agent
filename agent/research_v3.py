@@ -182,6 +182,9 @@ class V3State(RunState):
     def check_source(self):
         if self.gate is not None:
             self.gate.check_source()
+        if getattr(self, "_round5_snapshot", None) is not None:
+            from agent.round5_classification_host import verify_dependencies
+            verify_dependencies(self)
 
     @staticmethod
     def recipe_key(candidate):
@@ -228,6 +231,8 @@ class V3State(RunState):
             raise ValueError("Inner validation unavailable; no adaptive trial is allowed")
         if self.dialogue_closed:
             raise RuntimeError("Inner research is terminal after candidate freeze")
+        if getattr(self, "_round5_snapshot", None) is not None:
+            self.check_source()
         fitting, held = rows if rows is not None else (gate.fit_rows, gate.held_rows)
         timeout = self.research_timeout(maximum)
         if timeout <= 0:
@@ -239,6 +244,10 @@ class V3State(RunState):
             actuals=gate.research_train.iloc[held][gate.spec.target_column].tolist(), phase="inner_selection",
             output_dir=self.run_dir / "inner_evaluations",
             timeout=timeout, deadline=min(started + timeout, self.budget.deadline - self.budget.publication_buffer))
+        if getattr(self, "_round5_snapshot", None) is not None:
+            from agent.round5_classification_host import verify_result
+            self.check_source()
+            verify_result(self, candidate, result)
         self.record_timing(candidate, started, len(fitting), len(held))
         return result
 
@@ -368,20 +377,21 @@ def _track_local_candidate(state, candidate):
         attempts.append(candidate)
 
 
-def _assess_candidate(state, candidate, hypothesis, *, origin):
+def _assess_candidate(state, candidate, hypothesis, *, origin, maximum=1800):
     """One host-scored inner trial, shared by LLM and bounded local search."""
     _track_local_candidate(state, candidate)
     assessment_started = time.monotonic()
     gate, recipe = state.gate, candidate.recipe
     state.tried_recipes.append({"recipe": recipe, "code_hash": candidate.code_hash})
-    result = state.measure_inner(candidate)
+    result = (state.measure_inner(candidate) if maximum == 1800
+              else state.measure_inner(candidate, maximum=maximum))
     state.gate.check_inputs()
     counter = ("successful_experiments" if origin == "llm" else
                "history_successful_experiments" if origin == "history" else "local_successful_experiments")
     state.report[counter] = state.report.get(counter, 0) + 1
     better = state.best_inner is None or _better(result.metric, state.best_inner)
     plan = state.finalization_plan(candidate)
-    within_stage_limit = all(value <= 1800 for name, value in plan.stage_seconds.items()
+    within_stage_limit = all(value <= maximum for name, value in plan.stage_seconds.items()
                              if name.startswith("candidate_"))
     feasible = plan.estimated_seconds <= state.remaining() and within_stage_limit
     if better and feasible:
@@ -591,6 +601,11 @@ def _continue_locally(state):
     code_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     seen = [*startup_seen(search, code_hash=code_hash), *state.tried_recipes,
             {"recipe": state.baseline.recipe, "code_hash": state.baseline.code_hash}]
+    early_invocations = 0
+    if state.report.get("quality_options", {}).get("classification_round4_mode", "off") == "on":
+        from agent.round5_classification_host import run_round5_host
+        recipes, seen, early_invocations = run_round5_host(
+            state, recipes, seen, code_hash, _assess_candidate, _track_local_candidate)
 
     def evaluate(recipe):
         frozen = freeze_candidate(source, recipe, state.run_dir / "local_candidates" / uuid4().hex)
@@ -621,7 +636,7 @@ def _continue_locally(state):
                                            prioritize=early_extensions)
 
         return run_deadline_continuation(state, recipes, adaptive=adaptive, evaluate=evaluate,
-            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64,
+            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64 - early_invocations,
             extensions_first=early_extensions)
     return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
@@ -710,14 +725,23 @@ def finalize(state, reason):
     for name, frozen in (("baseline", state.baseline), ("candidate", candidate)):
         if frozen is None:
             continue
+        if getattr(state, "_round5_snapshot", None) is not None:
+            state.check_source()
         try:
             timeout = stage_timeout(name + "_outer")
+            if getattr(state, "_round5_snapshot", None) is not None:
+                from agent.round5_classification_host import stage_limit
+                timeout = stage_limit(state, frozen, timeout, name + "_outer")
             started = time.monotonic()
             result = run_candidate(frozen, spec=gate.spec, fit_frame=gate.outer_fit_frame,
                 predict_frame=gate.outer_holdout_frame.drop(columns=[gate.spec.target_column]),
                 actuals=gate.expected_actuals, phase="outer_validation", timeout=timeout,
                 deadline=min(started + timeout, state.budget.deadline - state.budget.publication_buffer),
                 output_dir=state.run_dir / "outer_evaluations" / name)
+            if getattr(state, "_round5_snapshot", None) is not None:
+                from agent.round5_classification_host import verify_result
+                state.check_source()
+                verify_result(state, frozen, result)
             gate.check_inputs()
             state.record_timing(frozen, started, len(gate.outer_fit_frame), len(gate.outer_holdout_frame))
             results[name] = result
@@ -730,6 +754,8 @@ def finalize(state, reason):
             completed_stages.append(name + "_outer")
             if name not in results:
                 completed_stages.append(name + "_refit")
+        if getattr(state, "_round5_snapshot", None) is not None:
+            state.check_source()
     selected = "baseline"
     if "candidate" in results and ("baseline" not in results
             or _better(results["candidate"].metric, results["baseline"].metric)):
@@ -758,13 +784,22 @@ def finalize(state, reason):
     for name in order:
         if name not in results:
             continue
+        if getattr(state, "_round5_snapshot", None) is not None:
+            state.check_source()
         try:
             timeout = stage_timeout(name + "_refit")
+            if getattr(state, "_round5_snapshot", None) is not None:
+                from agent.round5_classification_host import stage_limit
+                timeout = stage_limit(state, frozen_by_name[name], timeout, name + "_refit")
             started = time.monotonic()
             result = run_candidate(frozen_by_name[name], spec=gate.spec, fit_frame=gate.train,
                 predict_frame=gate.test, phase="full_refit", timeout=timeout,
                 deadline=min(started + timeout, state.budget.deadline - state.budget.publication_buffer),
                 output_dir=state.run_dir / "full_refit" / name)
+            if getattr(state, "_round5_snapshot", None) is not None:
+                from agent.round5_classification_host import verify_result
+                state.check_source()
+                verify_result(state, frozen_by_name[name], result)
             gate.check_inputs()
             state.record_timing(frozen_by_name[name], started, len(gate.train), len(gate.test))
             temporary = result.output_path.parent / "publication"
@@ -793,6 +828,8 @@ def finalize(state, reason):
                         execution=error.execution if isinstance(error, CandidateExecutionError) else None)
         finally:
             completed_stages.append(name + "_refit")
+        if getattr(state, "_round5_snapshot", None) is not None:
+            state.check_source()
     state.check_source()
     if not published and not state.recover():
         report_path = _failure_text(state.run_dir / "run.json", FINAL_FAILURE_MESSAGE_LIMIT)
@@ -936,7 +973,7 @@ def _recover_after_unexpected_error(state):
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False, search_profile="legacy",
                  history_config=None, history_weight=0.5, local_only=False, history_auto=False,
-                 adaptive_search=False, rescue_regression=False):
+                 adaptive_search=False, rescue_regression=False, classification_round4_mode="off"):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -950,6 +987,8 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("history_auto must be a boolean")
     if type(adaptive_search) is not bool:
         raise ValueError("adaptive_search must be a boolean")
+    if type(classification_round4_mode) is not str or classification_round4_mode not in {"off", "on"}:
+        raise ValueError("classification_round4_mode must be 'off' or 'on'")
     if type(rescue_regression) is not bool:
         raise ValueError("rescue_regression must be a boolean")
     if rescue_regression and (not adaptive_search or time_budget <= ADAPTIVE_RESERVE_MIN_BUDGET):
@@ -962,6 +1001,11 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
              if adaptive_search else V3State(Path(task_path).resolve(), max_steps, time_budget))
     state.report["quality_options"] = {"stability_splits": stability_splits,
         "metric_recipes": metric_recipes, "search_profile": search_profile}
+    state.report["quality_options"]["classification_round4_mode"] = classification_round4_mode
+    state.report["classification_round4"] = {
+        "requested_mode": classification_round4_mode, "reached_mode": "off",
+        "status": "disabled" if classification_round4_mode == "off" else "not_reached",
+        "reason": "default_off" if classification_round4_mode == "off" else "local_continuation_not_reached"}
     if history_options is not None:
         state.report["quality_options"].update(history_options)
     if history_auto:
