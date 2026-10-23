@@ -1,0 +1,492 @@
+{
+  "arms": [
+    "I",
+    "S20",
+    "S50",
+    "A20"
+  ],
+  "base_commit": "114fc2c18595898e0f6ec099e42795eec4af0be9",
+  "base_recipe": {
+    "engine": "catboost",
+    "fallback_iterations": 400,
+    "max_iterations": 2000,
+    "parameters": {
+      "depth": 6,
+      "l2_leaf_reg": 5.0,
+      "learning_rate": 0.05
+    },
+    "period_column": "Year_Factor",
+    "stopping_rounds": 100
+  },
+  "base_tree": "0ee506c852646704037620759dc35ac0fa688072",
+  "branch": "work/round6-regression-calibration-v1",
+  "budget": {
+    "deadline_admission": "check_after_diagnostics_and_identity_receipt_hash_verification_before_success; independent_reader_rejects_finite_elapsed_gt_cap",
+    "fresh_fit_or_incumbent_fallback": "remaining_original_deadline_no_reset",
+    "history_output_reserve": "min(8seconds,5percent_initial_remaining)",
+    "trial_share_of_initial_model_window": 0.4
+  },
+  "calibration": {
+    "affine_mean_offset_clip_std_y_A": 0.1,
+    "affine_ridge_penalty": 4.0,
+    "affine_slope_clip": [
+      0.9,
+      1.1
+    ],
+    "always_paid_prefix_recheck": true,
+    "calibration_and_full_refit_count": "max(50,best_selected_on_A)",
+    "eps": 1e-12,
+    "feature_column_order": "lexicographically_sorted",
+    "gate_segments": "same_R5_vetoed_history_categorical_novelty_partitions_with_prefix_fit_boundaries",
+    "gate_tie_identity_tolerance": "1e-12 * max(1,identity_B_SSE)",
+    "gate_unassessable_segments": "unknown",
+    "group_assignment": "SHA256_of_canonical_typed_raw_feature_group_with_seed42_modulo100_lt70_is_A",
+    "group_export": "never_raw_values_or_strings",
+    "group_features": "all_declared_raw_features_excluding_id_and_labels",
+    "invalid_history_partition": "reject_correction_and_delegate_incumbent",
+    "legacy_fallback_exception": "After correction rejection only, unchanged incumbent retains its own full-last-period stopping; B never selects correction-path trees or correction parameters. Exact algorithm fallback is not a guarantee under an exhausted timer.",
+    "minimum_A_rows": 100,
+    "minimum_B_rows": 100,
+    "parameters_refit_on_A_plus_B": false,
+    "shift_clip_std_y_A": 0.1,
+    "shift_factors": {
+      "S20": 0.2,
+      "S50": 0.5
+    },
+    "split_scope": "latest_period_inside_supplied_fit",
+    "std_ddof": 0,
+    "tree_selection_labels": "A_only",
+    "tree_training": "strictly_earlier_supplied_periods"
+  },
+  "candidate_family": "round6_regression_calibration_v1",
+  "confirmation_cap_seconds": 360,
+  "confirmation_periods": [
+    2,
+    3,
+    4
+  ],
+  "cpu_threads": 8,
+  "dependency_sha256": {
+    "agent/boosting_candidate.py": "a3430b8e3aacb6ab6ea9fd8b27255430d0bdb7936c9758bf37a6603ef690bbdd",
+    "agent/building_history.py": "f1b02cfd986e044d8930dc35893c3974fa4509a7b8328eeff2373b2feeeeff36",
+    "agent/features.py": "90d397d780e3993989104e3503b1600959550e7ce4e054ca5231c4203da1ff1f",
+    "agent/history_candidate.py": "9b4fc8fa8ab9e63553e93e1cc11a7b504c51b0eb40ac7c6e4a609874c0628f25",
+    "agent/history_discovery.py": "7491b7af172feb8ed7276cade31c9aaa9196b4df362dd86f22093cc23b430ce5",
+    "agent/history_schema_proposer.py": "992873dd92f8943c3ac211d7a362af8a4c92542685d6073936a02f7f261da580",
+    "agent/model_config.py": "e03a31843cd8875e0161cb25abd9fafef4935b86a5f5367d3eae3a897983bec2",
+    "agent/models.py": "6a50538eadef5b53e43294a0819b6c5c8a8988a461a6138c43b8bf8990b43b5c",
+    "agent/regression_base.py": "7906557d45bf6a2ee1fa155737ea091259bd66d53752b38852505d3cc39ced0a",
+    "agent/regression_candidate.py": "0c1451375d916ebc18de84ecdf102a2423ccc76cd7d6a4d79f81442eb7ce2f81",
+    "agent/regression_discovery.py": "fb03b2a358ac0ac0fcd302863c0db70af68d06ac8ecd722d8a87d7777d3b7d25",
+    "agent/regression_history.py": "297153f51481b8b3a3af5a4c944f7e0bb0a4b64381203ac79a35908f50f15891",
+    "agent/round4_regression_base.py": "4ecf44ca5adc3d7e55ab03ca25123e213143d83d7dc42e7c61c28a81b037650f",
+    "agent/round4_regression_candidate.py": "75e7096043f7c4c198a7a84433e8bceb59de8dfc7dd9f6f237048cef4c900ab1",
+    "agent/round5_regression_base.py": "3c7425874f9b0c74d1883446fba401cde618074aa0c64052f602f2d9e9be8783",
+    "agent/round5_regression_candidate.py": "62e54de1366c6e9466f484771a4c12b1fee46338b6a15339902df7f82059660d",
+    "agent/target_transform.py": "1572b9ba6d00140ff7237e2a5a80c07da485c6fb6dcb7ec442ba1c3d1e420282",
+    "experiment_rescue_regression_diagnostics.py": "eee609c0e749099264133b9178a27fb43c42ef34aae4eddc530e5f9ce219c45b",
+    "experiment_rescue_regression_screen.py": "c7254ffabbc0776b0b30318f9e656a962f68ca83ff3c46f78c77bb832f0fdcd6",
+    "experiment_round4_regression.py": "3b129ba9e7cf3284e9968035be5f68151047f5540670c1fb92a604552eb9bf59",
+    "experiment_round5_regression.py": "ac78c1a544faf7552a1a1c1a4ead95c1eb5bb7ab84df47b97e3265a53a28ae0d",
+    "requirements.platform.txt": "9173b0388532fbd2a709e4f4b3029e3b9ccab685fce43a85261ffa1ba95efbe6",
+    "requirements.txt": "94e22e023f514db3177d7d84a9eddd7ce7c3ecd2eb4271f1580511346be4cfc2"
+  },
+  "device": "CPU",
+  "environment": {
+    "catboost": "1.2.8",
+    "lightgbm": "4.6.0",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3",
+    "psutil": "6.1.1",
+    "python": "3.12.14",
+    "scikit-learn": "1.5.2",
+    "scipy": "1.12.0"
+  },
+  "expected_analytic_correction_fits": {
+    "accepted_or_trial_rejected": 1,
+    "preflight_no_calibration_or_insufficient_support": 0,
+    "total_fitting_operations": "observed_engine_fits_plus_observed_analytic_parameter_fits"
+  },
+  "expected_physical_fits": {
+    "accepted_correction": 3,
+    "actual_observer_is_authoritative": true,
+    "definition": "CatBoost estimator.fit calls; analytic correction fits additionally observed and counted separately",
+    "insufficient_support_with_multiple_periods": 2,
+    "no_calibration_single_period": 1,
+    "trial_rejected_then_legacy_fallback": 4
+  },
+  "full_control_recipe_with_development_schema_none": {
+    "base": {
+      "engine": "catboost",
+      "fallback_iterations": 400,
+      "max_iterations": 2000,
+      "parameters": {
+        "depth": 6,
+        "l2_leaf_reg": 5.0,
+        "learning_rate": 0.05
+      },
+      "period_column": "Year_Factor",
+      "stopping_rounds": 100
+    },
+    "family": "rescue_regression_v1",
+    "history_config": null,
+    "history_policy": "calibrated",
+    "minimum_calibration_history_rows": 64,
+    "version": 1
+  },
+  "full_new_arm_recipes_with_development_schema_none": {
+    "A20": {
+      "arm": "A20",
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration": {
+        "accepted_identity_ablation": "aligned_A_only_base_not_incumbent_I",
+        "composition": "freeze_correction_then_history_selection_then_fresh_full_base_then_correction_then_history",
+        "history_selection": "unchanged_on_corrected_A_plus_B_after_correction_policy_freeze",
+        "minimum_final_iterations": 50,
+        "parameters_refit_after_B": false,
+        "recheck_early_stopping": false,
+        "rules": {
+          "B_gate": {
+            "boundary_fit": "strictly_earlier_model_fit_prefix_only",
+            "category_absolute_SSE_loss_fraction_max": 0.01,
+            "category_relative_SSE_loss_max": 0.1,
+            "history_groups": "literal_R5_eligible_ambiguous_valid_without_past_invalid",
+            "history_relative_SSE_loss_max": 0.1,
+            "insufficient_segment_support": "unknown_not_passed",
+            "invalid_diagnostic_partition": "reject_to_exact_incumbent",
+            "levels": "first_two_declared_categoricals_top3_by_prefix_count_then_lexical_else_other",
+            "minimum_identity_SSE_fraction": 0.01,
+            "minimum_row_fraction": 0.01,
+            "minimum_rows": 100,
+            "novelty": "new_then_rare_then_common_missing_ignored",
+            "parameter_refit_after_B": false,
+            "rare": "prefix_count_lt_max_20_ceil_0.001_prefix_rows",
+            "tie": "gain_le_1e-12_times_max_1_identity_SSE_retains_identity",
+            "total": "strict_SSE_improvement_over_identity"
+          },
+          "group_split": {
+            "assignment": "int_full_hex_digest_modulo_100_lt_70_is_A_else_B",
+            "digest": "sha256",
+            "encoding": "utf8_json_seed_and_name_typed_token_pairs_compact_ensure_ascii_false",
+            "feature_order": "lexically_sorted_declared_names",
+            "labels_id_index": "excluded",
+            "minimum_A_rows": 100,
+            "minimum_B_rows": 100,
+            "seed": 42,
+            "tokens": "unchanged_regression_base_token_v1"
+          },
+          "numerics": {
+            "S20_factor": 0.2,
+            "S50_factor": 0.5,
+            "epsilon": 1e-12,
+            "ridge_penalty": 4.0,
+            "shift_target_std_fraction": 0.1,
+            "slope_max": 1.1,
+            "slope_min": 0.9,
+            "std_ddof": 0
+          }
+        },
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "always_one_paid_fresh_prefix_recheck_at_max_50_best",
+        "tree_selection": "strict_prefix_eval_A_only_B_absent"
+      },
+      "fallback": {
+        "failure_or_insufficient_time": "raise_no_partial_success",
+        "identity_parameters_or_B_rejection": "delegate_unchanged_incumbent_after_trial",
+        "incumbent_deadline": "same_original_deadline_with_existing_legacy_reserve",
+        "insufficient_A_B_support": "delegate_unchanged_incumbent_without_trial_fits",
+        "legacy_B_label_exception": "only_rejected_unchanged_incumbent_keeps_legacy_full_calibration_stopping",
+        "no_calibration": "delegate_unchanged_incumbent_without_trial_fits",
+        "no_history_schema": "corrected_base_or_exact_incumbent_base"
+      },
+      "family": "round6_regression_calibration_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "deadline": "one_original_absolute_deadline_no_reset",
+        "device": "CPU",
+        "execution": "sequential",
+        "final_fit": "remaining_original_model_window",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "trial_fraction_of_initial_model_window": 0.4,
+        "trial_includes": "preparation_A_selection_prefix_recheck_correction_fit_B_gate"
+      },
+      "version": 1
+    },
+    "S20": {
+      "arm": "S20",
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration": {
+        "accepted_identity_ablation": "aligned_A_only_base_not_incumbent_I",
+        "composition": "freeze_correction_then_history_selection_then_fresh_full_base_then_correction_then_history",
+        "history_selection": "unchanged_on_corrected_A_plus_B_after_correction_policy_freeze",
+        "minimum_final_iterations": 50,
+        "parameters_refit_after_B": false,
+        "recheck_early_stopping": false,
+        "rules": {
+          "B_gate": {
+            "boundary_fit": "strictly_earlier_model_fit_prefix_only",
+            "category_absolute_SSE_loss_fraction_max": 0.01,
+            "category_relative_SSE_loss_max": 0.1,
+            "history_groups": "literal_R5_eligible_ambiguous_valid_without_past_invalid",
+            "history_relative_SSE_loss_max": 0.1,
+            "insufficient_segment_support": "unknown_not_passed",
+            "invalid_diagnostic_partition": "reject_to_exact_incumbent",
+            "levels": "first_two_declared_categoricals_top3_by_prefix_count_then_lexical_else_other",
+            "minimum_identity_SSE_fraction": 0.01,
+            "minimum_row_fraction": 0.01,
+            "minimum_rows": 100,
+            "novelty": "new_then_rare_then_common_missing_ignored",
+            "parameter_refit_after_B": false,
+            "rare": "prefix_count_lt_max_20_ceil_0.001_prefix_rows",
+            "tie": "gain_le_1e-12_times_max_1_identity_SSE_retains_identity",
+            "total": "strict_SSE_improvement_over_identity"
+          },
+          "group_split": {
+            "assignment": "int_full_hex_digest_modulo_100_lt_70_is_A_else_B",
+            "digest": "sha256",
+            "encoding": "utf8_json_seed_and_name_typed_token_pairs_compact_ensure_ascii_false",
+            "feature_order": "lexically_sorted_declared_names",
+            "labels_id_index": "excluded",
+            "minimum_A_rows": 100,
+            "minimum_B_rows": 100,
+            "seed": 42,
+            "tokens": "unchanged_regression_base_token_v1"
+          },
+          "numerics": {
+            "S20_factor": 0.2,
+            "S50_factor": 0.5,
+            "epsilon": 1e-12,
+            "ridge_penalty": 4.0,
+            "shift_target_std_fraction": 0.1,
+            "slope_max": 1.1,
+            "slope_min": 0.9,
+            "std_ddof": 0
+          }
+        },
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "always_one_paid_fresh_prefix_recheck_at_max_50_best",
+        "tree_selection": "strict_prefix_eval_A_only_B_absent"
+      },
+      "fallback": {
+        "failure_or_insufficient_time": "raise_no_partial_success",
+        "identity_parameters_or_B_rejection": "delegate_unchanged_incumbent_after_trial",
+        "incumbent_deadline": "same_original_deadline_with_existing_legacy_reserve",
+        "insufficient_A_B_support": "delegate_unchanged_incumbent_without_trial_fits",
+        "legacy_B_label_exception": "only_rejected_unchanged_incumbent_keeps_legacy_full_calibration_stopping",
+        "no_calibration": "delegate_unchanged_incumbent_without_trial_fits",
+        "no_history_schema": "corrected_base_or_exact_incumbent_base"
+      },
+      "family": "round6_regression_calibration_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "deadline": "one_original_absolute_deadline_no_reset",
+        "device": "CPU",
+        "execution": "sequential",
+        "final_fit": "remaining_original_model_window",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "trial_fraction_of_initial_model_window": 0.4,
+        "trial_includes": "preparation_A_selection_prefix_recheck_correction_fit_B_gate"
+      },
+      "version": 1
+    },
+    "S50": {
+      "arm": "S50",
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration": {
+        "accepted_identity_ablation": "aligned_A_only_base_not_incumbent_I",
+        "composition": "freeze_correction_then_history_selection_then_fresh_full_base_then_correction_then_history",
+        "history_selection": "unchanged_on_corrected_A_plus_B_after_correction_policy_freeze",
+        "minimum_final_iterations": 50,
+        "parameters_refit_after_B": false,
+        "recheck_early_stopping": false,
+        "rules": {
+          "B_gate": {
+            "boundary_fit": "strictly_earlier_model_fit_prefix_only",
+            "category_absolute_SSE_loss_fraction_max": 0.01,
+            "category_relative_SSE_loss_max": 0.1,
+            "history_groups": "literal_R5_eligible_ambiguous_valid_without_past_invalid",
+            "history_relative_SSE_loss_max": 0.1,
+            "insufficient_segment_support": "unknown_not_passed",
+            "invalid_diagnostic_partition": "reject_to_exact_incumbent",
+            "levels": "first_two_declared_categoricals_top3_by_prefix_count_then_lexical_else_other",
+            "minimum_identity_SSE_fraction": 0.01,
+            "minimum_row_fraction": 0.01,
+            "minimum_rows": 100,
+            "novelty": "new_then_rare_then_common_missing_ignored",
+            "parameter_refit_after_B": false,
+            "rare": "prefix_count_lt_max_20_ceil_0.001_prefix_rows",
+            "tie": "gain_le_1e-12_times_max_1_identity_SSE_retains_identity",
+            "total": "strict_SSE_improvement_over_identity"
+          },
+          "group_split": {
+            "assignment": "int_full_hex_digest_modulo_100_lt_70_is_A_else_B",
+            "digest": "sha256",
+            "encoding": "utf8_json_seed_and_name_typed_token_pairs_compact_ensure_ascii_false",
+            "feature_order": "lexically_sorted_declared_names",
+            "labels_id_index": "excluded",
+            "minimum_A_rows": 100,
+            "minimum_B_rows": 100,
+            "seed": 42,
+            "tokens": "unchanged_regression_base_token_v1"
+          },
+          "numerics": {
+            "S20_factor": 0.2,
+            "S50_factor": 0.5,
+            "epsilon": 1e-12,
+            "ridge_penalty": 4.0,
+            "shift_target_std_fraction": 0.1,
+            "slope_max": 1.1,
+            "slope_min": 0.9,
+            "std_ddof": 0
+          }
+        },
+        "seed": 42,
+        "split": "last_valid_period_inside_supplied_fit",
+        "target_scale": "original",
+        "tree_alignment": "always_one_paid_fresh_prefix_recheck_at_max_50_best",
+        "tree_selection": "strict_prefix_eval_A_only_B_absent"
+      },
+      "fallback": {
+        "failure_or_insufficient_time": "raise_no_partial_success",
+        "identity_parameters_or_B_rejection": "delegate_unchanged_incumbent_after_trial",
+        "incumbent_deadline": "same_original_deadline_with_existing_legacy_reserve",
+        "insufficient_A_B_support": "delegate_unchanged_incumbent_without_trial_fits",
+        "legacy_B_label_exception": "only_rejected_unchanged_incumbent_keeps_legacy_full_calibration_stopping",
+        "no_calibration": "delegate_unchanged_incumbent_without_trial_fits",
+        "no_history_schema": "corrected_base_or_exact_incumbent_base"
+      },
+      "family": "round6_regression_calibration_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "resources": {
+        "deadline": "one_original_absolute_deadline_no_reset",
+        "device": "CPU",
+        "execution": "sequential",
+        "final_fit": "remaining_original_model_window",
+        "history_reserve_fraction": 0.05,
+        "history_reserve_seconds_max": 8.0,
+        "threads": 8,
+        "trial_fraction_of_initial_model_window": 0.4,
+        "trial_includes": "preparation_A_selection_prefix_recheck_correction_fit_B_gate"
+      },
+      "version": 1
+    }
+  },
+  "full_train_original_test": "forbidden_this_round",
+  "gates": {
+    "category_novelty_max_relative_sse_loss": 0.1,
+    "category_novelty_required_absolute_loss_fraction": 0.01,
+    "confirmation_max_relative_fold_rmse_loss": 0.002,
+    "confirmation_pooled_min_relative_rmse_gain": 0.002,
+    "confirmation_practical_wins_min": 2,
+    "different_development_schemas": "retain_incumbent_captain_review",
+    "fold_loss_change_from_R5": ".05 -> .002 per explicit Round6 instruction",
+    "history_max_relative_sse_loss": 0.1,
+    "incomplete_confirmation": "not_eligible",
+    "material_failure": "RMSE loss >= .002 OR significant segment veto OR failed invocation",
+    "practical_ties": "fewer_actual_physical_fits_then_fixed_arm_order",
+    "screen_min_relative_rmse_gain": 0.002,
+    "segment_min_control_sse_fraction": 0.01,
+    "segment_min_rows": "max(100,ceil(.01*held_rows))",
+    "stop_after_distinct_period_failures": 2
+  },
+  "heavy_budget_seconds": 7200,
+  "history_discovery": {
+    "exclude_latest_supplied_fit_period": true,
+    "extended": false,
+    "max_cell_visits": 8000000,
+    "max_checked_configs": 48,
+    "per_transition_calls": 1,
+    "scope": "host_inner_fit"
+  },
+  "input_files": {
+    "regression/participants/data_dictionary.csv": {
+      "bytes": 7408,
+      "sha256": "ffd7a8574fa4b203c43915e26a53e4072637c0dce8f1e6e7bcf93374a89a26a3"
+    },
+    "regression/participants/sample_submission.csv": {
+      "bytes": 222554,
+      "sha256": "0016b18d58c47bbbe842556b4957ba215b3ad50121c9923260537d936a09eae1"
+    },
+    "regression/participants/test.csv": {
+      "bytes": 18346633,
+      "sha256": "a7c64db92a07e1a5b1e7f637bdd434da7a5e98a1676c854ec6a645c9e5827095"
+    },
+    "regression/participants/train.csv": {
+      "bytes": 43416931,
+      "sha256": "096dac951cf44fade5417ddd0465c41beee3009663dbea34e8d464a4d3c7f775"
+    },
+    "task.md": {
+      "bytes": 11089,
+      "sha256": "33f743ead4840336856cb9db8e25867f44512231beebff927326e8580e14d9d0"
+    }
+  },
+  "known_year5": "forbidden",
+  "max_finalists": 2,
+  "ml_api_calls": 0,
+  "native_smoke": {
+    "aggregate_reservation_seconds": 195,
+    "arm": "S20",
+    "cap_seconds_each": 90,
+    "invocations": 2,
+    "purpose": "real_flat_package_row_order_and_extra_predict_row_invariance_not_quality"
+  },
+  "period_column": "Year_Factor",
+  "protocol_status": "preregistered_before_all_model_fits; clean_commit_publication_required_by_prepare",
+  "round": 6,
+  "screen_cap_seconds": 180,
+  "screen_period": 4,
+  "seed": 42,
+  "size_column": "floor_area",
+  "technical_retries": {
+    "conditions": "documented_technical_cause_identical_source_recipe_seed_cap_new_folder_preserve_original; no_retry_after_audit_only_fix",
+    "maximum": 1
+  },
+  "version": 1
+}

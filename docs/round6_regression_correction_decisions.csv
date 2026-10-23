@@ -1,0 +1,5 @@
+stage,period,arm,status,correction_status,correction_reason,physical_fit_count,actual_analytic_fit_count
+screen,4,A20,completed,applied,accepted_on_B_once,3,1
+screen,4,I,completed,incumbent_control,unchanged_control,2,0
+screen,4,S20,completed,B_rejected,B_SSE_worsened,4,1
+screen,4,S50,completed,B_rejected,B_SSE_worsened,4,1
