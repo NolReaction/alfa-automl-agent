@@ -244,18 +244,23 @@ def run_local_continuation(state, recipes, *, evaluate, seen=(), code_hash,
 
 def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), code_hash,
                               after_warmup=None, max_trials=64, min_timeout=2.0,
-                              max_inspected=MAX_DEADLINE_INSPECTIONS, family_failure_limit=3):
+                              max_inspected=MAX_DEADLINE_INSPECTIONS, family_failure_limit=3,
+                              extensions_first=False):
     """Use a long run's spare budget without a global no-improvement stop.
 
     Legacy presets form the warmup; a bounded proposer supplies new ordinary
     recipes afterwards. Failed families are isolated, while a verified but
     non-improving trial never closes other families. Only the caller's normal
     INNER evaluator can accept a recipe. Optional custom-source trials have
-    their own small cap and run between warmup and adaptive proposals.
+    their own small cap. Native priority scheduling runs that hook before
+    warmup, so a slow ordinary fit cannot consume its first opportunity. The
+    default preserves the historical after-warmup order for other callers.
     """
     max_trials = _count(max_trials, "max_trials", MAX_DEADLINE_TRIALS)
     max_inspected = _count(max_inspected, "max_inspected", MAX_DEADLINE_INSPECTIONS)
     family_failure_limit = _count(family_failure_limit, "family_failure_limit", 10)
+    if type(extensions_first) is not bool:
+        raise ValueError("extensions_first must be a boolean")
     if (type(min_timeout) not in {int, float} or not math.isfinite(min_timeout)
             or not 0 < min_timeout <= 1800 or not callable(evaluate)
             or (after_warmup is not None and not callable(after_warmup))):
@@ -276,7 +281,10 @@ def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), co
               "verified": 0, "improvements": 0, "failed": 0, "duplicates": 0,
               "invalid_recipes": 0, "inspected": 0, "warmup_attempted": 0,
               "adaptive_attempted": 0, "blocked_families": [], "trials": [],
-              "started_remaining_seconds": remaining(), "extension_hook_called": False}
+              "started_remaining_seconds": remaining(), "extension_hook_called": False,
+              "extension_schedule": "before_warmup" if extensions_first else "after_warmup",
+              "extension_hook_started_remaining_seconds": None,
+              "extension_hook_ended_remaining_seconds": None}
     state.report["local_research"] = report
 
     def finish(status, reason, *, error=None):
@@ -307,6 +315,26 @@ def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), co
             known.add(canonical_recipe_key(record["recipe"], record["code_hash"]))
         except (KeyError, TypeError, ValueError):
             continue
+
+    def extensions():
+        if after_warmup is None or report["extension_hook_called"]:
+            return
+        _guard(state, baseline_identity)
+        if state.research_timeout() <= min_timeout:
+            return
+        report.update(extension_hook_called=True, extension_hook_started_remaining_seconds=remaining())
+        state.save()
+        try:
+            after_warmup()
+        except (OSError, ValueError, RuntimeError, ImportError) as error:
+            _guard(state, baseline_identity)
+            report["extension_hook_error_type"] = type(error).__name__
+        _guard(state, baseline_identity)
+        report["extension_hook_ended_remaining_seconds"] = remaining()
+        state.save()
+
+    if extensions_first:
+        extensions()
     iterator, phase, failures, blocked = iter(recipes), "warmup", {}, set()
 
     def observe(item, feedback):
@@ -327,14 +355,7 @@ def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), co
             try:
                 item = next(iterator)
             except StopIteration:
-                if after_warmup is not None:
-                    report["extension_hook_called"] = True
-                    try:
-                        after_warmup()
-                    except (OSError, ValueError, RuntimeError, ImportError) as error:
-                        _guard(state, baseline_identity)
-                        report["extension_hook_error_type"] = type(error).__name__
-                    _guard(state, baseline_identity)
+                extensions()
                 phase = "adaptive"
                 continue
         else:

@@ -241,12 +241,12 @@ class HistoryDiscoveryContractTests(unittest.TestCase):
         self.assertEqual(arguments["limits"], {
             "max_rows": 250_000, "max_work": 8_000_000 - 36, "max_period_columns": 1,
             "max_key_columns": 12, "max_auto_key_width": 3, "max_explicit_key_width": 3,
-            "max_checked_configs": 24, "max_proposals": 1})
+            "max_checked_configs": 48, "max_proposals": 1})
         counts = result["screening"]["counts"]
         self.assertEqual((counts["raw_cells"], counts["raw_cells_scanned"], counts["proposer_calls"]), (18, 18, 1))
         self.assertEqual(counts["screening_cell_visits_planned"], 36)
-        self.assertEqual(counts["proposer_cell_visits_planned"], 6 * 99)
-        self.assertEqual(counts["total_cell_visits_planned"], 36 + 6 * 99)
+        self.assertEqual(counts["proposer_cell_visits_planned"], 6 * 195)
+        self.assertEqual(counts["total_cell_visits_planned"], 36 + 6 * 195)
 
     def test_inputs_are_unchanged_and_output_is_detached_from_dependency_containers(self):
         frame = panel()
@@ -264,6 +264,25 @@ class HistoryDiscoveryContractTests(unittest.TestCase):
         result["screening"]["selected_columns"].append("changed")
         self.assertEqual(source, source_before)
         self.assertEqual(result["proposer_result"]["proposals"][0]["config"]["key_columns"], ["entity"])
+
+    def test_search_needing_more_than_24_checks_still_completes_and_proposes_the_entity(self):
+        # Five random binary columns repeat across periods. Their coverage bounds
+        # exceed the entity's unique history, so proving the entity best takes
+        # 26 full checks, as on public TRAIN periods 1-3 (37 checks).
+        random = np.random.default_rng(0)
+        frame = pd.DataFrame([
+            {"period": str(period), "building": f"b{entity}" if entity < 20 else f"p{period}_{entity}",
+             **{f"d{index}": f"v{random.integers(2)}" for index in range(5)}}
+            for period in (1, 2, 3) for entity in range(40)], dtype=object)
+        result = discover(frame)
+        counts = result["proposer_result"]["limits"]["counts"]
+        self.assertEqual((result["status"], result["selected_config"]["key_columns"]), ("proposed", ["building"]))
+        self.assertEqual(counts["checked_configs"], 26)
+        self.assertIs(counts["search_complete"], True)
+        with patch.object(discovery, "MAX_CHECKED_CONFIGS", 24):
+            limited = discover(frame)
+        self.assertEqual((limited["status"], limited["reason"]), ("limited", "proposer_limited"))
+        self.assertIsNone(limited["selected_config"])
 
     def test_limited_dependency_never_selects_even_a_present_proposal(self):
         response = dependency_result()
@@ -381,13 +400,13 @@ class HistoryDiscoveryResourceTests(unittest.TestCase):
             result = self.assert_limited(panel(), "work_limit")
         counts = result["screening"]["counts"]
         self.assertEqual(counts["raw_cells_scanned"], 12)
-        self.assertEqual(counts["proposer_cell_visits_planned"], 594)
-        self.assertEqual(counts["total_cell_visits_planned"], 618)
+        self.assertEqual(counts["proposer_cell_visits_planned"], 1170)
+        self.assertEqual(counts["total_cell_visits_planned"], 1194)
         self.assertEqual(result["screening"]["selected_columns"], ["entity"])
-        with patch.object(discovery, "MAX_CELL_VISITS", 618):
+        with patch.object(discovery, "MAX_CELL_VISITS", 1194):
             accepted = discover(panel())
         self.assertEqual(accepted["status"], "proposed")
-        self.assertEqual(accepted["screening"]["counts"]["total_cell_visits_planned"], 618)
+        self.assertEqual(accepted["screening"]["counts"]["total_cell_visits_planned"], 1194)
 
     def test_value_length_limit_uses_original_raw_length_without_truncation(self):
         frame = panel()

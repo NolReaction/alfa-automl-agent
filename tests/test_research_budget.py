@@ -140,6 +140,97 @@ class ResearchBudgetTests(unittest.TestCase):
         baseline_only = plan(policy, candidate=None)
         self.assertEqual(policy.finalization_timeouts(baseline_only, completed=completed), {})
 
+    def test_feasible_long_finalization_funds_each_pending_stage_at_the_reserve_boundary(self):
+        for seconds in (3600, 10500):
+            with self.subTest(seconds=seconds):
+                clock = Clock()
+                policy = BudgetPolicy(seconds, clock=clock, adaptive_reserve=True)
+                clock.value = 20
+                policy.record_measurement("baseline-hash", 10, 64, 16)
+                clock.value = 200
+                policy.record_measurement("candidate-hash", 100, 64, 16)
+                # Equal row counts make this exact boundary representable:
+                # each baseline stage needs 15.25 s, each candidate 150.25 s.
+                estimate = policy.finalization_estimate(
+                    baseline_key="baseline-hash", candidate_key="candidate-hash",
+                    outer_fit_rows=64, outer_predict_rows=16, full_fit_rows=64, test_rows=16)
+                self.assertEqual(estimate.reserve_seconds, 333)
+                clock.value = policy.deadline - estimate.reserve_seconds
+                completed = []
+                for stage in estimate.stage_seconds:
+                    caps = policy.finalization_timeouts(estimate, completed=completed)
+                    self.assertEqual(set(caps), set(estimate.stage_seconds) - set(completed))
+                    for pending, value in caps.items():
+                        self.assertGreaterEqual(value, estimate.stage_seconds[pending])
+                        self.assertLessEqual(value, 1800)
+                    self.assertLessEqual(sum(caps.values()), policy.remaining() - policy.publication_buffer)
+                    clock.value += caps[stage]
+                    completed.append(stage)
+                self.assertEqual(policy.finalization_timeouts(estimate, completed=completed), {})
+                self.assertEqual(clock.value, policy.deadline - policy.publication_buffer)
+
+    def test_feasible_stage_floors_respect_the_per_stage_cap(self):
+        clock = Clock()
+        policy = BudgetPolicy(10500, clock=clock, adaptive_reserve=True)
+        clock.value = 20
+        policy.record_measurement("baseline-hash", 10, 64, 16)
+        clock.value = 200
+        policy.record_measurement("candidate-hash", 100, 64, 16)
+        estimate = policy.finalization_estimate(
+            baseline_key="baseline-hash", candidate_key="candidate-hash",
+            outer_fit_rows=64, outer_predict_rows=16, full_fit_rows=64, test_rows=16)
+        clock.value = policy.deadline - policy.publication_buffer - 230.5
+        caps = policy.finalization_timeouts(estimate, maximum=100)
+        self.assertEqual(caps, {"baseline_outer": 15.25, "candidate_outer": 100,
+                                "baseline_refit": 15.25, "candidate_refit": 100})
+        self.assertEqual(sum(caps.values()), policy.remaining() - policy.publication_buffer)
+
+    def test_absolute_clock_rounding_at_reserve_boundary_does_not_shrink_candidate_shares(self):
+        clock = Clock(30000)
+        policy = BudgetPolicy(3600, clock=clock, adaptive_reserve=True)
+        clock.value += 20
+        policy.record_measurement("baseline-hash", 10, 64, 16)
+        clock.value += 180
+        policy.record_measurement("candidate-hash", 100, 64, 16)
+        estimate = plan(policy)
+        clock.value = policy.deadline - estimate.reserve_seconds
+        available = policy.remaining() - policy.publication_buffer
+        self.assertLess(available, sum(estimate.stage_seconds.values()))
+        caps = policy.finalization_timeouts(estimate)
+        for stage, value in caps.items():
+            self.assertAlmostEqual(value, estimate.stage_seconds[stage], places=9)
+            self.assertLessEqual(value, 1800)
+        self.assertLessEqual(sum(caps.values()), available)
+        # A real deficit must still use the existing fallback-priority path.
+        clock.value += .001
+        deficit = policy.finalization_timeouts(estimate)
+        self.assertLess(deficit["candidate_outer"], estimate.stage_seconds["candidate_outer"] - 1)
+        self.assertGreaterEqual(deficit["baseline_refit"], estimate.stage_seconds["baseline_refit"])
+        self.assertLessEqual(sum(deficit.values()), policy.remaining() - policy.publication_buffer)
+
+    def test_infeasible_finalization_preserves_existing_fallback_priority(self):
+        clock = Clock()
+        policy = BudgetPolicy(10500, clock=clock, adaptive_reserve=True)
+        clock.value = 20
+        policy.record_measurement("baseline-hash", 10, 64, 16)
+        clock.value = 200
+        policy.record_measurement("candidate-hash", 100, 64, 16)
+        estimate = policy.finalization_estimate(
+            baseline_key="baseline-hash", candidate_key="candidate-hash",
+            outer_fit_rows=64, outer_predict_rows=16, full_fit_rows=64, test_rows=16)
+        # At 100 s the fallback keeps both floors; at 20 s it alone receives
+        # the insufficient budget. These are the pre-fix deficit allocations.
+        for available, baseline, candidate in ((100, 18.429003021148038, 31.570996978851962),
+                                                (20, 10, 0)):
+            with self.subTest(available=available):
+                clock.value = policy.deadline - policy.publication_buffer - available
+                caps = policy.finalization_timeouts(estimate)
+                for stage in ("baseline_outer", "baseline_refit"):
+                    self.assertAlmostEqual(caps[stage], baseline)
+                for stage in ("candidate_outer", "candidate_refit"):
+                    self.assertAlmostEqual(caps[stage], candidate)
+                self.assertLessEqual(sum(caps.values()), available)
+
     def test_extreme_row_growth_is_bounded_and_explicitly_a_heuristic(self):
         clock = Clock()
         policy = BudgetPolicy(90, clock=clock)

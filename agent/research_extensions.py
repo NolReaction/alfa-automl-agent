@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import math
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from agent.research_candidate import freeze_candidate
 
 MAX_EXTENSION_TRIALS = 6
 MAX_FREQUENCY_FIT_CELLS = 2_000_000
+RESCUE_REGRESSION_MIN_SECONDS = 120.0
 KINDS = ("frequency", "history", "boost_catboost", "boost_lightgbm", "ensemble", "autogluon")
 
 
@@ -142,6 +144,80 @@ def _boost_catboost_trial(state, finalist):
     return _boosting_trial(state, finalist, "catboost")
 
 
+def _rescue_regression_eligibility(state):
+    """Keep the opt-in candidate on the measured long temporal RMSE route."""
+    if (getattr(state, "adaptive_search", False) is not True
+            or state.report.get("quality_options", {}).get("adaptive_search") is not True):
+        return "adaptive_long_run_required"
+    gate = state.gate
+    if gate.spec.metric.task_type != "regression" or gate.spec.metric.name != "RMSE":
+        return "rmse_regression_required"
+    period = gate.choice.get("time_column")
+    inner = gate.inner_split
+    if (gate.choice.get("strategy") != "time" or not isinstance(inner, dict)
+            or inner.get("strategy") != "time" or not isinstance(period, str) or not period.strip()
+            or inner.get("time_column") != period or period not in gate.spec.features
+            or period not in gate.spec.numeric):
+        return "matching_numeric_time_policy_required"
+    return None
+
+
+def _rescue_history_config(state, period):
+    """Reuse only the current host's already validated INNER-fit discovery."""
+    from agent.history_candidate import HistoryConfig
+
+    discovery = state.report.get("history_discovery")
+    if not isinstance(discovery, dict) or discovery.get("selected_config") is None:
+        return None
+    gate, config = state.gate, discovery["selected_config"]
+    try:
+        parsed = HistoryConfig.from_json(deepcopy(config))
+        features = tuple(gate.research_spec.features)
+        discovered_features = discovery.get("feature_columns")
+        if (discovery.get("status") != "selected"
+                or discovery.get("scope") != "inner_fit_features_only"
+                or discovery.get("identity_verified") is not False
+                or type(discovery.get("fit_rows")) is not int
+                or discovery["fit_rows"] != len(gate.fit_rows)
+                or not isinstance(discovered_features, list)
+                or len(discovered_features) != len(features) or set(discovered_features) != set(features)
+                or discovery.get("period_column") != period or parsed.period_column != period
+                or parsed.ambiguity_policy != "past_unique_only" or parsed.positive_columns
+                or not set(parsed.key_columns) <= set(features) - {period}
+                or not set(parsed.numeric_columns) <= set(gate.research_spec.numeric)
+                or parsed.to_json() != config):
+            raise ValueError("Discovery schema/provenance mismatch")
+    except (ValueError, TypeError, KeyError):
+        raise _Skip("rescue_regression_history_schema_invalid") from None
+    # identity_verified=False is the existing entity-identity disclaimer, not
+    # a rejection of this structurally validated schema.
+    return parsed.to_json()
+
+
+def _rescue_regression_trial(state, _finalist):
+    reason = _rescue_regression_eligibility(state)
+    if reason:
+        raise _Skip(reason)
+    spare = state.research_timeout()
+    feature = state.report["rescue_regression"]
+    known = type(spare) in {int, float} and math.isfinite(spare)
+    feature["available_research_seconds"] = float(spare) if known else None
+    if not known:
+        raise _Skip("rescue_regression_budget_unknown")
+    if spare < RESCUE_REGRESSION_MIN_SECONDS:
+        raise _Skip("rescue_regression_budget")
+    from agent.regression_candidate import candidate_source, make_regression_recipe
+
+    period = state.gate.choice["time_column"]
+    config = _rescue_history_config(state, period)
+    feature["history_schema"] = "current_inner_fit_discovery" if config is not None else "none_base_only"
+    recipe = make_regression_recipe(period, engine="catboost", history_config=config,
+                                    history_policy="calibrated")
+    return candidate_source(), recipe, (
+        "Fit one bounded CPU CatBoost regression recipe with fit-only last-period calibration; "
+        "reuse the frozen INNER-fit history schema when available, otherwise keep base predictions.")
+
+
 def _boost_lightgbm_trial(state, finalist):
     return _boosting_trial(state, finalist, "lightgbm")
 
@@ -201,7 +277,7 @@ def _eligibility(state):
     return None
 
 
-def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
+def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS, prioritize=False):
     """Try at most six optional candidates without bypassing host admission.
 
     ``assess`` has the same signature as ``research_v3._assess_candidate``.
@@ -209,6 +285,8 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
     """
     if type(max_trials) is not int or not 1 <= max_trials <= MAX_EXTENSION_TRIALS:
         raise ValueError("Host extensions require one to six trial slots")
+    if type(prioritize) is not bool:
+        raise ValueError("prioritize must be a boolean")
     if not callable(assess):
         raise ValueError("Host extensions require the host candidate assessor")
     report = {"version": 1, "policy": "host_extensions_v1", "scope": "inner_selection",
@@ -226,10 +304,41 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
     _guard(state, identity)
     factories = (_frequency_trial, _history_trial, _boost_catboost_trial,
                  _boost_lightgbm_trial, _ensemble_trial, _autogluon_trial)
+    order = KINDS
+    if prioritize:
+        gate = state.gate
+        temporal_regression = (gate.spec.metric.task_type == "regression"
+            and gate.choice.get("strategy") == "time"
+            and gate.inner_split.get("strategy") == "time"
+            and gate.inner_split.get("time_column") == gate.choice.get("time_column"))
+        order = (("history", "boost_lightgbm", "boost_catboost", "frequency", "ensemble", "autogluon")
+                 if temporal_regression else
+                 ("boost_lightgbm", "boost_catboost", "frequency", "history", "ensemble", "autogluon"))
+    report.update(schedule="task_priority" if prioritize else "legacy", order=list(order))
+    factories = dict(zip(KINDS, factories))
+    rescue = state.report.get("quality_options", {}).get("rescue_regression") is True
+    rescue_active = False
+    if rescue:
+        reason = _rescue_regression_eligibility(state)
+        feature = state.report.setdefault("rescue_regression", {
+            "requested": True, "replacement_slot": "boost_catboost", "attempted": False,
+            "history_schema": "not_checked", "minimum_research_seconds": RESCUE_REGRESSION_MIN_SECONDS,
+            "time_guard_kind": "heuristic_admission_floor", "runtime_guaranteed": False,
+            "refit_cost_status": "unknown_until_host_measurement",
+        })
+        feature.update(status="skipped" if reason else "pending", reason=reason)
+        if reason is None:
+            rescue_active = True
+            factories["boost_catboost"] = _rescue_regression_trial
+            report.update(slots=list(order), order=["rescue_regression" if kind == "boost_catboost" else kind
+                                                   for kind in order])
     state.report.setdefault("extensions", {})["host_candidates"] = "adaptive_v1"
-    for kind, factory in zip(KINDS, factories):
+    for kind in order:
+        factory = factories[kind]
         _guard(state, identity)
         entry = {"kind": kind, "status": "skipped", "reason": None, "attempted": False}
+        if rescue_active and kind == "boost_catboost":
+            entry.update(kind="rescue_regression", slot=kind)
         report["trials"].append(entry)
         if report["attempted"] >= max_trials:
             entry["reason"] = "trial_limit"
@@ -252,6 +361,8 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
             candidate = freeze_candidate(source_path, recipe, directory / "frozen")
             entry.update(status="running", reason=None, attempted=True,
                          code_hash=candidate.code_hash, recipe_hash=candidate.recipe_hash)
+            if rescue_active and kind == "boost_catboost":
+                entry["family"] = recipe["family"]
             report["attempted"] += 1
             if kind == "history":
                 state.report["history_research"] = {
@@ -297,6 +408,11 @@ def run_research_extensions(state, assess, *, max_trials=MAX_EXTENSION_TRIALS):
             state.report["history_research"].update(status=entry["status"], reason=entry["reason"])
         state.event("host_extension", result=entry)
         state.save()
+    if rescue_active:
+        entry = next(item for item in report["trials"] if item["kind"] == "rescue_regression")
+        feature.update(status=entry["status"], reason=entry["reason"], attempted=entry["attempted"])
+        if entry["attempted"]:
+            feature["family"] = entry["family"]
     report.update(status="completed", reason="trial_limit" if report["attempted"] >= max_trials else "queue_exhausted")
     state.save()
     return report

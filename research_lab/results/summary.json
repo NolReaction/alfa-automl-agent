@@ -1,0 +1,116 @@
+{
+  "actual_candidate_started_arms": 0,
+  "actual_cli_completed_arms": 1,
+  "actual_full_refit_verified_arms": 1,
+  "arm_outcomes": {
+    "censored": 1,
+    "not_started": 7
+  },
+  "catalog_sha256": "8390a0c81b1d14ff738d29a147fbde5add4d43566380485c0d13832754ce1f2d",
+  "diagnostic_score_note": "The saved Bank LogLoss is a valid CSV score, but censored resource status forbids policy quality admission. No improvement estimate is available.",
+  "effective_host_constraints": {
+    "configured_child_rss_bytes": 25769803776,
+    "cpu_max": "800000 100000",
+    "memory_max_bytes": 8589934592,
+    "note": "Linux container effective total limit is 8 GiB/8 CPU, stricter than the 24 GiB child preset for the user 32 GiB Windows PC. Observation captured during pilot; no claim that sampled RSS or cleanup was available.",
+    "observed_at_utc": "2026-10-21T21:03:10.412646+00:00"
+  },
+  "environment": {
+    "executable": "/workspace/scratch/de9281f42bd1/alfa-oof-calibration/data/experiments/oof_classification/runtime/bin/python",
+    "packages": {
+      "autogluon.tabular": null,
+      "catboost": "1.2.8",
+      "httpx": "0.28.1",
+      "joblib": "1.4.2",
+      "lightgbm": "4.6.0",
+      "numpy": "1.26.4",
+      "openai": "1.68.2",
+      "optuna": "4.2.1",
+      "pandas": "2.2.3",
+      "psutil": "6.1.1",
+      "pydantic": "2.10.6",
+      "python-dotenv": "1.0.1",
+      "scikit-learn": "1.5.2",
+      "scipy": "1.12.0",
+      "threadpoolctl": "3.6.0",
+      "tqdm": "4.67.1",
+      "xgboost": null
+    },
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]"
+  },
+  "evidence_bundle": "/workspace/scratch/de9281f42bd1/alfa-external-benchmark/data/lab-evidence-bundles/external-benchmark-evidence-v1.tar.gz",
+  "evidence_root": "/workspace/scratch/de9281f42bd1/alfa-external-benchmark/data/lab-runs",
+  "frozen_auditor_root": "/workspace/scratch/de9281f42bd1/alfa-external-benchmark",
+  "gpu_case_skips": 4,
+  "gpu_fits": 0,
+  "gpu_report_sha256": "79f84b743b3d34eea2a488942e2740b606b4da9528916593ad842688e166ea20",
+  "hardware": {
+    "cpu": "x86_64",
+    "gpu": "CPU lane; source/config CPU enforcement, CUDA visibility disabled, no OS GPU sandbox",
+    "logical_cpus": 9,
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "total_ram_bytes": 10451439616
+  },
+  "limits_note": "24 GiB is the configured child RSS preset for a 32 GiB workstation. This actual container had 8 GiB total and unknown sampled RSS/cleanup; no official CPU qualification.",
+  "measurement_auditor_local_commit": "356e8c71baf901d5535bd83e97c1d5207898a436",
+  "measurement_auditor_published_equivalent_commit": "c473aa62ec590709ae49cf32a61a144df0351faa",
+  "measurement_source_tree": "802662b157b05c978772b6b34570f7f81fb586dc",
+  "method_sha256": "84ab410c0a14bc78572c2a7cc5447eee45ca361d30da4485e92bd68cabc12a8a",
+  "plan_sha256": "5fcc96615b245777aa43d0062d602405a59b1378a8e134998b0ee7c47e50b159",
+  "planned_pairs": 4,
+  "preparation_seconds": 3.579183951998857,
+  "qualified_completed_pairs": 0,
+  "report_sha256": "655139a5701fce94501d9e92686807b554cfa471dc07e65802188d6e00d07d00",
+  "schema_version": 1,
+  "solvers": {
+    "candidate": {
+      "dirty": false,
+      "root": "/workspace/scratch/de9281f42bd1/lab-candidate",
+      "sha": "3b69d50bd7338b9180aaf7d4cb9a101a2a3435ee",
+      "source_fingerprint": "87984c93d1959fda383ec123a63ce1f3bd973c846f363d5076885151f7060199"
+    },
+    "incumbent": {
+      "dirty": false,
+      "root": "/workspace/scratch/de9281f42bd1/lab-incumbent",
+      "sha": "a45861d7e5588288db66f9ae088a9726f9597370",
+      "source_fingerprint": "3ab8ba7a8e30b27d71bdcb1ed3ce471ba2192acbef66d9b61799648b112361cd"
+    }
+  },
+  "source_split_manifest_sha256": "96350492c3c0f4fd0606e55b3b39b549a38b48ba98123fc9898710655dcab75d",
+  "stages": {
+    "A": "100 lab tests normal/-O, actual two-arm fixture002 and read-only artifact chain; initial fixture001 retained as failed integrity smoke",
+    "B": "one attempted incumbent arm, censored after nested timeout with unknown cleanup, seven untouched; zero completed comparisons",
+    "C": "not run",
+    "D": "not run"
+  },
+  "summary": {
+    "actual_api": {
+      "attempts": 0,
+      "responses": 0,
+      "started_arms": 1,
+      "verified_arms": 1
+    },
+    "candidate_win_rate": 0.0,
+    "denominator_pairs": 4,
+    "outcomes": {
+      "censored": 1,
+      "failed": 0,
+      "fixture_smoke": 0,
+      "integrity_failed": 0,
+      "loss": 0,
+      "metric_contract_mismatch": 0,
+      "missing": 0,
+      "not_completed": 3,
+      "provisional_resource_observation": 0,
+      "self_check": 0,
+      "skipped": 0,
+      "tie": 0,
+      "win": 0
+    },
+    "planned_pairs": 4,
+    "qualified_cpu_arms": 0,
+    "qualified_pairs": 0,
+    "verified_quality_arms": 0
+  }
+}

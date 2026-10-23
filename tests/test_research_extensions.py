@@ -218,17 +218,32 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(report["attempted"], 0)
         self.assertEqual(report["trials"][1]["reason"], "history_discovery_abstained")
 
-    def test_discovered_history_uses_normal_assessment_and_fixed_recipe(self):
+    def test_default_adaptive_history_discovers_without_explicit_auto_flag(self):
         self.history_policy()
         config = {"key_columns": ["cat"], "period_column": "period", "numeric_columns": [],
                   "positive_columns": [], "ambiguity_policy": "past_unique_only"}
         options = {"history_config": config, "blend_weight": .5}
-        with patch("agent.history_discovery_host.discover_history_options", return_value=options):
-            report = self.isolated("history")
-        self.assertEqual(report["attempted"], 1)
-        self.assertEqual(self.assess.call_args.kwargs, {"origin": "history"})
-        self.assertEqual(self.assess.call_args.args[1].recipe["history_config"], config)
-        self.assertEqual(self.state.report["history_research"]["attempted"], 1)
+        # solution.py's default adaptive route does not set history_auto, and
+        # run_agent_v3 records the explicit-history stage as not requested.
+        # Both omission and an explicit false must still admit automatic
+        # discovery through the normal extension factory and host assessor.
+        for explicit_false in (False, True):
+            with self.subTest(explicit_false=explicit_false):
+                self.state.report["quality_options"].pop("history_auto", None)
+                if explicit_false:
+                    self.state.report["quality_options"]["history_auto"] = False
+                self.state.report["history_research"] = {"requested": False, "status": "disabled"}
+                self.assess.reset_mock()
+                with patch("agent.history_discovery_host.discover_history_options",
+                           return_value=options) as discover:
+                    report = self.isolated("history")
+                discover.assert_called_once_with(self.state)
+                self.assertEqual(report["attempted"], 1)
+                self.assess.assert_called_once()
+                self.assertEqual(self.assess.call_args.kwargs, {"origin": "history"})
+                self.assertEqual(self.assess.call_args.args[1].recipe["history_config"], config)
+                self.assertEqual(self.assess.call_args.args[1].recipe["blend_weight"], .5)
+                self.assertEqual(self.state.report["history_research"]["attempted"], 1)
 
     def test_failed_history_still_records_an_actual_attempt(self):
         self.history_policy()

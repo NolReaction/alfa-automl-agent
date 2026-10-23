@@ -1,0 +1,98 @@
+name: Laboratory native fixture
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    name: Laboratory fixture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned runtime
+        run: python -m pip install -r requirements.txt
+      - name: Check nested baseline observation and cleanup qualification
+        run: python -m unittest tests.test_research_lab_observer tests.test_research_lab_baseline_resources -v
+      - name: Run both real short-route solver arms and re-audit
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          base = 'a45861d7e5588288db66f9ae088a9726f9597370'
+          for name in ('alfa-fixture-incumbent', 'alfa-fixture-copy'):
+              subprocess.run(['git', 'worktree', 'add', '--detach', '../' + name, base], check=True)
+          output = Path('data/lab-runs/ci-fixture')
+          Path('data').mkdir(exist_ok=True)
+          with Path('data/ci-fixture.stdout.txt').open('w', encoding='utf-8') as log:
+              common = [sys.executable, '-m', 'research_lab']
+              subprocess.run(common + ['prepare', '--profile', 'fixture-smoke',
+                  '--incumbent-root', '../alfa-fixture-incumbent',
+                  '--candidate-root', '../alfa-fixture-copy', '--candidate-commit', base,
+                  '--self-check', '--python', sys.executable, '--output', str(output),
+                  '--time-budget', '60', '--threads', '8', '--memory-gib', '24'],
+                  check=True, stdout=log, stderr=subprocess.STDOUT)
+              for command in ('run', 're-audit', 'report'):
+                  subprocess.run(common + [command, '--output', str(output)],
+                      check=True, stdout=log, stderr=subprocess.STDOUT)
+          report = json.loads((output / 'report.json').read_text(encoding='utf-8'))
+          print(json.dumps({key: report[key] for key in
+              ('status', 'fixture_gate', 'summary', 'quality_evidence')}, sort_keys=True))
+          if not (report['status'] == 'completed' and report['fixture_gate']['mechanism_complete']
+                  and report['fixture_gate']['passed'] is True
+                  and report['fixture_gate']['resources_observed'] is True
+                  and report['fixture_gate']['zero_api_verified']
+                  and report['summary']['qualified_cpu_arms'] == 0
+                  and report['quality_evidence'] is False):
+              print((output / 'report.json').read_text(encoding='utf-8'))
+              for path in sorted(output.glob('cases/*/arms/*/worker_evidence.json')):
+                  worker = json.loads(path.read_text(encoding='utf-8'))
+                  print(json.dumps({'path': str(path), 'worker': {key: worker.get(key)
+                      for key in ('solver_returned', 'cli_exit_code', 'terminal_error', 'run_report')}},
+                      ensure_ascii=True))
+              for path in sorted(output.glob('cases/*/arms/*/execution/*.txt')):
+                  print(json.dumps({'path': str(path), 'tail': path.read_text(
+                      encoding='utf-8', errors='replace')[-5000:]}, ensure_ascii=True))
+              raise SystemExit('Native fixture gate did not pass')
+      - name: Print fixture failure diagnostics
+        if: failure()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          log = Path('data/ci-fixture.stdout.txt')
+          if log.is_file():
+              print(json.dumps({'launcher_log_tail': log.read_text(
+                  encoding='utf-8', errors='replace')[-16000:]}, ensure_ascii=True))
+          output = Path('data/lab-runs/ci-fixture')
+          for path in sorted(output.glob('cases/*/arms/*/state.json')):
+              state = json.loads(path.read_text(encoding='utf-8'))
+              audit = state.get('audit', {})
+              execution = state.get('execution', {})
+              print(json.dumps({'path': str(path), 'status': state.get('status'),
+                  'audit_status': audit.get('status'), 'contract_errors': audit.get('contract_errors'),
+                  'mechanism_verified': audit.get('mechanism_verified'),
+                  'resource_qualification': audit.get('resources', {}).get('qualification'),
+                  'launcher_resources': execution.get('resources'),
+                  'launcher_cleanup': execution.get('cleanup')}, ensure_ascii=True))

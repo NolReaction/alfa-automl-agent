@@ -629,9 +629,19 @@ def run_solver(argv, cwd, output_dir, timeout_seconds, memory_limit_bytes):
                 if monitor is not None:
                     try:
                         members = owned.sample()
-                        if members:
-                            rss = sum(item.memory_info().rss for item in members)
-                            cpu = sum(sum(item.cpu_times()[:2]) for item in members)
+                        rss = cpu = sampled = 0
+                        for item in members:
+                            try:
+                                member_rss = item.memory_info().rss
+                                member_cpu = sum(item.cpu_times()[:2])
+                            except (monitor.NoSuchProcess, monitor.ZombieProcess):
+                                # A retained child can exit after sample()'s
+                                # identity check. That is not an inventory loss.
+                                continue
+                            rss += member_rss
+                            cpu += member_cpu
+                            sampled += 1
+                        if sampled:
                             telemetry.update(available=True, peak_rss_bytes=max(telemetry["peak_rss_bytes"] or 0, rss),
                                              cpu_seconds=max(telemetry["cpu_seconds"] or 0, cpu))
                             if rss > memory_limit_bytes:

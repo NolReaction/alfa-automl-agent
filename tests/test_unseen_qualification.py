@@ -191,6 +191,83 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(grandchild.kills, 1)
         self.assertTrue(cleanup["complete"])
 
+    def test_resource_reads_tolerate_exiting_members_but_preserve_inventory_errors(self):
+        class ProcessError(Exception):
+            pass
+
+        class NoSuchProcess(ProcessError):
+            pass
+
+        class ZombieProcess(NoSuchProcess):
+            pass
+
+        class AccessDenied(ProcessError):
+            pass
+
+        class Member:
+            def __init__(self, pid, failure=None, read="memory_info"):
+                self.pid, self.failure, self.read = pid, failure, read
+                self.live, self.descendants = True, []
+
+            def create_time(self): return self.pid / 10
+            def ppid(self): return os.getpid()
+            def is_running(self): return self.live
+            def status(self): return "running"
+            def children(self, recursive=True): return list(self.descendants)
+            def suspend(self): pass
+            def kill(self): self.live = False
+
+            def _read(self, name, result):
+                if self.failure is not None and self.read == name:
+                    if issubclass(self.failure, NoSuchProcess):
+                        self.live = False
+                    raise self.failure("read raced with process exit or access failure")
+                return result
+
+            def memory_info(self):
+                return self._read("memory_info", SimpleNamespace(rss=10))
+
+            def cpu_times(self):
+                return self._read("cpu_times", (1, 2))
+
+        for read in ("memory_info", "cpu_times"):
+            for failure in (NoSuchProcess, ZombieProcess, AccessDenied, OSError):
+                for survivor in (False, True):
+                    with self.subTest(read=read, failure=failure, survivor=survivor), \
+                            tempfile.TemporaryDirectory() as temporary:
+                        root = Member(101, None if survivor else failure, read)
+                        child = Member(102, failure, read)
+                        root.descendants = [child] if survivor else []
+                        monitor = SimpleNamespace(Process=lambda pid: root, Error=ProcessError,
+                            NoSuchProcess=NoSuchProcess, ZombieProcess=ZombieProcess,
+                            STATUS_ZOMBIE="zombie")
+                        process = Mock(pid=root.pid)
+                        process.poll.side_effect = [None, 0]
+                        process.wait.return_value = 0
+                        directory = Path(temporary)
+                        with patch.object(qualification, "_process_inventory", return_value=(monitor, None)), \
+                                patch.object(qualification.subprocess, "Popen", return_value=process), \
+                                patch.object(qualification, "_stop_tree"):
+                            execution = qualification.run_solver(
+                                ["owned-test-child"], directory, directory / "run", 5, 1024**3)
+                        gone = issubclass(failure, NoSuchProcess)
+                        self.assertIs(execution["resources"]["available"], gone and survivor)
+                        self.assertIs(execution["cleanup"]["complete"], True if gone else None)
+                        self.assertIs(execution["cleanup"]["inventory_available"], gone)
+                        self.assertEqual(execution["cleanup"]["tracked_processes"], 2 if survivor else 1)
+                        if gone and survivor:
+                            self.assertEqual(execution["resources"]["peak_rss_bytes"], 10)
+                            self.assertEqual(execution["resources"]["cpu_seconds"], 3)
+                            self.assertNotIn("unavailable_reason", execution["resources"])
+                        elif gone:
+                            self.assertIsNone(execution["resources"]["peak_rss_bytes"])
+                            self.assertIsNone(execution["resources"]["cpu_seconds"])
+                            self.assertEqual(execution["resources"]["unavailable_reason"],
+                                             "No compatible process telemetry samples")
+                        else:
+                            self.assertEqual(execution["resources"]["unavailable_reason"],
+                                             failure.__name__ + ": process inventory unavailable")
+
     @unittest.skipIf(os.name == "nt", "POSIX detached-session regression")
     def test_timeout_stops_a_worker_in_a_new_session_when_inventory_is_available(self):
         monitor, reason = qualification._process_inventory()

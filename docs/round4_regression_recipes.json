@@ -1,0 +1,356 @@
+{
+  "decision": "retain_current_incumbent; new family is experimental and rejected for production",
+  "incumbent_source": "import hashlib,json\nfrom pathlib import Path\nimport pandas as pd\nfrom agent.regression_candidate import execute_regression_candidate\n\ndef fit_predict(X_fit,y_fit,X_predict,context):\n    result,evidence,alternatives=execute_regression_candidate(\n        X_fit,y_fit,X_predict,context,return_evidence=True)\n    path=Path(\"regression_ablation.csv\")\n    with path.open(\"x\",encoding=\"utf-8\",newline=\"\") as stream:\n        pd.DataFrame(alternatives).to_csv(stream,index=False)\n    evidence[\"ablation_sha256\"]=hashlib.sha256(path.read_bytes()).hexdigest()\n    with Path(\"regression_evidence.json\").open(\"x\",encoding=\"utf-8\") as stream:\n        json.dump(evidence,stream,sort_keys=True,allow_nan=False)\n    return result\n",
+  "recommended_existing_incumbent": {
+    "base": {
+      "engine": "catboost",
+      "fallback_iterations": 400,
+      "max_iterations": 2000,
+      "parameters": {
+        "depth": 6,
+        "l2_leaf_reg": 5.0,
+        "learning_rate": 0.05
+      },
+      "period_column": "Year_Factor",
+      "stopping_rounds": 100
+    },
+    "family": "rescue_regression_v1",
+    "history_config": {
+      "ambiguity_policy": "past_unique_only",
+      "key_columns": [
+        "floor_area",
+        "year_built"
+      ],
+      "numeric_columns": [
+        "floor_area",
+        "year_built"
+      ],
+      "period_column": "Year_Factor",
+      "positive_columns": []
+    },
+    "history_policy": "calibrated",
+    "minimum_calibration_history_rows": 64,
+    "version": 1
+  },
+  "rejected_algorithm_without_fold_schema": {
+    "base": {
+      "engine": "catboost",
+      "fallback_iterations": 400,
+      "max_iterations": 2000,
+      "parameters": {
+        "depth": 6,
+        "l2_leaf_reg": 5.0,
+        "learning_rate": 0.05
+      },
+      "period_column": "Year_Factor",
+      "stopping_rounds": 100
+    },
+    "calibration_alignment": "legacy",
+    "family": "round4_regression_v1",
+    "features": {
+      "category_frequencies": true,
+      "max_categories_per_column": 512,
+      "max_frequency_columns": 16,
+      "missing_indicators": false
+    },
+    "history_config": null,
+    "history_policy": "calibrated",
+    "minimum_calibration_history_rows": 64,
+    "version": 1
+  },
+  "rejected_finalist_known5_and_full": {
+    "base": {
+      "engine": "catboost",
+      "fallback_iterations": 400,
+      "max_iterations": 2000,
+      "parameters": {
+        "depth": 6,
+        "l2_leaf_reg": 5.0,
+        "learning_rate": 0.05
+      },
+      "period_column": "Year_Factor",
+      "stopping_rounds": 100
+    },
+    "calibration_alignment": "legacy",
+    "family": "round4_regression_v1",
+    "features": {
+      "category_frequencies": true,
+      "max_categories_per_column": 512,
+      "max_frequency_columns": 16,
+      "missing_indicators": false
+    },
+    "history_config": {
+      "ambiguity_policy": "past_unique_only",
+      "key_columns": [
+        "floor_area",
+        "year_built"
+      ],
+      "numeric_columns": [
+        "floor_area",
+        "year_built"
+      ],
+      "period_column": "Year_Factor",
+      "positive_columns": []
+    },
+    "history_policy": "calibrated",
+    "minimum_calibration_history_rows": 64,
+    "version": 1
+  },
+  "round4_source": "import hashlib,json\nfrom pathlib import Path\nimport pandas as pd\nfrom agent.round4_regression_candidate import execute_round4_candidate\n\ndef fit_predict(X_fit,y_fit,X_predict,context):\n    result,evidence,alternatives=execute_round4_candidate(\n        X_fit,y_fit,X_predict,context,return_evidence=True)\n    path=Path(\"regression_ablation.csv\")\n    with path.open(\"x\",encoding=\"utf-8\",newline=\"\") as stream:\n        pd.DataFrame(alternatives).to_csv(stream,index=False)\n    evidence[\"ablation_sha256\"]=hashlib.sha256(path.read_bytes()).hexdigest()\n    with Path(\"regression_evidence.json\").open(\"x\",encoding=\"utf-8\") as stream:\n        json.dump(evidence,stream,sort_keys=True,allow_nan=False)\n    return result\n",
+  "screen": {
+    "B4": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 4,
+          "l2_leaf_reg": 10.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": false,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": false
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "B5": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 5,
+          "l2_leaf_reg": 10.0,
+          "learning_rate": 0.04
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": false,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": false
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "B6R": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 20.0,
+          "learning_rate": 0.03
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": false,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": false
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "B7": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 7,
+          "l2_leaf_reg": 10.0,
+          "learning_rate": 0.04
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": false,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": false
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "Fboth": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": true,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": true
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "Ffrequency": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": true,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": false
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "Fmissing": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "legacy",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": false,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": true
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "LGBaligned": {
+      "base": {
+        "engine": "lightgbm",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "colsample_bytree": 0.9,
+          "learning_rate": 0.04,
+          "max_depth": -1,
+          "min_child_samples": 40,
+          "num_leaves": 31,
+          "reg_lambda": 5.0
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "calibration_alignment": "refit_count",
+      "family": "round4_regression_v1",
+      "features": {
+        "category_frequencies": false,
+        "max_categories_per_column": 512,
+        "max_frequency_columns": 16,
+        "missing_indicators": false
+      },
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "LGBlegacy": {
+      "base": {
+        "engine": "lightgbm",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "colsample_bytree": 0.9,
+          "learning_rate": 0.04,
+          "max_depth": -1,
+          "min_child_samples": 40,
+          "num_leaves": 31,
+          "reg_lambda": 5.0
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "family": "rescue_regression_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    },
+    "incumbent": {
+      "base": {
+        "engine": "catboost",
+        "fallback_iterations": 400,
+        "max_iterations": 2000,
+        "parameters": {
+          "depth": 6,
+          "l2_leaf_reg": 5.0,
+          "learning_rate": 0.05
+        },
+        "period_column": "Year_Factor",
+        "stopping_rounds": 100
+      },
+      "family": "rescue_regression_v1",
+      "history_config": null,
+      "history_policy": "calibrated",
+      "minimum_calibration_history_rows": 64,
+      "version": 1
+    }
+  },
+  "version": 1,
+  "warning": "Known5/full history_config is a frozen host discovery result for these inputs, never a hardcoded production key."
+}

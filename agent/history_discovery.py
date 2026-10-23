@@ -25,7 +25,7 @@ MAX_CELL_VISITS = 8_000_000
 MAX_RAW_BYTES = 64 * 1024**2
 MAX_VALUE_CHARS = 512
 MAX_SELECTED_COLUMNS = 12
-MAX_CHECKED_CONFIGS = 24
+MAX_CHECKED_CONFIGS = 48
 MAX_AUTO_KEY_WIDTH = 3
 
 
@@ -80,7 +80,8 @@ def _column_evidence(values, periods, *, numeric):
             "cross_period_recurrent_values": recurrent_values, "excluded_reason": reason}
 
 
-def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_column):
+def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_column,
+                            max_cell_visits=None, max_checked_configs=None, adaptive_checks=False):
     """Return finite JSON describing at most one fixed-policy schema.
 
     ``X_fit`` must contain exactly ``feature_columns`` and only raw ``str`` or
@@ -89,8 +90,21 @@ def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_c
     caps are checked before values. Work includes two full feature passes
     (raw validation and parsing/screening) plus the proposer's conservative
     planned visits. Byte counters describe observed input, not a claim that
-    every value was read after an input cap stopped validation.
+    every value was read after an input cap stopped validation. Optional work/
+    check limits are for an isolated opt-in experiment; the ordinary caller
+    retains the original 8M/48 policy and result shape. ``adaptive_checks``
+    reduces the requested check count to fit the total planned work allowance;
+    it never activates an incomplete top-one search.
     """
+    custom_limits = max_cell_visits is not None or max_checked_configs is not None or adaptive_checks is not False
+    if type(adaptive_checks) is not bool:
+        raise ValueError("adaptive_checks must be a boolean")
+    for value, ceiling, name in ((max_cell_visits, 12_000_000, "max_cell_visits"),
+                                  (max_checked_configs, 192, "max_checked_configs")):
+        if value is not None and (type(value) is not int or not 1 <= value <= ceiling):
+            raise ValueError(name + " exceeds its supported positive integer bounds")
+    work_limit = MAX_CELL_VISITS if max_cell_visits is None else max_cell_visits
+    requested_checks = MAX_CHECKED_CONFIGS if max_checked_configs is None else max_checked_configs
     if not isinstance(X_fit, pd.DataFrame):
         raise ValueError("X_fit must be a raw feature DataFrame")
     features = _names(feature_columns, "feature_columns")
@@ -113,9 +127,12 @@ def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_c
         "excluded_constant": 0, "excluded_all_unique": 0, "excluded_no_cross_period_recurrence": 0,
         "recurrent_columns": 0, "selected_columns": 0, "proposer_calls": 0}
     screening = {"counts": counts, "selected_columns": [], "columns": [],
-        "caps": {"max_rows": MAX_ROWS, "max_features": MAX_FEATURES, "max_cell_visits": MAX_CELL_VISITS,
+        "caps": {"max_rows": MAX_ROWS, "max_features": MAX_FEATURES, "max_cell_visits": work_limit,
             "max_raw_value_bytes": MAX_RAW_BYTES, "max_value_chars": MAX_VALUE_CHARS,
             "max_selected_columns": MAX_SELECTED_COLUMNS}}
+    if custom_limits:
+        screening["check_budget"] = {"requested": requested_checks, "chosen": None,
+                                      "adaptive": adaptive_checks}
 
     def result(status, reason, config=None, proposer=None):
         value = {"version": VERSION, "scope": SCOPE, "status": status, "reason": reason,
@@ -129,7 +146,7 @@ def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_c
         return result("limited", "row_limit")
     if len(features) > MAX_FEATURES:
         return result("limited", "feature_limit")
-    if counts["total_cell_visits_planned"] > MAX_CELL_VISITS:
+    if counts["total_cell_visits_planned"] > work_limit:
         return result("limited", "work_limit")
     if not rows:
         return result("abstained", "no_rows")
@@ -177,12 +194,22 @@ def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_c
     if not selected:
         return result("abstained", "no_recurrent_key_columns")
 
-    # The public proposer accounts for parsing, one-column bounds, and at
-    # most 24 checks of width <=3. Admit the whole search before its first call.
-    proposer_work = rows * (2 * len(selected) + 1 + MAX_CHECKED_CONFIGS * (MAX_AUTO_KEY_WIDTH + 1))
+    # Account for parsing, one-column bounds and every admitted width<=3 check.
+    # Adaptive admission can lower the check cap, but the proposer must still
+    # certify the entire top-one search; a partial best-so-far is never used.
+    checks = requested_checks
+    if adaptive_checks:
+        fixed_work = counts["screening_cell_visits_planned"] + rows * (2 * len(selected) + 1)
+        affordable_checks = (work_limit - fixed_work) // (rows * (MAX_AUTO_KEY_WIDTH + 1))
+        checks = max(0, min(checks, affordable_checks))
+    if custom_limits:
+        screening["check_budget"]["chosen"] = checks
+    if not checks:
+        return result("limited", "work_limit")
+    proposer_work = rows * (2 * len(selected) + 1 + checks * (MAX_AUTO_KEY_WIDTH + 1))
     counts["proposer_cell_visits_planned"] = proposer_work
     counts["total_cell_visits_planned"] += proposer_work
-    if counts["total_cell_visits_planned"] > MAX_CELL_VISITS:
+    if counts["total_cell_visits_planned"] > work_limit:
         return result("limited", "work_limit")
     raw = {name: X_fit[name].tolist() for name in sorted([period_column, *selected])}
     counts["proposer_calls"] = 1
@@ -190,10 +217,10 @@ def discover_history_schema(X_fit, *, feature_columns, numeric_columns, period_c
         allowed_period_columns=[period_column], allowed_key_columns=list(selected),
         numeric_key_columns=[name for name in selected if name in numeric],
         positive_key_columns=(), explicit_key_sets=(),
-        limits={"max_rows": MAX_ROWS, "max_work": MAX_CELL_VISITS - counts["screening_cell_visits_planned"],
+        limits={"max_rows": MAX_ROWS, "max_work": work_limit - counts["screening_cell_visits_planned"],
             "max_period_columns": 1, "max_key_columns": MAX_SELECTED_COLUMNS,
             "max_auto_key_width": MAX_AUTO_KEY_WIDTH, "max_explicit_key_width": MAX_AUTO_KEY_WIDTH,
-            "max_checked_configs": MAX_CHECKED_CONFIGS, "max_proposals": 1})
+            "max_checked_configs": checks, "max_proposals": 1})
     if (not isinstance(proposer, dict) or proposer.get("version") != VERSION or proposer.get("scope") != SCOPE
             or proposer.get("auto_activate") is not False
             or proposer.get("status") not in {"limited", "abstained", "proposed"}):
