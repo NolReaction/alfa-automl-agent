@@ -14,11 +14,13 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import joblib
 from sklearn.metrics import f1_score, mean_squared_error
 from sklearn.model_selection import train_test_split
 
 from app import worker
 from app.model_config import make_model_config
+from app.model_artifacts import artifact_download_path
 
 
 def write_csv(path: Path, rows) -> None:
@@ -95,7 +97,7 @@ class WorkerTests(unittest.TestCase):
                         with contextlib.redirect_stdout(io.StringIO()):
                             exit_code = worker.main(["--config", str(config_path)])
                     self.assertEqual(exit_code, 0)
-                    self.assertEqual(transitions, ["training", "validating", "refitting", "finished"])
+                    self.assertEqual(transitions, ["training", "validating", "refitting", "saving_model", "finished"])
                     result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
                     metrics = json.loads((job_dir / "metrics.json").read_text(encoding="utf-8"))
                     results.append(result)
@@ -179,6 +181,52 @@ class WorkerTests(unittest.TestCase):
                     output = pd.read_csv(staged / "submission.csv")
                     self.assertTrue(output["answer"].between(0, 1).all())
                 shutil.rmtree(source)
+
+    def test_saved_full_pipeline_reproduces_submission_from_raw_csv(self):
+        from agent.features import normalize_feature_config
+        for feature_options in ({}, {"signed_log": True, "rare_min_count": 2, "missing_indicators": True}):
+            with self.subTest(feature_options=feature_options):
+                source = self.make_source(classification=True)
+                inputs = source / "nested/participants"
+                frame = pd.read_csv(inputs / "train.csv", dtype=str, keep_default_na=False)
+                frame["x"], frame["flag"] = "0", "0"
+                frame["protocol"] = ["__MISSING__", "", "__ALFA_LEGACY_VALUE__x", "plain"] * 20
+                frame["answer"] = ["NA", "Positive", "NA", "Positive"] * 20
+                frame.to_csv(inputs / "train.csv", index=False)
+                write_csv(inputs / "test.csv", [
+                    ["row_key", "x", "flag", "protocol"],
+                    ["NA", "0", "0", "__MISSING__"], ["0001", "0", "0", ""],
+                ])
+                path, job_dir, staged = self.make_config(source, "extra_trees")
+                config = json.loads(path.read_text())
+                config["feature_config"] = normalize_feature_config(feature_options)
+                path.write_text(json.dumps(config))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(worker.main(["--config", str(path)]), 0)
+                result = json.loads((job_dir / "result.json").read_text())
+                self.assertTrue(result["model_artifact"]["available"])
+                self.assertEqual(result["feature_config"], normalize_feature_config(feature_options))
+                self.assertEqual(result["training_device"], "cpu")
+                self.assertTrue(result["training_device_evidence"]["fit_completed"])
+                restored = joblib.load(artifact_download_path(job_dir, "model"))
+                test = pd.read_csv(inputs / "test.csv", dtype=str, keep_default_na=False)
+                submission = pd.read_csv(staged / "submission.csv", dtype=str, keep_default_na=False)
+                self.assertEqual(submission["answer"].tolist(), ["NA", "Positive"])
+                self.assertEqual(restored.predict(test[["x", "flag", "protocol"]]).tolist(),
+                                 submission["answer"].tolist())
+                shutil.rmtree(source)
+                shutil.rmtree(job_dir)
+
+    def test_model_export_error_preserves_verified_training_result(self):
+        source = self.make_source()
+        path, job_dir, staged = self.make_config(source, "linear")
+        with patch.object(worker, "save_model_artifacts", side_effect=OSError("disk unavailable")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker.main(["--config", str(path)]), 0)
+        result = json.loads((job_dir / "result.json").read_text())
+        self.assertTrue(result["output_valid"])
+        self.assertFalse(result["model_artifact"]["available"])
+        self.assertTrue((staged / "submission.csv").is_file())
 
     def test_config_refuses_unrecognized_recipe_and_paths_outside_job(self):
         source = self.make_source()

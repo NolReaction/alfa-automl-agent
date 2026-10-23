@@ -17,6 +17,7 @@ import re
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.jobs import SPLIT_FIELDS, _valid_split
+from app.model_config import validate_model_config, validate_feature_config
 
 
 MAX_STEPS = 128
@@ -32,7 +33,7 @@ STATUSES = {"pending", "queued", "running", "completed", "failed", "skipped",
             "interrupted", "cancelled", "cleanup_pending", "stopped", "launching", "paused", "stopping"}
 CSV_FIELDS = ("step_id", "job_id", "task_id", "label", "status", "minutes",
               "worker_timeout_seconds", "elapsed_seconds", "metric_name", "metric_value", "higher_is_better",
-              "model", "comparison_eligible", "comparison_group", "exclusion_reasons", "error")
+              "model", "is_control", "difference", "improvement", "comparison_eligible", "comparison_group", "exclusion_reasons", "error")
 
 
 def _number(value, *, nonnegative=False):
@@ -180,6 +181,23 @@ def _row(step, position, detail, source, runtime):
                     "higher_is_better": metric["higher_is_better"], "split": split}
         if hashlib.sha256(_canonical(identity).encode("utf-8")).hexdigest() != key:
             reasons.append("comparison_key_mismatch")
+    if "comparison_key" in step and step["comparison_key"] != key:
+        reasons.append("planned_comparison_mismatch")
+    if "split" in step and step["split"] != split:
+        reasons.append("planned_split_mismatch")
+    config = features = None
+    try:
+        if "model_config" in job:
+            config = validate_model_config(job["model_config"])
+        if "feature_config" in job:
+            features = validate_feature_config(job["feature_config"])
+        if "model_config" in step and step["model_config"] != config:
+            reasons.append("planned_recipe_mismatch")
+        if "feature_config" in step and step["feature_config"] != features:
+            reasons.append("planned_features_mismatch")
+    except (TypeError, ValueError):
+        config = features = None
+        reasons.append("recipe_invalid")
     return {"position": position, "step_id": _identifier(step.get("id")), "job_id": job_id,
             "task_id": task, "action": _text(step.get("action"), 80), "label": _text(step.get("label")),
             "status": status, "minutes": step.get("minutes") if _number(step.get("minutes"), nonnegative=True) else None,
@@ -187,13 +205,29 @@ def _row(step, position, detail, source, runtime):
             "elapsed_seconds": job.get("elapsed_seconds") if _number(job.get("elapsed_seconds"), nonnegative=True) else None,
             "started_at": _timestamp(job.get("started_at")), "finished_at": _timestamp(job.get("finished_at")),
             "model": _text(job.get("model"), 160), "metric": metric, "split": split,
+            "model_config": config, "feature_config": features,
+            "is_control": step.get("is_control") is True,
+            "planned_comparison_key": _hash(step.get("comparison_key")),
+            "difference": None, "improvement": None,
             "dataset_fingerprint": fingerprint, "comparison_key": key,
             "comparison_eligible": not reasons, "comparison_group": None,
             "exclusion_reasons": reasons, "error": _text(step.get("error") or job.get("error"), 2000)}
 
 
 def _point(row):
-    return {key: row[key] for key in ("step_id", "job_id", "position", "minutes", "worker_timeout_seconds", "elapsed_seconds", "started_at", "model", "metric")}
+    return {key: row[key] for key in ("step_id", "job_id", "position", "label", "minutes", "worker_timeout_seconds", "elapsed_seconds", "started_at", "model", "model_config", "metric", "is_control", "difference", "improvement")}
+
+
+def _experiment(value):
+    if not isinstance(value, dict) or value.get("kind") != "lightgbm_tree_count":
+        return None
+    counts = value.get("counts")
+    if (not isinstance(counts, list) or not 2 <= len(counts) <= 3
+            or any(type(count) is not int or not 50 <= count <= 2000 for count in counts)):
+        return None
+    return {"kind": "lightgbm_tree_count", "parameter": "n_estimators", "scope": "local_recipe_study",
+            "counts": counts, "source_job_id": _identifier(value.get("source_job_id")),
+            "control_description": _text(value.get("control_description"), 500)}
 
 
 def build_campaign_report(detail):
@@ -239,20 +273,33 @@ def build_campaign_report(detail):
         # control/result, so downloading the report cannot change the winner.
         order_basis = "started_at" if all(row["started_at"] is not None for row in members) else "persisted_plan_order"
         members.sort(key=lambda r: (r["started_at"], r["position"]) if order_basis == "started_at" else (r["position"],))
-        control = members[0]
+        declared = [row for row in rows if row["is_control"] and row["task_id"] == identity["task_id"]
+            and (row["planned_comparison_key"] or row["comparison_key"]) == identity["comparison_key"]]
+        controls = [row for row in members if row["is_control"]]
+        control = controls[0] if len(controls) == 1 else members[0] if not declared else None
+        comparison_reason = "multiple_controls" if len(declared) > 1 else "control_not_admitted" if control is None else None
+        if comparison_reason:
+            control = None
         direction = 1 if identity["higher_is_better"] else -1
         best = max(members, key=lambda r: direction * r["metric"]["value"])
-        gain = direction * (best["metric"]["value"] - control["metric"]["value"])
+        gain = direction * (best["metric"]["value"] - control["metric"]["value"]) if control else None
         gain = gain if _number(gain) else None
-        denominator = abs(control["metric"]["value"])
+        denominator = abs(control["metric"]["value"]) if control else None
         percent = 100 * (gain / denominator) if gain is not None and denominator else None
         percent = percent if _number(percent) else None
         group_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
         for row in members:
             row["comparison_group"] = group_id
-        groups.append({"id": group_id, **identity, "count": len(members), "comparison_available": len(members) > 1,
-                       "control": _point(control),
+            difference = row["metric"]["value"] - control["metric"]["value"] if control else None
+            row["difference"] = difference if _number(difference) else None
+            row["improvement"] = direction * difference if _number(difference) else None
+        groups.append({"id": group_id, **identity, "count": len(members),
+                       "comparison_available": control is not None and len(members) > 1,
+                       "comparison_reason": comparison_reason or ("one_result" if len(members) < 2 else None),
+                       "control": _point(control) if control else None,
+                       "control_basis": "declared" if declared else "first_comparable",
                        "best": _point(best), "gain": gain, "gain_percent": percent,
+                       "tied_best_job_ids": [row["job_id"] for row in members if row["metric"]["value"] == best["metric"]["value"]],
                        "budget_curve": [_point(row) for row in members], "order_basis": order_basis, "scope": SCOPE})
     counts = {name: sum(row["status"] == name for row in rows) for name in
               ("completed", "failed", "skipped", "interrupted", "cancelled")}
@@ -261,6 +308,7 @@ def build_campaign_report(detail):
     report = {"version": 1, "scope": SCOPE, "campaign": {
         "id": _identifier(detail.get("id")), "name": _text(detail.get("name"), 160),
         "preset": _text(detail.get("preset"), 120), "status": _text(detail.get("status"), 80),
+        "source_job_id": _identifier(detail.get("source_job_id")), "experiment": _experiment(detail.get("experiment")),
         "created_at": _timestamp(detail.get("created_at")), "started_at": _timestamp(detail.get("started_at")),
         "finished_at": _timestamp(detail.get("finished_at")), "source_seal": source, "runtime_seal": runtime,
         "plan_sha256": _hash(detail.get("plan_sha256")),
@@ -336,6 +384,11 @@ def _markdown_bytes(report):
         "dataset_not_verified": "версия данных не совпадает или не подтверждена", "metric_invalid": "метрика некорректна или отсутствует",
         "split_invalid": "проверочные строки не подтверждены", "comparison_key_invalid": "отсутствует корректный отпечаток сравнения",
         "comparison_key_mismatch": "отпечаток сравнения не соответствует результату",
+        "planned_comparison_mismatch": "отпечаток сравнения отличается от плана",
+        "planned_split_mismatch": "проверочные строки отличаются от плана",
+        "planned_recipe_mismatch": "рецепт модели отличается от плана",
+        "planned_features_mismatch": "обработка признаков отличается от плана",
+        "recipe_invalid": "некорректный рецепт модели",
         "duplicate_step_id": "повторная запись задания", "duplicate_job_id": "повторная запись одного запуска"}
     lines = ["# Отчёт о серии экспериментов", "", _md(campaign["name"]), "",
              "Локальная исследовательская проверка на известных строках TRAIN. "
@@ -353,11 +406,17 @@ def _markdown_bytes(report):
              f"общий лимит, секунд: {_md(campaign['wall_budget_seconds'])}.",
              f"Известное время отдельных запусков, секунд: {_md(summary['observed_job_elapsed_seconds'])}; "
              f"заданий с неизвестным временем: {summary['elapsed_unknown_steps']}.", "",
-             "Контроль — первый сопоставимый результат по времени запуска; при неизвестных датах используется порядок плана. "
+             "Контроль — заранее отмеченный вариант, если он задан в плане. При его ошибке контроль не заменяется другим запуском. "
+             "В остальных сериях используется первый сопоставимый результат по времени запуска; при неизвестных датах — порядок плана. "
              "Положительный прирост означает улучшение. Процент делится на модуль контрольной метрики; при нулевом контроле он не вычисляется.",
              "Метрики разных задач не складываются. Таблица бюджетов использует те же известные проверочные строки и остаётся исследовательской.", ""]
     if campaign["error"]:
         lines += ["Ошибка серии: " + _md(campaign["error"]), ""]
+    if campaign["experiment"]:
+        experiment = campaign["experiment"]
+        lines += ["Исследование рецептов LightGBM: " + _md(experiment["control_description"]),
+                  "Количество деревьев: " + ", ".join(str(value) for value in experiment["counts"]) + ".",
+                  "Это сравнение локальных рецептов, а не полных версий конкурсного агента.", ""]
     if report["warnings"]:
         lines += ["Предупреждения:", "", *["- " + _md(value) for value in report["warnings"]], ""]
     if not report["groups"]:
@@ -365,13 +424,19 @@ def _markdown_bytes(report):
     for group in report["groups"]:
         lines += [f"## {_md(group['task_id'])}: {_md(group['metric_name'])}", ""]
         if not group["comparison_available"]:
-            lines += ["Есть только один допущенный запуск; сравнение разных бюджетов или моделей пока отсутствует.", ""]
+            message = ("Заранее выбранный контроль не допущен; прирост не вычисляется."
+                       if group["comparison_reason"] in {"control_not_admitted", "multiple_controls"} else
+                       "Есть только один допущенный запуск; сравнение разных бюджетов или моделей пока отсутствует.")
+            lines += [message, ""]
+        control_value = group["control"]["metric"]["value"] if group["control"] else None
+        control_basis = ("заданный в плане вариант" if group["control_basis"] == "declared" else
+                         "по времени запуска" if group["order_basis"] == "started_at" else "по сохранённому плану")
         lines += [
-                  f"Контроль: {_md(group['control']['metric']['value'])}; лучший результат: {_md(group['best']['metric']['value'])}; "
+                  f"Контроль: {_md(control_value)}; лучший результат: {_md(group['best']['metric']['value'])}; "
                   f"прирост: {_md(group['gain'])}; прирост, %: {_md(group['gain_percent'])}. "
-                  f"Порядок контроля: {'по времени запуска' if group['order_basis'] == 'started_at' else 'по сохранённому плану'}.", "",
-                  "| Бюджет, минут | Прошло, секунд | Метрика | Модель |", "| --- | --- | --- | --- |"]
-        lines += ["| " + " | ".join(_md(v) for v in (point["minutes"], point["elapsed_seconds"], point["metric"]["value"], point["model"])) + " |"
+                  f"Выбор контроля: {control_basis}.", "",
+                  "| Вариант | Бюджет, минут | Прошло, секунд | Метрика | Модель |", "| --- | --- | --- | --- | --- |"]
+        lines += ["| " + " | ".join(_md(v) for v in (point["label"], point["minutes"], point["elapsed_seconds"], point["metric"]["value"], point["model"])) + " |"
                   for point in group["budget_curve"]]
         lines.append("")
     lines += ["## Диагностика заданий", "", "| Задание | Статус | Допущено к сравнению | Причины / ошибка |", "| --- | --- | --- | --- |"]

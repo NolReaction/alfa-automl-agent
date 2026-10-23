@@ -26,7 +26,8 @@ import psutil
 from app.profiling import DataCatalog, _task_semantics
 from app.runs import RunReader, _check_json_tree
 from app.splits import normalize_validation
-from app.model_config import make_model_config, validate_model_config, model_task_type, winner_feature_evidence, feature_evidence
+from app.model_config import (make_model_config, validate_model_config, model_task_type,
+                              winner_feature_evidence, feature_evidence, validate_feature_config)
 from app.file_io import replace_file
 from app.search_summary import validate_search_summary
 from app.research_summary import validate_research_summary
@@ -57,8 +58,10 @@ MAX_DIAGNOSTIC_TRAIN_BYTES = 128 * 1024 * 1024
 PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypothesis", "started_at",
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
-                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources"}
-REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources"}
+                 "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources",
+                 "model_artifact", "training_device", "training_device_evidence", "worker_timeout_seconds"}
+REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources",
+                                  "model_artifact", "training_device", "training_device_evidence", "worker_timeout_seconds"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
@@ -270,6 +273,14 @@ def _job_environment(settings):
     return environment
 
 
+def _execution_timeout(job, minutes):
+    if job["action"] == "prepare":
+        return PREPARE_TIMEOUT
+    if job["action"] in {"agent", "automl"}:
+        return minutes * 60 + 30
+    return job.get("worker_timeout_seconds", LOCAL_TIMEOUT)
+
+
 def _redact(text, key=""):
     text = str(text)
     for secret in (key, os.environ.get("OPENAI_API_KEY", "")):
@@ -453,7 +464,7 @@ class JobManager:
                     continue
                 job = {key: value for key, value in job.items() if key in PUBLIC_FIELDS or key in {
                     "_runtime", "_published_sha256", "_output_sha256", "_previous_submission", "_holdout_sha256",
-                    "_campaign_owner", "_execution"}}
+                    "_campaign_owner", "_execution", "_model_manifest_sha256", "_model_recipe_sha256"}}
                 self._jobs[job["id"]] = job
                 if job["status"] in ACTIVE:
                     runtime = job.get("_runtime") or {}
@@ -510,7 +521,8 @@ class JobManager:
                 or not isinstance(job["elapsed_seconds"], (int, float)) or job["elapsed_seconds"] < 0
                 or job["exit_code"] is not None and type(job["exit_code"]) is not int):
             return False
-        for name in ("comparison_key", "dataset_fingerprint", "_published_sha256", "_output_sha256", "_holdout_sha256"):
+        for name in ("comparison_key", "dataset_fingerprint", "_published_sha256", "_output_sha256", "_holdout_sha256",
+                     "_model_manifest_sha256", "_model_recipe_sha256"):
             if job.get(name) is not None and (not isinstance(job[name], str) or not re.fullmatch(r"[a-f0-9]{64}", job[name])):
                 return False
         metric = job.get("metric")
@@ -539,12 +551,35 @@ class JobManager:
             except ValueError:
                 return False
         if "feature_config" in job or "component_feature_configs" in job:
-            if job["action"] != "automl" or "search" not in job:
-                return False
             try:
-                winner_feature_evidence(job, job["search"])
+                if job["action"] == "automl" and "search" in job:
+                    winner_feature_evidence(job, job["search"])
+                elif job["action"] in OFFLINE_ACTIONS - {"automl"} and "component_feature_configs" not in job:
+                    validate_feature_config(job["feature_config"])
+                else:
+                    return False
             except ValueError:
                 return False
+        try:
+            if "model_artifact" in job:
+                from app.model_artifacts import validate_artifact_summary
+                validate_artifact_summary(job["model_artifact"])
+                if job["action"] not in OFFLINE_ACTIONS:
+                    return False
+            if "training_device" in job:
+                from app.training_devices import normalize_training_device
+                normalize_training_device(job["training_device"], action=job["action"])
+            if "training_device_evidence" in job:
+                from app.training_devices import validate_training_device_evidence
+                validate_training_device_evidence(job["training_device_evidence"], training_device=job.get("training_device", "cpu"),
+                                                  require_fit=job["status"] == "completed")
+            elif job.get("training_device") == "gpu" and job["status"] == "completed":
+                return False
+            if "worker_timeout_seconds" in job and (job["action"] not in OFFLINE_ACTIONS - {"automl"}
+                    or type(job["worker_timeout_seconds"]) is not int or not 60 <= job["worker_timeout_seconds"] <= 10500):
+                return False
+        except (ValueError, TypeError):
+            return False
         if "classification_diagnostics" in job:
             if job["action"] not in OFFLINE_ACTIONS:
                 return False
@@ -645,6 +680,13 @@ class JobManager:
                                          "completion_tokens", "total_tokens"}}
         if "research" in summary:
             summary["research"] = validate_research_summary(summary["research"])
+        if "model_artifact" in summary:
+            from app.model_artifacts import validate_artifact_summary
+            summary["model_artifact"] = validate_artifact_summary(summary["model_artifact"])
+        if "training_device_evidence" in summary:
+            from app.training_devices import validate_training_device_evidence
+            summary["training_device_evidence"] = validate_training_device_evidence(
+                summary["training_device_evidence"], training_device=job.get("training_device", "cpu"))
         if summary.get("published"):
             summary["published"] = self._publication_current(job)
         active = self._active
@@ -715,7 +757,8 @@ class JobManager:
         return job
 
     def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None,
-              *, campaign_owner=None):
+              *, campaign_owner=None, model_config=None, feature_config=None, local_timeout_seconds=None,
+              training_device="cpu"):
         owner = None if campaign_owner is None else _campaign_owner(campaign_owner)
         if owner is not None and (not isinstance(action, str) or action not in OFFLINE_ACTIONS):
             raise ValueError("Шаг кампании поддерживает только локальные модели и AutoML.")
@@ -724,17 +767,29 @@ class JobManager:
         if validation is not None and action not in OFFLINE_ACTIONS:
             raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
         if model_params is not None and action not in OFFLINE_ACTIONS - {"automl"}:
-            raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
+            raise ValueError("Настройка модели доступна только для отдельных локальных рецептов.")
         if model_params is not None and not isinstance(model_params, dict):
             raise ValueError("Параметры модели должны быть объектом.")
+        if model_config is not None:
+            if action not in OFFLINE_ACTIONS - {"automl"} or model_params is not None:
+                raise ValueError("Передайте параметры или полный рецепт отдельной модели.")
+            model_config = validate_model_config(model_config, action=action)
+        if feature_config is not None:
+            if action not in OFFLINE_ACTIONS - {"automl"}:
+                raise ValueError("Настройки признаков доступны для отдельных моделей.")
+            feature_config = validate_feature_config(feature_config)
+        from app.training_devices import normalize_training_device
+        training_device = normalize_training_device(training_device, action=action)
         validation = _job_validation(action, validation) if action in OFFLINE_ACTIONS else None
-        model_config = None
         if not isinstance(author, str) or len(author) > 80 or not isinstance(hypothesis, str) or len(hypothesis) > 500:
             raise ValueError("Имя автора: до 80 символов; гипотеза: до 500 символов.")
         if minutes is None:
-            minutes = 10 if action == "automl" else 175
+            minutes = 10 if action == "automl" else 175 if action == "agent" else 30
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 175:
             raise ValueError("Бюджет запуска должен быть целым числом от 1 до 175 минут.")
+        if local_timeout_seconds is not None and (action not in OFFLINE_ACTIONS - {"automl"}
+                or type(local_timeout_seconds) is not int or not 60 <= local_timeout_seconds <= 10500):
+            raise ValueError("Лимит обучения должен составлять от 60 до 10500 секунд.")
         with self._lock:
             if owner is not None:
                 previous = self.campaign_job(**owner)
@@ -785,7 +840,10 @@ class JobManager:
                     if validation["strategy"] == "grouped" and task_type != "classification":
                         raise ValueError("Групповая валидация доступна для классификации.")
                     if action != "automl":
-                        model_config = make_model_config(action, task_type, model_params)
+                        model_config = (make_model_config(action, task_type, model_params)
+                                        if model_config is None else model_config)
+                        if model_task_type(model_config) != task_type:
+                            raise ValueError("Рецепт модели не соответствует типу задачи.")
                 fingerprint = self.catalog.fingerprint(task_id)
             job_id = uuid4().hex
             folder = _safe(self.jobs_root / job_id, self.state_root)
@@ -802,6 +860,11 @@ class JobManager:
                 job["validation"] = validation
             if model_config is not None:
                 job["model_config"] = model_config
+            if feature_config is not None:
+                job["feature_config"] = feature_config
+            if action in OFFLINE_ACTIONS - {"automl"}:
+                job["worker_timeout_seconds"] = local_timeout_seconds if local_timeout_seconds is not None else minutes * 60
+                job["training_device"] = training_device
             if owner is not None:
                 job["_campaign_owner"] = owner
                 job["_execution"] = {"cleanup_confirmed": None, "resources_ok": None,
@@ -890,6 +953,10 @@ class JobManager:
                 config["model_config"] = model_config
             else:
                 config["model_params"] = model_config["parameters"]
+        if "feature_config" in job and job["action"] != "automl":
+            config["feature_config"] = validate_feature_config(job["feature_config"])
+        if job["action"] != "automl":
+            config["training_device"] = job.get("training_device", "cpu")
         _write_json(folder / "config.json", config, self.state_root)
         return [sys.executable, "-u", str(ROOT / "app" / "worker.py"), "--config", str(folder / "config.json")]
 
@@ -1049,7 +1116,9 @@ class JobManager:
                 raise InterruptedError("Запуск остановлен пользователем.")
             command = self._command(job, task_path, minutes)
             environment = _job_environment(settings)
-            timeout = PREPARE_TIMEOUT if job["action"] == "prepare" else minutes * 60 + 30 if job["action"] in {"agent", "automl"} else LOCAL_TIMEOUT
+            if job.get("training_device") == "gpu":
+                environment["CUDA_VISIBLE_DEVICES"] = "0"
+            timeout = _execution_timeout(job, minutes)
             stage = {"prepare": "downloading", "agent": "research"}.get(job["action"], "training")
             with (folder / "stdout.txt").open("xb") as stdout, (folder / "stderr.txt").open("xb") as stderr:
                 with self._lock:
@@ -1102,7 +1171,7 @@ class JobManager:
                     if evidence is not None:
                         current = evidence.get("stage")
                         updates = {}
-                        if current in {"training", "validating", "refitting", "finished"} and current != job["stage"]:
+                        if current in {"training", "validating", "refitting", "saving_model", "finished"} and current != job["stage"]:
                             updates["stage"] = current
                         if job["action"] == "automl" and "search" in evidence:
                             search = validate_search_summary(evidence["search"], allow_running=True)
@@ -1195,12 +1264,45 @@ class JobManager:
             reported_config = validate_model_config(evidence.get("model_config"), action=job["action"])
             if reported_config != requested_config or evidence["model"] != reported_config["model"]:
                 raise ValueError("Параметры обученной модели не совпадают с настройками запуска.")
+        if job["action"] != "automl":
+            from agent.features import normalize_feature_config
+            expected_features = normalize_feature_config(job.get("feature_config"))
+            reported_features = normalize_feature_config(evidence.get("feature_config"))
+            if expected_features != reported_features:
+                raise ValueError("Обработка признаков не совпадает с настройками запуска.")
+            if "feature_config" in evidence:
+                job["feature_config"] = validate_feature_config(evidence["feature_config"])
+            requested_device = job.get("training_device", "cpu")
+            if evidence.get("training_device", "cpu") != requested_device:
+                raise ValueError("Устройство обучения не совпадает с настройками запуска.")
+            if "training_device_evidence" in evidence:
+                from app.training_devices import validate_training_device_evidence
+                job["training_device_evidence"] = validate_training_device_evidence(
+                    evidence["training_device_evidence"], training_device=requested_device, require_fit=True)
+            elif requested_device == "gpu":
+                raise ValueError("Нет подтверждения обучения на GPU.")
         expected_key = hashlib.sha256(json.dumps({
             "dataset_fingerprint": job["dataset_fingerprint"], "metric": metric["name"],
             "higher_is_better": metric["higher_is_better"], "split": split,
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
         if evidence["comparison_key"] != expected_key:
             raise ValueError("Отпечаток сравнения не соответствует данным и проверочным строкам.")
+        if "model_artifact" in evidence:
+            from app.model_artifacts import validate_artifact_summary, artifact_download_path
+            descriptor = validate_artifact_summary(evidence["model_artifact"])
+            if descriptor["available"]:
+                artifact_download_path(folder, "model")
+                manifest_path = folder / descriptor["manifest_filename"]
+                manifest = _json(manifest_path, self.state_root)
+                if (manifest.get("artifact") != descriptor or manifest.get("dataset_fingerprint") != job["dataset_fingerprint"]
+                        or manifest.get("comparison_key") != expected_key
+                        or manifest.get("recipe", {}).get("model_config") != evidence.get("model_config")
+                        or manifest.get("recipe", {}).get("feature_config") != evidence.get("feature_config")
+                        or manifest.get("recipe", {}).get("training_device") != job.get("training_device", "cpu")):
+                    raise ValueError("Сохранённая модель не соответствует обучению этого запуска.")
+                job["_model_manifest_sha256"] = self._file_hash(manifest_path)
+                job["_model_recipe_sha256"] = self._file_hash(folder / descriptor["recipe_filename"])
+            job["model_artifact"] = descriptor
         if job["action"] == "automl":
             reported_config = validate_model_config(evidence.get("model_config"))
             if evidence["model"] != reported_config["model"]:
@@ -1445,6 +1547,25 @@ class JobManager:
             if self._file_hash(path) != job.get("_output_sha256"):
                 raise ValueError("CSV был изменён после завершения запуска. Запустите эксперимент заново.")
             self.diagnostics_for(task_id, job_id)
+            return path
+
+    def model_artifact(self, task_id, job_id, kind="model"):
+        from app.model_artifacts import artifact_download_path, validate_artifact_summary
+        with self._lock:
+            job = self._job(task_id, job_id)
+            if job["status"] != "completed" or job["source"] != "local" or job["action"] not in OFFLINE_ACTIONS:
+                raise ValueError("Модель доступна только у завершённого локального обучения.")
+            summary = validate_artifact_summary(job.get("model_artifact"))
+            if not summary["available"]:
+                raise ValueError("Обученная модель этого запуска не сохранена.")
+            folder = _safe(self.jobs_root / job_id, self.state_root, required=True, directory=True)
+            path = artifact_download_path(folder, kind)
+            for name, key in ((summary["manifest_filename"], "_model_manifest_sha256"),
+                              (summary["recipe_filename"], "_model_recipe_sha256")):
+                if self._file_hash(folder / name) != job.get(key):
+                    raise ValueError("Описание сохранённой модели изменилось после завершения запуска.")
+            if kind == "model" and self._file_hash(path) != summary["sha256"]:
+                raise ValueError("Обученная модель была изменена после завершения запуска.")
             return path
 
     def publish(self, task_id, job_id):

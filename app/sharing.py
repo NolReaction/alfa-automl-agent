@@ -202,10 +202,24 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         from app.model_config import winner_feature_evidence
         result.update(winner_feature_evidence(raw, search))
     if "feature_config" in raw or "component_feature_configs" in raw:
-        from app.model_config import winner_feature_evidence
-        if raw["action"] != "automl" or "search" not in result:
-            raise ValueError("Настройки признаков доступны только с отчётом автоподбора.")
-        result.update(winner_feature_evidence(raw, result["search"]))
+        from app.model_config import winner_feature_evidence, validate_feature_config
+        if raw["action"] == "automl" and "search" in result:
+            result.update(winner_feature_evidence(raw, result["search"]))
+        elif raw["action"] in {"baseline", "extra_trees", "catboost", "lightgbm", "linear"} and "component_feature_configs" not in raw:
+            result["feature_config"] = validate_feature_config(raw["feature_config"])
+        else:
+            raise ValueError("Настройки признаков доступны только для локального обучения.")
+    if "training_device" in raw:
+        from app.training_devices import normalize_training_device, validate_training_device_evidence
+        if raw["action"] not in {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"}:
+            raise ValueError("Устройство обучения доступно только для локальных моделей.")
+        result["training_device"] = normalize_training_device(raw["training_device"], action=raw["action"])
+        if "training_device_evidence" in raw:
+            result["training_device_evidence"] = validate_training_device_evidence(
+                raw["training_device_evidence"], training_device=result["training_device"],
+                require_fit=raw["status"] == "completed")
+        elif result["training_device"] == "gpu" and raw["status"] == "completed":
+            raise ValueError("Нет подтверждения обучения на GPU.")
     if (raw["action"] == "automl" and raw["status"] == "completed"
             and ("search" not in result or "model_config" not in result or result["metric"] is None)):
         raise ValueError("У завершённого автоподбора нужны попытки, параметры победителя и метрика.")

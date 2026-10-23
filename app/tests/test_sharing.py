@@ -69,6 +69,18 @@ def classification_job(**changes):
 
 
 class SharingTests(unittest.TestCase):
+    def test_fixed_recipe_keeps_feature_processing_but_no_executable_model_artifact(self):
+        from agent.features import normalize_feature_config
+        features = normalize_feature_config({"signed_log": True, "missing_indicators": True})
+        original = job(feature_config=features, training_device="cpu",
+                       model_artifact={"available": True, "filename": "untrusted.joblib"})
+        report = self.envelope(original)["reports"][0]
+        self.assertEqual(report["feature_config"], features)
+        self.assertEqual(report["training_device"], "cpu")
+        self.assertNotIn("model_artifact", report)
+        self.assertEqual(self.store.import_reports("regression", FINGERPRINT, self.envelope(original)),
+                         {"imported": 1, "skipped": 0})
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)

@@ -32,6 +32,7 @@ class FakeJobs:
         self.outcomes = []
         self.complete_hook = None
         self.raise_after_launch = False
+        self.saved = {}
 
     def active_job(self):
         return deepcopy(self.active)
@@ -42,22 +43,36 @@ class FakeJobs:
         if pair in self.owners:
             return deepcopy(self.owners[pair]["job"])
         identifier = f"{len(self.calls) + 1:032x}"
-        split = {"seed": 1729, "validation_fraction": .2, "stratified": False,
-                 "validation_rows": 12, "validation_hash": "c" * 64, "strategy": "random"}
+        spec = campaigns.load_task(self.catalog.resolve(task_id) / "task.md")
+        train, test, _, id_column, target, y, features, numeric, _, classification = campaigns.load_task_data(spec)
+        validation, _ = campaigns.choose_validation(train, test, features, numeric, classification, kwargs.get("validation"))
+        _, held, split = campaigns.split_rows(train, y, features, classification, validation)
+        split["validation_hash"] = campaigns._hash({"id_column": id_column, "target_column": target,
+            "ids": train[id_column].iloc[held].tolist(), "actuals": train[target].iloc[held].tolist()})
         fingerprint = self.catalog.fingerprint(task_id)
-        metric = {"name": "RMSE", "value": 3 + len(self.calls), "higher_is_better": False}
+        metric = {"name": spec.metric.name, "value": 3 + len(self.calls), "higher_is_better": spec.metric.higher_is_better}
         key = campaigns._hash({"dataset_fingerprint": fingerprint, "metric": metric["name"],
-                              "higher_is_better": False, "split": split})
+                              "higher_is_better": metric["higher_is_better"], "split": split})
         job = {"id": identifier, "task_id": task_id, "action": action, "status": "running", "stage": "training",
                "source": "local", "output_valid": True, "metric": metric, "split": split,
                "dataset_fingerprint": fingerprint, "comparison_key": key, "model": action,
                "elapsed_seconds": 1, "error": None}
+        if "model_config" in kwargs:
+            job.update(model_config=deepcopy(kwargs["model_config"]), model=kwargs["model_config"]["model"])
+        if "feature_config" in kwargs:
+            job["feature_config"] = deepcopy(kwargs["feature_config"])
         self.owners[pair] = {"job": job, "cleanup_confirmed": True, "resources_ok": True}
         self.calls.append((task_id, action, deepcopy(kwargs)))
         self.active = deepcopy(job)
         if self.raise_after_launch:
             raise OSError("crash after durable owner commit")
         return deepcopy(job)
+
+    def detail(self, task_id, job_id):
+        job = self.saved.get(job_id)
+        if job is None or job.get("task_id") != task_id:
+            raise ValueError("Запуск не найден.")
+        return {"job": deepcopy(job)}
 
     def campaign_job(self, campaign_id, step_id):
         capsule = self.owners.get((campaign_id, step_id))
@@ -142,7 +157,7 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(models["worker_upper_bound_seconds"], 10 * campaigns.LOCAL_TIMEOUT)
         fixed = self.body(count=1)
         fixed["steps"][0].update(action="baseline", minutes=1)
-        self.assertEqual(self.manager.preview(fixed)["steps"][0]["worker_timeout_seconds"], 1800)
+        self.assertEqual(self.manager.preview(fixed)["steps"][0]["worker_timeout_seconds"], 60)
         self.assertEqual(self.jobs.calls, [])
 
     def test_invalid_payload_and_stale_preview_never_launch(self):
@@ -460,6 +475,129 @@ class CampaignTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "истёк"):
             self.manager.resume(identifier)
         self.assertEqual(self.jobs.calls, [])
+
+    def save_lightgbm_source(self, *, count=500, action="lightgbm"):
+        identifier = "f" * 32
+        validation, task_type, split, metric, higher = self.manager._validation("regression", None)
+        config = campaigns.make_model_config("lightgbm", task_type, {"n_estimators": count},
+                                            objective="mae", target_transform="log1p")
+        features = campaigns.normalize_feature_config({"missing_indicators": True, "rare_min_count": 5,
+                                                       "signed_log": True})
+        fingerprint = self.catalog.fingerprint("regression")
+        self.jobs.saved[identifier] = {"id": identifier, "task_id": "regression", "status": "completed",
+            "source": "local", "output_valid": True, "action": action, "model": config["model"],
+            "model_config": config, "feature_config": features, "validation": validation,
+            "split": split, "dataset_fingerprint": fingerprint,
+            "comparison_key": campaigns._hash({"dataset_fingerprint": fingerprint, "metric": metric,
+                "higher_is_better": higher, "split": split})}
+        return identifier
+
+    def test_lightgbm_tree_study_freezes_single_variable_and_real_limits(self):
+        preview = self.manager.preview({"preset": "lightgbm_trees", "task_ids": ["classification"],
+                                        "minutes_per_step": 2})
+        self.assertTrue(preview["ready"], preview)
+        steps = preview["steps"]
+        self.assertEqual([step["model_params"]["n_estimators"] for step in steps], [500, 750, 1000])
+        self.assertEqual([step["is_control"] for step in steps], [True, False, False])
+        self.assertEqual([step["worker_timeout_seconds"] for step in steps], [120] * 3)
+        for key in ("comparison_key", "split", "feature_config", "validation"):
+            self.assertEqual(steps[0][key], steps[1][key])
+            self.assertEqual(steps[0][key], steps[2][key])
+        params = [{key: value for key, value in step["model_params"].items() if key != "n_estimators"}
+                  for step in steps]
+        self.assertEqual(params, [params[0]] * 3)
+        self.assertEqual(preview["worker_upper_bound_seconds"], 360)
+        self.assertEqual(preview["experiment"]["scope"], "local_recipe_study")
+        self.assertFalse(self.manager.preview({"preset": "lightgbm_trees",
+                                              "task_ids": ["regression", "classification"]})["ready"])
+        self.assertEqual(self.jobs.calls, [])
+
+    def test_source_recipe_replays_objective_transform_features_and_exact_split(self):
+        source = self.save_lightgbm_source(action="automl")
+        body = {"preset": "lightgbm_trees", "task_ids": ["regression"], "source_job_id": source,
+                "minutes_per_step": 1, "max_hours": 1}
+        preview = self.manager.preview(body)
+        self.assertTrue(preview["ready"], preview)
+        original = self.jobs.saved[source]
+        for step in preview["steps"]:
+            self.assertEqual(step["feature_config"], original["feature_config"])
+            self.assertEqual(step["model_config"]["objective"], "mae")
+            self.assertEqual(step["model_config"]["target_transform"], "log1p")
+            self.assertEqual(step["split"], original["split"])
+            self.assertEqual(step["comparison_key"], original["comparison_key"])
+        identifier, active = self.queued(body)
+        detail = self.run_queue(identifier, active)
+        self.assertEqual(detail["status"], "completed", detail)
+        self.assertTrue(all(step["admissible"] for step in detail["steps"]))
+        for _, action, options in self.jobs.calls:
+            self.assertEqual(action, "lightgbm")
+            self.assertNotIn("model_params", options)
+            self.assertEqual(options["model_config"]["target_transform"], "log1p")
+            self.assertEqual(options["feature_config"], original["feature_config"])
+            self.assertEqual(options["local_timeout_seconds"], 60)
+        comparison, = detail["comparisons"]
+        self.assertEqual(comparison["control_job_id"], detail["steps"][0]["job_id"])
+        self.assertTrue(comparison["comparison_available"])
+
+    def test_source_drift_unknown_features_or_non_lightgbm_are_rejected_before_training(self):
+        changes = [lambda job: job.update(status="failed"), lambda job: job.update(source="imported"),
+            lambda job: job.update(dataset_fingerprint="0" * 64), lambda job: job.update(output_valid=False),
+            lambda job: job.update(model="FixedBlend"), lambda job: job.update(comparison_key="0" * 64),
+            lambda job: job["split"].update(validation_hash="0" * 64),
+            lambda job: job.update(model_config=campaigns.make_model_config("catboost", "regression")),
+            lambda job: (job.update(action="automl"), job.pop("feature_config"))]
+        for change in changes:
+            source = self.save_lightgbm_source()
+            change(self.jobs.saved[source])
+            body = {"preset": "lightgbm_trees", "task_ids": ["regression"], "source_job_id": source}
+            with self.subTest(change=change):
+                self.assertFalse(self.manager.preview(body)["ready"])
+        self.assertEqual(self.jobs.calls, [])
+
+    def test_source_count_scales_and_caps_without_duplicate_fits(self):
+        source = self.save_lightgbm_source(count=1500)
+        body = {"preset": "lightgbm_trees", "task_ids": ["regression"], "source_job_id": source}
+        preview = self.manager.preview(body)
+        self.assertTrue(preview["ready"], preview)
+        self.assertEqual(preview["experiment"]["counts"], [1500, 2000])
+        self.save_lightgbm_source(count=2000)
+        self.assertFalse(self.manager.preview(body)["ready"])
+
+    def test_failed_declared_control_never_becomes_a_different_control(self):
+        from app.campaign_reports import build_campaign_report, report_bytes
+        self.jobs.outcomes = [{"status": "failed"}, {}, {}]
+        identifier, active = self.queued({"preset": "lightgbm_trees", "task_ids": ["regression"],
+                                          "minutes_per_step": 1, "max_hours": 1})
+        detail = self.run_queue(identifier, active)
+        self.assertEqual(detail["status"], "completed")
+        comparison, = detail["comparisons"]
+        self.assertFalse(comparison["comparison_available"])
+        self.assertIsNone(comparison["control_job_id"])
+        self.assertIsNone(comparison["gain"])
+        self.assertTrue(all(row["improvement"] is None for row in comparison["jobs"]))
+        report = build_campaign_report(detail)
+        group, = report["groups"]
+        self.assertFalse(group["comparison_available"])
+        self.assertEqual(group["comparison_reason"], "control_not_admitted")
+        self.assertIsNone(group["control"])
+        self.assertIsNone(group["gain"])
+        self.assertTrue(report_bytes(report, "zip"))
+
+    def test_legacy_plan_restores_original_fixed_timeout(self):
+        identifier, _ = self.queued(self.body(steps=[{"task_id": "regression", "action": "linear", "minutes": 1}]))
+        record = deepcopy(self.manager._records[identifier])
+        record.pop("execution_policy")
+        for step in record["steps"]:
+            for key in campaigns.OPTIONAL_STEP_KEYS:
+                step.pop(key, None)
+            step["worker_timeout_seconds"] = campaigns.LOCAL_TIMEOUT
+        record["worker_upper_bound_seconds"] = campaigns.LOCAL_TIMEOUT
+        record["plan_sha256"] = campaigns._plan_hash(record)
+        self.manager._validate_stored(record, identifier)
+        record["execution_policy"] = "per_step_minutes_v1"
+        record["plan_sha256"] = campaigns._plan_hash(record)
+        with self.assertRaisesRegex(ValueError, "лимиты"):
+            self.manager._validate_stored(record, identifier)
 
 
 if __name__ == "__main__":

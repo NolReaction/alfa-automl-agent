@@ -4560,3 +4560,45 @@ meter.system-meter::-moz-meter-bar { background: var(--red); border-radius: 8px;
 .campaign-step-editor .campaign-step-list { margin-top:3px; }
 @media(max-width:650px) { .campaign-draft-summary { align-items:flex-start; flex-direction:column; gap:7px; padding:14px; } .campaign-step-editor { padding-left:10px; padding-right:10px; } }
 .campaign-seals { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:14px; color:var(--muted); font-size:11px; }
+
+
+/* Training studies: explicit controls, complete recipes and reusable local artifacts. */
+.training-study-setup { margin: 22px 0; padding: 20px; border: 1px solid #dbe4ed; border-radius: 10px; background: #f7f9fc; }
+.training-study-setup h3, .training-study-plan h3 { font-size: 15px; color: var(--ink); margin: 0 0 7px; }
+.training-study-setup > div > p, .training-study-plan > p { font-size: 12px; color: var(--muted); line-height: 1.7; }
+.training-study-setup .form-grid { margin-top: 18px; }
+.training-study-setup .form-field, .training-device-picker .form-field { min-width: 0; }
+.training-study-setup select, .training-device-picker select { width: 100%; min-width: 0; }
+.training-study-plan { margin: 20px 0; padding: 18px 0; border-top: 1px solid #dce9e2; border-bottom: 1px solid #dce9e2; }
+.training-study-plan table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 12px; }
+.training-study-plan th, .training-study-plan td { padding: 13px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #dce9e2; }
+.training-study-plan tbody th { max-width: 230px; font-weight: 550; }
+.training-study-plan .badge, .campaign-comparison td .badge { margin-top: 7px; display: table; }
+.training-study-plan .model-parameters { margin-top: 9px; }
+.training-study-plan .model-parameters dl { max-width: 320px; }
+.training-comparison-summary { display: flex; align-items: baseline; gap: 12px; padding: 14px 17px; margin: 15px 0; border: 1px solid #d9e9df; border-radius: 9px; background: #f6fbf8; }
+.training-comparison-summary strong { font-size: 22px; font-variant-numeric: tabular-nums; color: #276b51; }
+.training-comparison-summary span { font-size: 12px; color: var(--muted); }
+.training-control-row { background: #f5f7fa; }
+.training-gain { color: #267653; font-weight: 600; }
+.training-loss { color: #b2222b; }
+.trained-model-panel { margin: 22px 0; padding: 21px; border: 1px solid #d9e6de; border-radius: 10px; background: #f8fbf9; }
+.training-artifact-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.trained-model-panel h3 { font-size: 15px; margin: 0 0 7px; }
+.trained-model-panel p { font-size: 12px; line-height: 1.7; color: var(--muted); margin: 8px 0; }
+.trained-model-panel .action-buttons { margin: 16px 0; flex-wrap: wrap; }
+.trained-model-panel details { font-size: 11px; color: var(--muted); margin-top: 15px; }
+.trained-model-panel summary { cursor: pointer; }
+.trained-model-panel code { overflow-wrap: anywhere; white-space: normal; }
+.training-device-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin: 20px 0; padding: 16px; border: 1px solid var(--border); border-radius: 9px; background: #f8f9fc; }
+.training-device-picker > p { grid-column: 1 / -1; margin: 0; }
+.training-device-picker > button { min-height: 39px; }
+.training-device-result { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 18px 0; font-size: 12px; }
+.training-device-result > p { flex-basis: 100%; margin: 0; color: var(--muted); line-height: 1.7; }
+@media (max-width: 650px) {
+  .training-study-setup, .trained-model-panel { padding: 16px; }
+  .training-artifact-heading, .training-comparison-summary { flex-direction: column; gap: 7px; }
+  .training-device-picker { grid-template-columns: minmax(0, 1fr); }
+  .training-device-picker > button { justify-self: start; }
+  .trained-model-panel .button { width: 100%; justify-content: center; }
+}
