@@ -2337,14 +2337,16 @@ function searchStages(job, search, candidates = []) {
     labels = ["Быстрый результат", "Поиск", "Проверка", "Финальное обучение"];
   return `<ol class="search-stages" aria-label="Этапы автоподбора">${labels.map((label, index) => {
     const complete = finished || index < current,
-      active = !finished && index === current && runningJob(job);
+      active = !finished && index === current && runningJob(job) && job.status !== "cleanup_pending";
     return `<li class="${complete ? "complete" : active ? "active" : ""}" ${active ? 'aria-current="step"' : ""}><span class="search-step-number" aria-hidden="true">${complete ? icon("check") : index + 1}</span><span>${label}<small>${complete ? "Завершён" : active ? "Сейчас" : ""}</small></span></li>`;
   }).join("")}</ol>`;
 }
 function autoSearchView(job) {
   if (job?.action !== "automl") return "";
-  const search = job.search;
-  if (!search || !Array.isArray(search.candidates)) return runningJob(job)
+  const search = job.search, cleanupPending = job.status === "cleanup_pending";
+  if (!search || !Array.isArray(search.candidates)) return cleanupPending
+    ? '<section class="search-summary"><div class="search-heading"><h3>Остановка автоподбора требует проверки</h3><span class="badge">Без API</span></div><p>Завершение процесса ещё не подтверждено. Повторите остановку.</p></section>'
+    : runningJob(job)
     ? `<section class="search-summary"><div class="search-heading"><h3>Подготавливаем автоподбор</h3><span class="badge">Без API</span></div>${searchStages(job)}<p>Выбираем проверку и готовим стартовую модель.</p></section>` : "";
   // Match the bounded plan accepted by app/search_summary.py, including metric recipes.
   const candidates = search.candidates.slice(0, 22),
@@ -2355,7 +2357,8 @@ function autoSearchView(job) {
     expanded = candidates.some((row) => Object.hasOwn(row, "selection_metric")),
     finished = job.status === "completed" && job.output_valid === true,
     best = candidates.find((row) => row.id === search.best_candidate && row.status === "completed" && row.selected === true && Number.isFinite(row.metric)),
-    status = search.status === "fallback" && finished && best
+    status = cleanupPending ? "Остановка автоподбора требует проверки"
+      : search.status === "fallback" && finished && best
       ? "Поиск прерван; сохранён проверенный результат"
       : search.status === "time_limit" && finished && best
       ? "Лимит времени · лучший сохранён"
@@ -2741,6 +2744,7 @@ async function stopJob() {
       await loadJobsPage(state.generation, true);
   } catch (error) {
     toast(error.message);
+  } finally {
     if (button?.isConnected) button.disabled = false;
   }
 }

@@ -138,6 +138,29 @@ async function main() {
     await get("loadJobDetail")(id);
     assert.match(element("#job-detail").innerHTML, /data-action="stop-job">Повторить остановку/);
     assert.equal(state.jobDetail.job.status, "cleanup_pending");
+    const unchangedDetail = state.jobDetail;
+    const button = element('[data-action="stop-job"]'); button.disabled = false;
+    responder = (url) => url.startsWith("/api/jobs?") ? {jobs: [job]}
+      : url.endsWith("/profile") ? {id: "reg", model_options: {}}
+      : unchangedDetail;
+    await get("stopJob")();
+    assert.equal(state.jobDetail, unchangedDetail, "Quiet refresh retained the exact same JSON without re-rendering the button");
+    assert.equal(button.disabled, false, "A resolved stop that still cannot confirm cleanup must allow another explicit retry");
+    const stopRequest = calls.find((call) => call.url.endsWith("/stop"));
+    assert.equal(stopRequest.options.method, "POST");
+    assert.deepEqual(JSON.parse(stopRequest.options.body), {task_id: "reg"});
+  } else if (which === "automl_cleanup") {
+    campaignSetup();
+    const job = {action: "automl", status: "cleanup_pending", stage: "cleanup"};
+    assert.equal(get("runningJob")(job), true, "Cleanup still reserves the execution lane");
+    for (const search of [undefined, {phase: "seed", status: "running", candidates: [], planned: 3}]) {
+      const html = get("autoSearchView")({...job, search});
+      assert.match(html, /Остановка автоподбора требует проверки/);
+      assert.doesNotMatch(html, /Подготавливаем автоподбор|Подбираем модель|Сейчас|aria-current="step"/);
+    }
+    assert.doesNotMatch(get("searchStages")(job, {phase: "verification"}), /Сейчас|aria-current="step"/);
+    assert.match(get("autoSearchView")({...job, status: "running"}), /Подготавливаем автоподбор/,
+      "The genuine startup state retains its existing progress display");
   } else if (which === "interrupted_resume") {
     campaignSetup();
     const campaign = {id, status: "interrupted", deadline_at: "2026-10-24T08:00:00Z", steps: [
@@ -216,7 +239,7 @@ main().catch((error) => {console.error(error.stack || error); process.exitCode =
 class WorkbenchFrontendTests(unittest.TestCase):
     def test_workbench_behavior_and_boundaries(self):
         for case in ("presets_payload", "draft_validation", "edit_invalidates", "frozen_start", "stale_preview",
-                     "preview_failure", "paused_lane", "controls", "ordinary_cleanup", "interrupted_resume", "comparison_scope", "telemetry",
+                     "preview_failure", "paused_lane", "controls", "ordinary_cleanup", "automl_cleanup", "interrupted_resume", "comparison_scope", "telemetry",
                      "stale_detail", "poll_scope", "overview_empty"):
             with self.subTest(case=case):
                 result = subprocess.run([NODE, "-e", SCRIPT, str(ROOT / "app/static/app.js"), case],
