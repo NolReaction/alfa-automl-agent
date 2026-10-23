@@ -7,13 +7,42 @@ from app.model_config import model_options, validate_model_config, feature_evide
 
 _ID = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
 _BASE = {"status", "planned", "completed", "best_candidate", "validation_reason", "candidates"}
-_OPTIONAL = {"phase", "selection_completed", "verified"}
+_OPTIONAL = {"phase", "selection_completed", "verified", "controller"}
 _ROW = {"id", "label", "model", "status", "metric", "selected", "elapsed_seconds", "error"}
 _ROW_OPTIONAL = {"phase", "model_config", "selection_metric", "verification_metric", "rejection_reason", "resources", "durations", "feature_config", "component_feature_configs"}
 _PHASES = {"seed", "selection", "verification", "refit", "blend", "finished"}
 _REASONS = {"timeout", "memory_limit", "execution_failed", "invalid_evidence", "not_selected", "not_improved", "insufficient_budget", "refit_failed", "optional_dependency_unavailable"}
-# Bounded full plan: seed + 8 exploration + 6 metric-aware + 6 refinement + blend.
-MAX_SEARCH_CANDIDATES = 22
+# Seed, bounded warmup/metric recipes, up to 512 adaptive proposals and a blend.
+MAX_SEARCH_CANDIDATES = 528
+SEARCH_STRATEGIES = {"adaptive", "legacy"}
+
+
+def normalize_search_strategy(value=None, *, action="automl"):
+    if action != "automl":
+        if value is not None:
+            raise ValueError("Стратегия поиска доступна только для автоподбора.")
+        return None
+    if value is None:
+        return "adaptive"
+    if not isinstance(value, str) or value not in SEARCH_STRATEGIES:
+        raise ValueError("Выберите адаптивный поиск или фиксированный набор рецептов.")
+    return value
+
+
+def _controller(raw):
+    fields = {"strategy", "max_trials", "proposed", "observed", "stop_reason", "optimizer", "resumable"}
+    reasons = {None, "selection_budget", "trial_limit", "families_exhausted", "search_exhausted",
+               "inner_unavailable", "interrupted"}
+    if (not isinstance(raw, dict) or set(raw) != fields or raw["strategy"] != "adaptive"
+            or type(raw["max_trials"]) is not int or not 1 <= raw["max_trials"] <= 512
+            or any(type(raw[key]) is not int for key in ("proposed", "observed"))
+            or not 0 <= raw["observed"] <= raw["proposed"] <= raw["max_trials"]
+            or not isinstance(raw["stop_reason"], (str, type(None))) or raw["stop_reason"] not in reasons
+            or not isinstance(raw["optimizer"], str)
+            or raw["optimizer"] not in {"pending", "optuna_tpe", "deterministic_random"}
+            or raw["resumable"] is not False):
+        raise ValueError("Некорректный отчёт адаптивного поиска.")
+    return dict(raw)
 
 
 def _text(value, field, limit, *, empty=False):
@@ -57,9 +86,12 @@ def validate_search_summary(raw, *, metric=None, model=None, allow_running=False
     statuses = {"completed", "time_limit", "fallback"} | ({"running", "failed"} if allow_running else set())
     if not isinstance(raw["status"], str) or raw["status"] not in statuses:
         raise ValueError("Некорректный статус автоподбора.")
-    if type(raw["planned"]) is not int or not 1 <= raw["planned"] <= MAX_SEARCH_CANDIDATES or type(raw["completed"]) is not int or not 0 <= raw["completed"] <= raw["planned"]:
+    candidate_limit = MAX_SEARCH_CANDIDATES if "controller" in raw else 22
+    if type(raw["planned"]) is not int or not 1 <= raw["planned"] <= candidate_limit or type(raw["completed"]) is not int or not 0 <= raw["completed"] <= raw["planned"]:
         raise ValueError("Некорректное число попыток автоподбора.")
     result = {key: raw[key] for key in _BASE - {"candidates"}}
+    if "controller" in raw:
+        result["controller"] = _controller(raw["controller"])
     result["validation_reason"] = _text(raw["validation_reason"], "validation_reason", 2000, empty=True)
     if "phase" in raw:
         if not isinstance(raw["phase"], str) or raw["phase"] not in _PHASES:
@@ -68,7 +100,7 @@ def validate_search_summary(raw, *, metric=None, model=None, allow_running=False
     rows = raw["candidates"]
     if not isinstance(rows, list) or len(rows) > raw["planned"]:
         raise ValueError("Некорректный список попыток автоподбора.")
-    models = {option["model"] for task in ("regression", "classification") for option in model_options(task).values()} | {"FixedBlend"}
+    models = {option["model"] for task in ("regression", "classification") for option in model_options(task).values()} | {"FixedBlend", "WeightedBlend"}
     statuses = {"completed", "failed", "timed_out", "skipped"} | ({"running", "pending"} if allow_running else set())
     copied, identifiers, selected = [], set(), []
     for row in rows:
@@ -142,7 +174,7 @@ def validate_search_summary(raw, *, metric=None, model=None, allow_running=False
             eligible = (row for row in copied
                         if row["status"] == "completed" and row["metric"] is not None
                         and row.get("rejection_reason") not in {"refit_failed", "invalid_evidence", "insufficient_budget"}
-                        and not (row["model"] == "FixedBlend"
+                        and not (row["model"] in {"FixedBlend", "WeightedBlend"}
                                  and row.get("rejection_reason") == "not_improved"))
             if any(row["metric"] > winner["metric"] if metric["higher_is_better"]
                    else row["metric"] < winner["metric"] for row in eligible):

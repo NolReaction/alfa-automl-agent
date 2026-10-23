@@ -202,12 +202,13 @@ class SharingTests(unittest.TestCase):
         imported, = self.store.list("classification")
         self.assertEqual(imported["classification_diagnostics"], diagnostics)
         with patch.object(sharing, "MAX_BYTES", 100):
-            with self.assertRaisesRegex(ValueError, "1 МБ"):
+            with self.assertRaisesRegex(ValueError, "МБ"):
                 self.envelope(original)
         with patch.object(sharing, "MAX_RECORD_BYTES", 1024):
             with self.assertRaisesRegex(ValueError, "КБ"):
                 self.envelope(original)
 
+    @patch("app.sharing.MAX_BYTES", 1024 * 1024)
     def test_many_full_class_matrices_roundtrip_near_the_envelope_byte_limit(self):
         from agent.diagnostics import classification_diagnostics
         from app import sharing
@@ -235,7 +236,7 @@ class SharingTests(unittest.TestCase):
                          sorted(envelope["reports"], key=lambda row: row["id"]))
         self.assertEqual(self.store.import_reports("classification", FINGERPRINT, reexported),
                          {"imported": 0, "skipped": count})
-        with self.assertRaisesRegex(ValueError, "1 МБ"):
+        with self.assertRaisesRegex(ValueError, "МБ"):
             self.store.export("classification", FINGERPRINT, jobs + [{**original, "id": f"{count:032x}"}])
 
     def test_automl_candidates_and_winner_survive_exchange_without_machine_diagnostics(self):
@@ -683,7 +684,7 @@ class SharingTests(unittest.TestCase):
         alterations = [
             {"format": "pickle"}, {"version": True}, {"version": 2},
             {"reports": "not-list"}, {"created_at": []},
-            {"reports": [job()] * 201}, {"unused": "x" * (1024 * 1024)},
+            {"reports": [job()] * 201}, {"unused": "x" * (8 * 1024 * 1024)},
             {"unused": 10**100}, {"unused": float("nan")},
         ]
         for alteration in alterations:

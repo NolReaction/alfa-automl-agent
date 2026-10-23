@@ -14,8 +14,10 @@ import numpy as np
 from threadpoolctl import threadpool_limits
 
 from agent.models import build_pipeline
+from agent.model_config import validate_model_config
 from agent.search import align_predictions, fixed_blend, metric_predictions
 from agent.task_spec import TaskSpec, load_task_data
+from agent.weighted_ensemble import apply_weighted_ensemble
 
 
 def run_candidate(config_path: Path) -> None:
@@ -29,6 +31,15 @@ def run_candidate(config_path: Path) -> None:
     phase = config["phase"]
     if phase not in {"seed", "selection", "verification", "refit"}:
         raise ValueError("Unknown AutoML worker phase")
+    components = config.get("components")
+    if components is not None:
+        checked = validate_model_config(config["model_config"])
+        declared = checked["parameters"].get("components")
+        if (phase != "refit" or checked["model"] not in {"FixedBlend", "WeightedBlend"}
+                or not isinstance(components, list) or len(components) != len(declared)
+                or any(not isinstance(item, dict) or item.get("model_config") != model
+                       for item, model in zip(components, declared))):
+            raise ValueError("Blend refit components must match the frozen ensemble recipe")
     started = time.monotonic()
     durations = {"fit_seconds": 0.0, "predict_seconds": 0.0, "total_seconds": 0.0}
 
@@ -59,13 +70,12 @@ def run_candidate(config_path: Path) -> None:
                                 classes=np.asarray(spec.classes, dtype=str))
         if phase in {"seed", "refit"}:
             print(f"{phase}: refitting on all {len(train)} rows", flush=True)
-            components = config.get("components")
             if components is not None:
-                if phase != "refit" or len(components) != 2 or config["model_config"]["parameters"]["weight"] != 0.5:
-                    raise ValueError("Only the fixed two-component 50/50 blend is supported")
-                left = fit_predict(components[0], x, y, test_x)
-                right = fit_predict(components[1], x, y, test_x)
-                raw = fixed_blend(spec, left, right, left_classes=spec.classes, right_classes=spec.classes)
+                predictions = [fit_predict(item, x, y, test_x) for item in components]
+                if checked["model"] == "FixedBlend":
+                    raw = fixed_blend(spec, *predictions, left_classes=spec.classes, right_classes=spec.classes)
+                else:
+                    raw = apply_weighted_ensemble(spec, predictions, checked["parameters"]["weights"])
             else:
                 raw = fit_predict(config, x, y, test_x)
             spec.prediction_frame(test[id_column].tolist(), metric_predictions(spec, raw),

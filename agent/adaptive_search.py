@@ -73,6 +73,10 @@ class AdaptiveSearch:
     their quality is not silently mixed with this search's fidelity levels.
     """
 
+    # Native callers retain the original hard ceiling. A dedicated local host
+    # may raise this guard without changing contest search behavior.
+    MAX_TRIALS = MAX_TRIALS
+
     def __init__(self, classification: bool, metric_name: str, *, seed=42, max_trials=64):
         if type(classification) is not bool:
             raise ValueError("classification must be a boolean")
@@ -83,8 +87,8 @@ class AdaptiveSearch:
             raise ValueError("Adaptive task type differs from the declared metric")
         if type(seed) is not int or not 0 <= seed <= 2 ** 32 - 1:
             raise ValueError("seed must be an integer in [0, 2**32-1]")
-        if type(max_trials) is not int or not 1 <= max_trials <= MAX_TRIALS:
-            raise ValueError("max_trials must be an integer in [1, 96]")
+        if type(max_trials) is not int or not 1 <= max_trials <= self.MAX_TRIALS:
+            raise ValueError(f"max_trials must be an integer in [1, {self.MAX_TRIALS}]")
         self.classification = classification
         self.task_type = metric.task_type
         self.metric = metric

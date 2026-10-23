@@ -29,7 +29,7 @@ from app.splits import normalize_validation
 from app.model_config import (make_model_config, validate_model_config, model_task_type,
                               winner_feature_evidence, feature_evidence, validate_feature_config)
 from app.file_io import replace_file
-from app.search_summary import validate_search_summary
+from app.search_summary import validate_search_summary, normalize_search_strategy
 from app.research_summary import validate_research_summary
 from app.supervisor import process_inventory_matches
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
@@ -59,9 +59,9 @@ PUBLIC_FIELDS = {"id", "task_id", "action", "status", "stage", "author", "hypoth
                  "finished_at", "elapsed_seconds", "model", "metric", "comparison_key", "dataset_fingerprint",
                  "split", "error", "output_valid", "published", "source", "exit_code", "api_used",
                  "agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources",
-                 "model_artifact", "training_device", "training_device_evidence", "worker_timeout_seconds"}
+                 "model_artifact", "training_device", "training_device_evidence", "worker_timeout_seconds", "search_strategy"}
 REQUIRED_FIELDS = PUBLIC_FIELDS - {"agent_status", "agent_reason", "agent_run_id", "api", "published_at", "validation", "model_config", "search", "classification_diagnostics", "feature_config", "component_feature_configs", "research", "resources",
-                                  "model_artifact", "training_device", "training_device_evidence", "worker_timeout_seconds"}
+                                  "model_artifact", "training_device", "training_device_evidence", "worker_timeout_seconds", "search_strategy"}
 SPLIT_TEXT_FIELDS = {"time_column": 500, "train_period_min": 100, "train_period_max": 100,
                      "validation_period": 100}
 SPLIT_COUNT_FIELDS = {"group_count", "train_groups", "validation_groups", "group_overlap", "n_splits", "fold"}
@@ -459,7 +459,7 @@ class JobManager:
             if not JOB_ID.fullmatch(folder.name) or _linked(folder) or not folder.is_dir():
                 continue
             try:
-                job = _json(folder / "job.json", self.state_root, 256 * 1024)
+                job = _json(folder / "job.json", self.state_root, 2 * 1024 * 1024)
                 if not self._valid_stored_job(job, folder.name):
                     continue
                 job = {key: value for key, value in job.items() if key in PUBLIC_FIELDS or key in {
@@ -481,6 +481,12 @@ class JobManager:
                 or job.get("status") not in ACTIVE | {"completed", "failed", "cancelled", "interrupted"}
                 or job.get("source") != "local"):
             return False
+        if "search_strategy" in job:
+            try:
+                if normalize_search_strategy(job["search_strategy"], action=job["action"]) != job["search_strategy"]:
+                    return False
+            except ValueError:
+                return False
         task_id = job.get("task_id")
         if (job["action"] == "prepare" and task_id is not None
                 or job["action"] != "prepare" and (not isinstance(task_id, str)
@@ -758,12 +764,13 @@ class JobManager:
 
     def start(self, task_id, action, author="", hypothesis="", minutes=None, validation=None, model_params=None,
               *, campaign_owner=None, model_config=None, feature_config=None, local_timeout_seconds=None,
-              training_device="cpu"):
+              training_device="cpu", search_strategy=None):
         owner = None if campaign_owner is None else _campaign_owner(campaign_owner)
         if owner is not None and (not isinstance(action, str) or action not in OFFLINE_ACTIONS):
             raise ValueError("Шаг кампании поддерживает только локальные модели и AutoML.")
         if not isinstance(action, str) or action not in ACTIONS:
             raise ValueError("Неизвестный рецепт запуска.")
+        search_strategy = normalize_search_strategy(search_strategy, action=action)
         if validation is not None and action not in OFFLINE_ACTIONS:
             raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
         if model_params is not None and action not in OFFLINE_ACTIONS - {"automl"}:
@@ -858,6 +865,8 @@ class JobManager:
                    "exit_code": None, "api_used": False}
             if validation is not None:
                 job["validation"] = validation
+            if action == "automl":
+                job["search_strategy"] = search_strategy
             if model_config is not None:
                 job["model_config"] = model_config
             if feature_config is not None:
@@ -947,6 +956,7 @@ class JobManager:
                   "validation": _job_validation(job["action"], job.get("validation"))}
         if job["action"] == "automl":
             config["time_budget"] = minutes * 60
+            config["search_strategy"] = job.get("search_strategy", "legacy")
         if "model_config" in job and job["action"] != "automl":
             model_config = validate_model_config(job["model_config"], action=_config_action(job["action"]))
             if {"objective", "target_transform"} & set(model_config):

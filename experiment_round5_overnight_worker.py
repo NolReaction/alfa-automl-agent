@@ -77,7 +77,8 @@ def _load_config(path):
             result[key] = value
         return result
     config = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
-    if (not isinstance(config, dict) or set(config) != _FIELDS
+    if (not isinstance(config, dict) or not _FIELDS <= set(config)
+            or set(config) - _FIELDS - {"research_search"}
             or type(config["version"]) is not int or config["version"] != 1):
         raise ValueError("Worker requires the exact version-1 configuration fields")
     if (not isinstance(config["job_id"], str)
@@ -85,6 +86,9 @@ def _load_config(path):
         raise ValueError("Invalid worker job identity")
     if not isinstance(config["profile"], str) or config["profile"] not in _PROFILE_ARGS:
         raise ValueError("Unknown overnight profile")
+    mode = config.get("research_search", "adaptive")
+    if not isinstance(mode, str) or mode not in {"adaptive", "adaptive-budget"}:
+        raise ValueError("Unknown research search mode")
     cap = config["time_budget_seconds"]
     if type(cap) not in {int, float} or not math.isfinite(cap) or not 0 < cap <= 10500:
         raise ValueError("Invalid original budget")
@@ -211,6 +215,7 @@ def execute(config_path, deadline):
                 "phase": "run_agent", "elapsed_seconds": time.monotonic() - _NATIVE_STARTED,
                 "time_budget_seconds": kwargs.get("time_budget"), "local_only": kwargs.get("local_only"),
                 "adaptive_search": kwargs.get("adaptive_search"),
+                "adaptive_budget": kwargs.get("adaptive_budget", False),
                 "rescue_regression": kwargs.get("rescue_regression"),
             })
             persist()
@@ -234,7 +239,9 @@ def execute(config_path, deadline):
         if remaining <= 0:
             raise TimeoutError("Original deadline exhausted during bootstrap/imports")
         evidence["cli_time_budget_seconds"] = remaining
-        sys.argv = [str(root / "solution.py"), str(task), *_COMMON_ARGS,
+        common_args = list(_COMMON_ARGS)
+        common_args[common_args.index("--research-search") + 1] = config.get("research_search", "adaptive")
+        sys.argv = [str(root / "solution.py"), str(task), *common_args,
                     *_PROFILE_ARGS[config["profile"]], "--time-budget", str(remaining)]
         evidence["cli_argv"] = list(sys.argv)
         persist()

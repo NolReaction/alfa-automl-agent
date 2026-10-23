@@ -20,6 +20,7 @@ from agent.model_config import validate_model_config
 
 MAX_LOCAL_TRIALS = 12
 MAX_DEADLINE_TRIALS = 96
+MAX_BUDGET_TRIALS = 256
 MAX_DEADLINE_INSPECTIONS = 512
 MAX_INSPECTED_RECIPES = 256
 MAX_RECIPE_BYTES = 64 * 1024
@@ -245,7 +246,7 @@ def run_local_continuation(state, recipes, *, evaluate, seen=(), code_hash,
 def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), code_hash,
                               after_warmup=None, max_trials=64, min_timeout=2.0,
                               max_inspected=MAX_DEADLINE_INSPECTIONS, family_failure_limit=3,
-                              extensions_first=False):
+                              extensions_first=False, budget_mode=False):
     """Use a long run's spare budget without a global no-improvement stop.
 
     Legacy presets form the warmup; a bounded proposer supplies new ordinary
@@ -256,7 +257,10 @@ def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), co
     warmup, so a slow ordinary fit cannot consume its first opportunity. The
     default preserves the historical after-warmup order for other callers.
     """
-    max_trials = _count(max_trials, "max_trials", MAX_DEADLINE_TRIALS)
+    if type(budget_mode) is not bool:
+        raise ValueError("budget_mode must be a boolean")
+    max_trials = _count(max_trials, "max_trials",
+                        MAX_BUDGET_TRIALS if budget_mode else MAX_DEADLINE_TRIALS)
     max_inspected = _count(max_inspected, "max_inspected", MAX_DEADLINE_INSPECTIONS)
     family_failure_limit = _count(family_failure_limit, "family_failure_limit", 10)
     if type(extensions_first) is not bool:
@@ -275,7 +279,9 @@ def run_deadline_continuation(state, recipes, *, adaptive, evaluate, seen=(), co
         return max(0.0, float(value)) if type(value) in {int, float} and math.isfinite(value) else None
 
     report = {"version": 2, "origin": "host_local", "scope": "inner_selection", "api_requests": 0,
-              "policy": "deadline_adaptive", "status": "running", "reason": None,
+              "policy": "deadline_adaptive_budget" if budget_mode else "deadline_adaptive",
+              "trial_limit_kind": "safety" if budget_mode else "fixed",
+              "status": "running", "reason": None,
               "max_trials": max_trials, "max_inspected": max_inspected,
               "family_failure_limit": family_failure_limit, "attempted": 0,
               "verified": 0, "improvements": 0, "failed": 0, "duplicates": 0,

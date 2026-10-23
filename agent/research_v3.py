@@ -43,6 +43,7 @@ LOCAL_CONTINUATION_REASONS = frozenset({
 })
 ADAPTIVE_CONTINUATION_REASONS = LOCAL_CONTINUATION_REASONS | {"model_finished", "time_limit"}
 MAX_LOCAL_FROZEN_ATTEMPTS = 70  # 64 ordinary trials plus six custom-source trials.
+MAX_BUDGET_FROZEN_ATTEMPTS = 262  # Explicit budget mode: 256 ordinary plus six custom-source trials.
 SYSTEM_V3 = """You are an autonomous ML researcher using run_python.
 Read task.md and research_validation.json in the working directory. Only the
 approved outer-fit training view is available for research. All validation
@@ -363,7 +364,9 @@ def _track_local_candidate(state, candidate):
     """Retain bounded frozen identities until optional research has been guarded."""
     attempts = getattr(state, "_local_frozen_attempts", None)
     if attempts is not None and not any(item is candidate for item in attempts):
-        if len(attempts) >= MAX_LOCAL_FROZEN_ATTEMPTS:
+        limit = (MAX_BUDGET_FROZEN_ATTEMPTS if getattr(state, "adaptive_budget", False)
+                 else MAX_LOCAL_FROZEN_ATTEMPTS)
+        if len(attempts) >= limit:
             raise RuntimeError("Local research exceeded its frozen-attempt limit")
         attempts.append(candidate)
 
@@ -608,9 +611,16 @@ def _continue_locally(state):
 
     if getattr(state, "adaptive_search", False):
         early_extensions = _early_extensions_allowed(gate)
+        budget_mode = getattr(state, "adaptive_budget", False)
+        trial_limit = 256 if budget_mode else 64
         try:
             from agent.adaptive_search import AdaptiveSearch
-            adaptive = AdaptiveSearch(gate.spec.classification, gate.spec.metric.name, max_trials=64)
+            if budget_mode:
+                from agent.native_budget_search import NativeBudgetSearch
+                proposer = NativeBudgetSearch
+            else:
+                proposer = AdaptiveSearch
+            adaptive = proposer(gate.spec.classification, gate.spec.metric.name, max_trials=trial_limit)
         except (ImportError, OSError, ValueError, RuntimeError) as error:
             adaptive = None
             state.event("adaptive_search_unavailable", error_type=type(error).__name__)
@@ -621,8 +631,8 @@ def _continue_locally(state):
                                            prioritize=early_extensions)
 
         return run_deadline_continuation(state, recipes, adaptive=adaptive, evaluate=evaluate,
-            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=64,
-            extensions_first=early_extensions)
+            seen=seen, code_hash=code_hash, after_warmup=extensions, max_trials=trial_limit,
+            extensions_first=early_extensions, budget_mode=budget_mode)
     return run_local_continuation(state, recipes, evaluate=evaluate, seen=seen, code_hash=code_hash)
 
 
@@ -936,7 +946,7 @@ def _recover_after_unexpected_error(state):
 def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
                  stability_splits=1, metric_recipes=False, search_profile="legacy",
                  history_config=None, history_weight=0.5, local_only=False, history_auto=False,
-                 adaptive_search=False, rescue_regression=False):
+                 adaptive_search=False, rescue_regression=False, adaptive_budget=False):
     if (type(max_steps) is not int or max_steps < 1 or type(time_budget) not in {int, float}
             or not math.isfinite(time_budget) or not 0 < time_budget <= 10500):
         raise ValueError("Invalid research request/time budget")
@@ -950,6 +960,10 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         raise ValueError("history_auto must be a boolean")
     if type(adaptive_search) is not bool:
         raise ValueError("adaptive_search must be a boolean")
+    if type(adaptive_budget) is not bool:
+        raise ValueError("adaptive_budget must be a boolean")
+    if adaptive_budget and (not adaptive_search or time_budget <= ADAPTIVE_RESERVE_MIN_BUDGET):
+        raise ValueError("adaptive_budget requires v3 adaptive search and a budget greater than 300 seconds")
     if type(rescue_regression) is not bool:
         raise ValueError("rescue_regression must be a boolean")
     if rescue_regression and (not adaptive_search or time_budget <= ADAPTIVE_RESERVE_MIN_BUDGET):
@@ -960,8 +974,11 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
     history_options = normalize_history_options(history_config, history_weight)
     state = (V3State(Path(task_path).resolve(), max_steps, time_budget, adaptive_search=True)
              if adaptive_search else V3State(Path(task_path).resolve(), max_steps, time_budget))
+    state.adaptive_budget = adaptive_budget
     state.report["quality_options"] = {"stability_splits": stability_splits,
         "metric_recipes": metric_recipes, "search_profile": search_profile}
+    if adaptive_budget:
+        state.report["quality_options"]["adaptive_budget"] = True
     if history_options is not None:
         state.report["quality_options"].update(history_options)
     if history_auto:
@@ -973,7 +990,9 @@ def run_agent_v3(task_path, client, *, max_steps=12, time_budget=10500,
         state.report["coordinator"] = {"version": 2, "requested": True, "active": state.adaptive_search,
             "reason": "enabled" if state.adaptive_search else "short_budget",
             "minimum_long_budget_seconds": ADAPTIVE_RESERVE_MIN_BUDGET,
-            "local_trial_limit": 64, "extension_trial_limit": 6,
+            "local_trial_limit": 256 if adaptive_budget else 64, "extension_trial_limit": 6,
+            "trial_limit_kind": "safety" if adaptive_budget else "fixed",
+            "search_policy": "adaptive-budget" if adaptive_budget else "adaptive",
             "extension_policy": "early_temporal_regression_only",
             "api_request_limit": max_steps}
     if local_only:

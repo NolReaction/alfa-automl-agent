@@ -100,12 +100,16 @@ def load_config(config_path: Path) -> dict:
     required = {"job_dir", "task_path", "action", "dataset_fingerprint"}
     if (not isinstance(config, dict) or not required <= set(config)
             or set(config) - required - {"validation", "model_params", "model_config", "time_budget",
-                                       "feature_config", "training_device"}):
+                                       "feature_config", "training_device", "search_strategy"}):
         raise ValueError("Некорректные настройки запуска.")
     if any(not isinstance(config[key], str) for key in required):
         raise ValueError("Настройки запуска должны содержать строковые значения.")
     if config["action"] not in ACTIONS:
         raise ValueError("Неизвестный рецепт обучения.")
+    from app.search_summary import normalize_search_strategy
+    search_strategy = normalize_search_strategy(config.get("search_strategy"), action=config["action"])
+    if search_strategy is not None:
+        config["search_strategy"] = search_strategy
     from app.training_devices import normalize_training_device
     config["training_device"] = normalize_training_device(config.get("training_device"), action=config["action"])
     if "model_params" in config and "model_config" in config:
@@ -185,6 +189,7 @@ def _run_automl_job(config: dict) -> dict:
         task_path, time_budget=config.get("time_budget", 600),
         validation=config.get("validation"),
         dataset_fingerprint=config["dataset_fingerprint"], progress=progress, output_dir=job_dir,
+        search_strategy=config.get("search_strategy", "adaptive"), adaptive_max_trials=256,
     )
     result = {key: evidence[key] for key in (
         "model", "model_config", "metric", "split", "comparison_key", "output_valid", "search")}
@@ -194,6 +199,10 @@ def _run_automl_job(config: dict) -> dict:
     result["training_device"] = "cpu"
     result["model_artifact"] = {"available": False, "reason":
         "Автоподбор сохранил рецепт и предсказания. Для файла обученной модели запустите выбранный рецепт отдельно."}
+    if result["model"] in {"FixedBlend", "WeightedBlend"}:
+        result["model_artifact"]["reason"] = (
+            "Сохранены состав ансамбля, веса и предсказания. Экспорт обученного ансамбля "
+            "в .joblib пока недоступен; запуск одной модели не воспроизводит весь ансамбль.")
     if "classification_diagnostics" in evidence:
         result["classification_diagnostics"] = validate_classification_diagnostics(
             evidence["classification_diagnostics"], metric=result["metric"],

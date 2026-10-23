@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 
 def _integer(name, label, minimum, maximum, *, nullable=False):
@@ -235,24 +236,36 @@ def validate_model_config(value, action=None) -> dict:
     model = value["model"]
     if not isinstance(model, str):
         raise ValueError("Некорректное название модели.")
-    if model == "FixedBlend":
+    if model in {"FixedBlend", "WeightedBlend"}:
         if set(value) != required:
             raise ValueError("Quality options belong to individual blend components.")
         if action is not None:
             raise ValueError("Ансамбль создаётся только автоподбором, а не отдельным рецептом.")
         parameters = value["parameters"]
-        if (not isinstance(parameters, dict) or set(parameters) != {"weight", "components"}
-                or type(parameters["weight"]) not in {int, float} or parameters["weight"] != 0.5
-                or not isinstance(parameters["components"], list) or len(parameters["components"]) != 2):
-            raise ValueError("Нужны два компонента ансамбля с фиксированным весом 0.5.")
-        if any(not isinstance(component, dict) or component.get("model") == "FixedBlend"
+        if model == "FixedBlend":
+            if (not isinstance(parameters, dict) or set(parameters) != {"weight", "components"}
+                    or type(parameters["weight"]) not in {int, float} or parameters["weight"] != 0.5
+                    or not isinstance(parameters["components"], list) or len(parameters["components"]) != 2):
+                raise ValueError("Нужны два компонента ансамбля с фиксированным весом 0.5.")
+        elif (not isinstance(parameters, dict) or set(parameters) != {"weights", "components"}
+                or not isinstance(parameters["components"], list) or not 2 <= len(parameters["components"]) <= 3
+                or not isinstance(parameters["weights"], list)
+                or len(parameters["weights"]) != len(parameters["components"])
+                or any(type(weight) not in {int, float} or not math.isfinite(weight) or not 0 < weight < 1
+                       for weight in parameters["weights"])
+                or not math.isclose(sum(parameters["weights"]), 1.0, rel_tol=0, abs_tol=1e-9)):
+            raise ValueError("Нужны 2–3 компонента ансамбля с положительными весами, сумма которых равна 1.")
+        if any(not isinstance(component, dict) or not isinstance(component.get("model"), str)
+               or component.get("model") in {"FixedBlend", "WeightedBlend"}
                for component in parameters["components"]):
             raise ValueError("Вложенные ансамбли запрещены.")
         components = [validate_model_config(component) for component in parameters["components"]]
         types = {_task_type_for_model(component["model"]) for component in components}
         if len(types) != 1:
             raise ValueError("Компоненты ансамбля должны решать один тип задачи.")
-        return {"model": model, "parameters": {"weight": 0.5, "components": components}}
+        weights = ({"weight": 0.5} if model == "FixedBlend"
+                   else {"weights": list(parameters["weights"])})
+        return {"model": model, "parameters": {**weights, "components": components}}
     choice = next(((recipe, task_type, definition) for (recipe, task_type), definition in _MODELS.items()
                    if definition["model"] == model), None)
     if choice is None:
@@ -273,8 +286,8 @@ def _task_type_for_model(model):
 
 
 def model_task_type(value) -> str:
-    """Resolve a checked individual or fixed blend for report/task validation."""
+    """Resolve a checked individual or frozen blend for report/task validation."""
     config = validate_model_config(value)
-    if config["model"] == "FixedBlend":
+    if config["model"] in {"FixedBlend", "WeightedBlend"}:
         return _task_type_for_model(config["parameters"]["components"][0]["model"])
     return _task_type_for_model(config["model"])

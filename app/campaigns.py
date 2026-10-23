@@ -20,6 +20,7 @@ import time
 from uuid import uuid4
 
 from agent.automl import choose_validation
+from app.search_summary import normalize_search_strategy
 from agent.features import normalize_feature_config
 from agent.task_spec import load_task, load_task_data
 from app.jobs import LOCAL_TIMEOUT, _json, _linked, _safe, _valid_split, _write_json
@@ -44,7 +45,7 @@ PLAN_KEYS = ("preset", "name", "task_ids", "max_hours", "wall_budget_seconds",
              "worker_upper_bound_seconds", "steps", "task_fingerprints", "input_copy_bytes", "continue_on_error")
 STEP_KEYS = ("id", "task_id", "action", "minutes", "validation", "model_params", "label", "worker_timeout_seconds")
 OPTIONAL_PLAN_KEYS = ("source_job_id", "experiment", "execution_policy")
-OPTIONAL_STEP_KEYS = ("model_config", "feature_config", "is_control", "comparison_key", "split")
+OPTIONAL_STEP_KEYS = ("model_config", "feature_config", "is_control", "comparison_key", "split", "search_strategy")
 
 
 def _now():
@@ -234,6 +235,9 @@ class CampaignManager:
                     or not 1 <= step["minutes"] <= 175 or step.get("task_id") not in record["task_fingerprints"]):
                 raise ValueError("Повреждён шаг кампании.")
             normalize_validation(step.get("validation"))
+            if "search_strategy" in step:
+                if normalize_search_strategy(step["search_strategy"], action=step["action"]) != step["search_strategy"]:
+                    raise ValueError("Повреждена стратегия поиска в плане.")
             if "model_config" in step:
                 checked = validate_model_config(step["model_config"], action=step["action"])
                 if checked != step["model_config"] or checked["parameters"] != step.get("model_params"):
@@ -456,13 +460,14 @@ class CampaignManager:
                 sizes[task_id] = self._input_size(task_id)
             steps = []
             for index, item in enumerate(raw_steps):
-                if not isinstance(item, dict) or set(item) - {"task_id", "action", "minutes", "validation", "model_params", "model_config", "feature_config", "is_control", "label"}:
+                if not isinstance(item, dict) or set(item) - {"task_id", "action", "minutes", "validation", "model_params", "model_config", "feature_config", "is_control", "label", "search_strategy"}:
                     raise ValueError("Шаг содержит неизвестные поля; команды и пути запрещены.")
                 task_id, action, minutes = item.get("task_id"), item.get("action"), item.get("minutes")
                 if not isinstance(task_id, str) or task_id not in task_ids or action not in ACTIONS:
                     raise ValueError("Шаг должен использовать выбранную задачу и локальный рецепт.")
                 if type(minutes) is not int or not 1 <= minutes <= 175:
                     raise ValueError("Бюджет шага: целое число от 1 до 175 минут.")
+                search_strategy = normalize_search_strategy(item.get("search_strategy"), action=action)
                 label = item.get("label", "")
                 if not isinstance(label, str) or len(label) > 100:
                     raise ValueError("Подпись шага: до 100 символов.")
@@ -499,6 +504,8 @@ class CampaignManager:
                 if action != "automl":
                     step.update(model_config=deepcopy(config), feature_config=(validate_feature_config(item["feature_config"])
                         if "feature_config" in item else normalize_feature_config()))
+                else:
+                    step["search_strategy"] = search_strategy
                 if "is_control" in item:
                     if type(item["is_control"]) is not bool:
                         raise ValueError("Отметка контроля должна быть логическим значением.")
@@ -665,6 +672,8 @@ class CampaignManager:
                             options["feature_config"] = current["feature_config"]
                         if current["action"] != "automl":
                             options["local_timeout_seconds"] = current["worker_timeout_seconds"]
+                        else:
+                            options["search_strategy"] = current.get("search_strategy", "legacy")
                         self.jobs.start(current["task_id"], current["action"], author="Campaign",
                             hypothesis=current["label"], minutes=current["minutes"], validation=current["validation"],
                             **options, campaign_owner={"campaign_id": identifier, "step_id": current["id"]})

@@ -148,6 +148,8 @@ class CampaignTests(unittest.TestCase):
     def test_presets_interleave_day_and_report_real_worker_caps(self):
         preview = self.manager.preview({"preset": "day", "task_ids": ["regression", "classification"]})
         self.assertTrue(preview["ready"], preview)
+        self.assertTrue(all(step["search_strategy"] == "adaptive" for step in preview["steps"]))
+
         self.assertEqual([(row["task_id"], row["minutes"]) for row in preview["steps"]],
             [(task, minutes) for minutes in (30, 90, 175) for task in ("regression", "classification")])
         self.assertEqual(preview["worker_upper_bound_seconds"], 590 * 60 + 6 * 30)
@@ -159,6 +161,20 @@ class CampaignTests(unittest.TestCase):
         fixed["steps"][0].update(action="baseline", minutes=1)
         self.assertEqual(self.manager.preview(fixed)["steps"][0]["worker_timeout_seconds"], 60)
         self.assertEqual(self.jobs.calls, [])
+
+
+    def test_search_strategy_is_frozen_and_propagated_to_each_job(self):
+        body = self.body()
+        body["steps"][0]["search_strategy"] = "legacy"
+        preview = self.manager.preview(body)
+        self.assertTrue(preview["ready"], preview)
+        self.assertEqual([step["search_strategy"] for step in preview["steps"]], ["legacy", "adaptive"])
+        changed = deepcopy(body)
+        changed["steps"][0]["search_strategy"] = "adaptive"
+        self.assertNotEqual(self.manager.preview(changed)["plan_sha256"], preview["plan_sha256"])
+        identifier, active = self.queued(body)
+        self.run_queue(identifier, active)
+        self.assertEqual([call[2]["search_strategy"] for call in self.jobs.calls], ["legacy", "adaptive"])
 
     def test_invalid_payload_and_stale_preview_never_launch(self):
         invalid = [self.body(task_ids=["regression", "regression"]), self.body(max_hours=True), self.body(max_hours=13),

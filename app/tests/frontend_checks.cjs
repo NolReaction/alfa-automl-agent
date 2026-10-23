@@ -250,6 +250,8 @@ const cases = {
       validation: { strategy: "auto" }, model_params: { n_estimators: 600 },
     });
     assert.equal(automatic.minutes, 10);
+    assert.equal(automatic.search_strategy, "adaptive");
+    assert.equal(get("launchPayload")({...automatic, search_strategy: "legacy"}).search_strategy, "legacy");
     assert.deepEqual(plain(automatic.validation), { strategy: "auto" });
     assert.equal("model_params" in automatic, false, "Search owns candidate parameters even if a previous recipe had edits");
     const explicit = get("launchPayload")({ ...automatic, validation: { strategy: "time", time_column: "Year_Factor" } });
@@ -257,6 +259,7 @@ const cases = {
     const qwen = get("launchPayload")({ ...automatic, action: "agent" });
     assert.equal("validation" in qwen, false);
     assert.equal("model_params" in qwen, false);
+    assert.equal("search_strategy" in qwen, false);
   },
   automl_validation() {
     const state = setup();
@@ -346,6 +349,12 @@ const cases = {
     });
     const html = get("autoSearchView")(current);
     assert.match(html, /candidate-21/, "All 22 scheduled recipes including metric-aware candidates must remain visible");
+    const adaptiveRows = Array.from({length: 258}, (_, index) => ({...candidates[0], id: `adaptive-${index}`, label: `Adaptive ${index}`, selected: index === 0}));
+    const adaptive = get("autoSearchView")({...current, search: {...current.search, candidates: adaptiveRows, planned: 258, completed: 258, best_candidate: "adaptive-0", controller: {strategy: "adaptive", max_trials: 256, proposed: 256, observed: 256, stop_reason: "selection_budget", optimizer: "optuna_tpe", resumable: false}}});
+    assert.match(adaptive, /Adaptive 257/);
+    assert.match(adaptive, /Optuna TPE/);
+    assert.match(adaptive, /оставлено время на проверку и финальное обучение/);
+
     assert.match(html, /R2/);
     assert.match(html, /class="metric-cell">-3</);
     assert.doesNotMatch(html, /Macro F1|RMSE/, "Metric direction must not imply the task type");

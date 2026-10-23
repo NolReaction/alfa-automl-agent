@@ -110,6 +110,34 @@ class OvernightAuditTests(unittest.TestCase):
             self.assertEqual(result["proof"]["refit"]["predict_rows"], 2)
             self.assertEqual(before, {str(p): file_hash(p) for p in root.rglob("*") if p.is_file()})
 
+    def test_budget_search_must_match_sealed_config_and_observed_invocation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            job, plan, run = receipt_job(Path(temporary).resolve())
+            plan["research_search"] = "adaptive-budget"
+            with self.assertRaisesRegex(ValueError, "configuration differs"):
+                self.audit(job, plan)
+            config = read_json(job / "config.json")
+            config["research_search"] = "adaptive-budget"
+            write_json(job / "config.json", config)
+            plan["job_seals"][job.name]["config"] = file_hash(job / "config.json")
+            worker = read_json(job / "worker_evidence.json")
+            worker["config_sha256"] = file_hash(job / "config.json")
+            write_json(job / "worker_evidence.json", worker)
+            self.assertFalse(self.audit(job, plan)["checks"]["one_adaptive_offline_invocation"])
+            for item in worker["observations"]:
+                if item["phase"] == "run_agent":
+                    item["adaptive_budget"] = True
+            write_json(job / "worker_evidence.json", worker)
+            result = self.audit(job, plan)
+            self.assertTrue(result["checks"]["one_adaptive_offline_invocation"])
+            self.assertFalse(result["checks"]["budget_search_policy_recorded"])
+            report = read_json(run / "run.json")
+            report["quality_options"]["adaptive_budget"] = True
+            report["coordinator"].update(search_policy="adaptive-budget", local_trial_limit=256,
+                                         trial_limit_kind="safety")
+            save_report(job, run, report)
+            self.assertTrue(self.audit(job, plan)["continuation_allowed"])
+
     def test_receipt_and_exact_phase_input_tampering_cannot_pass(self):
         for mutation in ("receipt_nonce", "fit_value", "predict_value", "frozen_source"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:

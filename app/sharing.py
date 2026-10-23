@@ -14,14 +14,14 @@ import tempfile
 import threading
 
 from app.file_io import replace_file
-from app.search_summary import validate_search_summary
+from app.search_summary import validate_search_summary, normalize_search_strategy
 
 
 FORMAT = "alfa-lab-reports"
 VERSION = 1
 MAX_REPORTS = 200
-MAX_BYTES = 1024 * 1024
-MAX_RECORD_BYTES = 128 * 1024
+MAX_BYTES = 8 * 1024 * 1024
+MAX_RECORD_BYTES = 2 * 1024 * 1024
 # A 50-class matrix has 2,500 scalar cells. The byte cap still bounds the
 # envelope; this separate traversal cap must also accommodate many such records.
 MAX_TREE_NODES = 400_000
@@ -173,6 +173,8 @@ def _summary(raw: dict, fingerprint: str) -> dict:
         "error": "",
         "output_valid": output_valid, "api_used": api_used,
     }
+    if "search_strategy" in raw:
+        result["search_strategy"] = normalize_search_strategy(raw["search_strategy"], action=raw["action"])
     if "model_config" in raw:
         from app.model_config import validate_model_config
 
@@ -298,7 +300,7 @@ def _check_tree(value):
         elif item is not None and not isinstance(item, (str, bool)):
             raise ValueError("Отчёт содержит неподдерживаемый тип данных.")
     if len(_encoded(value)) > MAX_BYTES:
-        raise ValueError("Файл отчёта превышает допустимый размер 1 МБ.")
+        raise ValueError("Файл отчёта превышает допустимый размер 8 МБ.")
 
 
 def _digest(summary: dict) -> str:

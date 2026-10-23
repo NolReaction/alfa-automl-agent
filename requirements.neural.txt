@@ -1,0 +1,4 @@
+# Optional local experiments only. Install the desired PyTorch CPU/CUDA build first.
+# PyTorch 2.5.1 is the contest environment version; never download weights at runtime.
+tabm==0.0.3
+rtdl_num_embeddings==0.0.12

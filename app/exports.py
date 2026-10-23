@@ -19,7 +19,7 @@ MAX_SOURCE_BYTES = 20 * 1024 * 1024
 MAX_RESULT_BYTES = 128 * 1024 * 1024
 MAX_SOURCE_FILES = 512
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
-MAX_IMPORT_REPORT_BYTES = 1024 * 1024
+MAX_IMPORT_REPORT_BYTES = 8 * 1024 * 1024
 MAX_IMPORT_ENTRIES = 32
 
 
@@ -41,11 +41,11 @@ def report_bytes_from_archive(content: bytes) -> bytes:
             if report.flag_bits & 1 or report.compress_type not in {ZIP_STORED, ZIP_DEFLATED}:
                 raise ValueError("ZIP отчёта зашифрован или использует неподдерживаемое сжатие.")
             if report.file_size > MAX_IMPORT_REPORT_BYTES:
-                raise ValueError("Файл reports.json в ZIP превышает 1 МБ.")
+                raise ValueError("Файл reports.json в ZIP превышает 8 МБ.")
             with archive.open(report) as stream:
                 raw = stream.read(MAX_IMPORT_REPORT_BYTES + 1)
             if len(raw) > MAX_IMPORT_REPORT_BYTES:
-                raise ValueError("Файл reports.json в ZIP превышает 1 МБ.")
+                raise ValueError("Файл reports.json в ZIP превышает 8 МБ.")
             return raw
     except (BadZipFile, LargeZipFile, RuntimeError, NotImplementedError, EOFError, zlib.error) as error:
         raise ValueError("Не удалось прочитать ZIP. Выберите пакет результата Alfa Lab.") from error
@@ -169,11 +169,14 @@ def _readable_report(report: dict) -> bytes:
         parameters = []
         for name, value in model_config["parameters"].items():
             field = fields.get(name, {})
-            if model_config["model"] == "FixedBlend" and name == "components":
+            if model_config["model"] in {"FixedBlend", "WeightedBlend"} and name == "components":
                 parameters.append("Модели: " + " + ".join(component_name(item) for item in value))
                 continue
             if model_config["model"] == "FixedBlend" and name == "weight":
                 parameters.append("Вес каждой модели: 50 %")
+                continue
+            if model_config["model"] == "WeightedBlend" and name == "weights":
+                parameters.append("Веса моделей: " + " / ".join(f"{weight * 100:g} %" for weight in value))
                 continue
             selected = next((option for option in field.get("options", [])
                              if option["value"] == value), None)
@@ -227,6 +230,17 @@ def _readable_report(report: dict) -> bytes:
                 f'<td>{text(candidate["elapsed_seconds"])} с</td><td>{text(memory_text)}</td></tr>')
         ending = ("Лимит времени: сохранён лучший завершённый результат."
                   if search["status"] == "time_limit" else "Сохранён лучший завершённый результат.")
+        controller = search.get("controller")
+        if controller:
+            reasons = {"selection_budget": "Оставлено время на проверку и финальное обучение",
+                       "trial_limit": "Достигнут защитный лимит попыток",
+                       "families_exhausted": "Доступные семейства исчерпаны",
+                       "search_exhausted": "Нет новых допустимых вариантов",
+                       "inner_unavailable": "Недостаточно данных для внутреннего подбора",
+                       "interrupted": "Поиск прерван"}
+            ending += (f' Адаптивный поиск: {controller["observed"]} обработанных предложений; '
+                       f'защитный лимит {controller["max_trials"]}. '
+                       + reasons.get(controller["stop_reason"], ""))
         search_html = (f'<section><h2>Попытки автоподбора</h2><p>{text(ending)}</p>'
                        f'<p>Подбор измеряется внутри обучающей части; проверка — на отложенных строках.</p><p>{text(search["validation_reason"])}</p><div class="table-scroll"><table>'
                        '<thead><tr><th>Модель</th><th>Подбор</th><th>Проверка</th><th>Результат</th><th>Время</th><th>Пик RAM</th></tr></thead>'

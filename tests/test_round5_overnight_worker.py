@@ -112,7 +112,8 @@ class OvernightWorkerTests(unittest.TestCase):
                 self.assertEqual(pointer["run_report_sha256"], evidence["run_report"]["sha256"])
 
     def test_unknown_or_extra_config_fields_are_rejected_before_execution(self):
-        for extra in ({"oracle_actuals": [1, 2]}, {"profile": "arbitrary_cli"}, {"version": True}):
+        for extra in ({"oracle_actuals": [1, 2]}, {"profile": "arbitrary_cli"}, {"version": True},
+                      {"research_search": "unbounded"}, {"research_search": True}):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as temporary:
                 root, job, task, path, config = self.fixture(Path(temporary))
                 config.update(extra)
@@ -120,6 +121,17 @@ class OvernightWorkerTests(unittest.TestCase):
                 result = self.launch(path)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((task / ".agent_runs").exists())
+
+    def test_explicit_budget_search_reaches_packaged_cli(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, job, task, path, config = self.fixture(Path(temporary))
+            config["research_search"] = "adaptive-budget"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            result = self.launch(path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads((job / "worker_evidence.json").read_text(encoding="utf-8"))
+            argv = evidence["cli_argv"]
+            self.assertEqual(argv[argv.index("--research-search") + 1], "adaptive-budget")
 
     def test_existing_run_evidence_is_never_reused(self):
         with tempfile.TemporaryDirectory() as temporary:

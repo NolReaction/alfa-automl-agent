@@ -164,7 +164,9 @@ class FeatureTransformer(TransformerMixin, BaseEstimator):
     def transform(self, X):
         check_is_fitted(self, ("config_", "numeric_", "allowed_categories_"))
         frame = self._frame(X, self.numeric_, self.categorical_)
-        output = pd.DataFrame(index=frame.index)
+        # Build once: repeated DataFrame insertion fragments wide tables and
+        # produced thousands of PerformanceWarnings in real search runs.
+        output = {}
         config = self.config_
         expanded = set(config["date_columns"]) | set(config["text_columns"])
         for name in self.numeric_:
@@ -192,7 +194,8 @@ class FeatureTransformer(TransformerMixin, BaseEstimator):
             output[name + "__length"] = values.str.len().astype(float)
             output[name + "__word_count"] = values.str.split().str.len().astype(float)
             output[name + "__missing"] = missing.astype(float)
-        return output.loc[:, self.output_numeric_ + self.output_categorical_]
+        return pd.DataFrame(output, index=frame.index).loc[
+            :, self.output_numeric_ + self.output_categorical_]
 
     def get_feature_names_out(self, input_features=None):
         check_is_fitted(self, "output_numeric_")

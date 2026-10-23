@@ -30,7 +30,7 @@ from app.campaign_reports import build_campaign_report, report_bytes
 from app.telemetry import SystemMonitor
 from app.power import SleepGuard
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -423,9 +423,10 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             raise ValueError("Не указан размер запроса.")
         length = int(lengths[0])
         is_zip = allow_zip and self.headers.get_content_type() == "application/zip"
-        limit = MAX_IMPORT_BYTES if is_zip else MAX_BODY
+        limit = MAX_IMPORT_BYTES if is_zip else 8 * 1024 * 1024 if allow_zip else MAX_BODY
         if length > limit:
-            raise ValueError("ZIP отчёта превышает 20 МБ." if is_zip else "Файл отчёта превышает 1 МБ.")
+            raise ValueError("ZIP отчёта превышает 20 МБ." if is_zip else
+                             "Файл отчёта превышает 8 МБ." if allow_zip else "Запрос превышает 1 МБ.")
         if not is_zip and self.headers.get_content_type() != "application/json":
             raise ValueError("Ожидается JSON или ZIP отчёта." if allow_zip else "Ожидается JSON-запрос.")
         raw = self.rfile.read(length)
@@ -498,7 +499,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                     raise ValueError("Сборка решения не принимает дополнительные параметры.")
                 self._bytes(delivery_archive(), "application/zip", filename="solution.zip")
             elif is_job:
-                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params", "model_config", "feature_config", "training_device"}:
+                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params", "model_config", "feature_config", "training_device", "search_strategy"}:
                     raise ValueError("Неизвестные параметры запуска.")
                 if "validation" in body and body.get("action") not in ("baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"):
                     raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
@@ -518,7 +519,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                                              model_params=body.get("model_params"),
                                              model_config=body.get("model_config"),
                                              feature_config=body.get("feature_config"),
-                                             training_device=body.get("training_device", "cpu"))
+                                             training_device=body.get("training_device", "cpu"),
+                                             search_strategy=body.get("search_strategy"))
                 self._json({"job": job}, 202)
             elif is_job_action:
                 if set(body) != {"task_id"}:
