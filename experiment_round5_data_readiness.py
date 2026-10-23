@@ -139,11 +139,17 @@ def peak_memory() -> dict:
     """Peak memory of this process when the platform exposes it; otherwise unknown."""
     try:
         import psutil
-        peak = getattr(psutil.Process().memory_info(), "peak_wset", None)
-        if peak:
-            return {"peak_bytes": int(peak), "method": "psutil peak_wset", "scope": "this_process_whole_run"}
     except (ImportError, OSError):
         pass
+    else:
+        try:
+            peak = getattr(psutil.Process().memory_info(), "peak_wset", None)
+            if peak:
+                return {"peak_bytes": int(peak), "method": "psutil peak_wset", "scope": "this_process_whole_run"}
+        except (psutil.Error, OSError):
+            # Restricted process inventories can hide this process or deny its
+            # counters. This optional metadata must not prevent report export.
+            pass
     try:
         import resource
         value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -739,8 +745,9 @@ def parse_classes(value: str | None) -> list[str] | None:
         parsed = json.loads(value) if value.lstrip().startswith("[") else next(csv.reader([value]))
     except ValueError as error:
         raise ValueError("--classes: ожидается JSON-массив или список через запятую.") from error
-    if (not isinstance(parsed, list) or not parsed or len(set(parsed)) != len(parsed)
-            or any(not isinstance(label, str) or not label.strip() for label in parsed)):
+    if (not isinstance(parsed, list) or not parsed
+            or any(not isinstance(label, str) or not label.strip() for label in parsed)
+            or len(set(parsed)) != len(parsed)):
         raise ValueError("--classes: нужны различные непустые метки.")
     return parsed
 

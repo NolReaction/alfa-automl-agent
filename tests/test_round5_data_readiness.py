@@ -11,7 +11,9 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -140,6 +142,28 @@ class ReadinessCase(unittest.TestCase):
     @staticmethod
     def texts(output: Path, names) -> list[str]:
         return [(output / name).read_text(encoding="utf-8") for name in names]
+
+
+class OptionalMetadataTests(unittest.TestCase):
+    def test_psutil_errors_fall_back_to_process_only_resource_metadata(self) -> None:
+        import psutil
+
+        for error in (psutil.NoSuchProcess(123), psutil.AccessDenied(123)):
+            with self.subTest(error=type(error).__name__):
+                usage = mock.Mock(return_value=SimpleNamespace(ru_maxrss=123))
+                resource = SimpleNamespace(RUSAGE_SELF=0, getrusage=usage)
+                with mock.patch("psutil.Process", side_effect=error), \
+                        mock.patch.dict(sys.modules, {"resource": resource}):
+                    memory = readiness.peak_memory()
+                usage.assert_called_once_with(resource.RUSAGE_SELF)
+                self.assertEqual(memory, {
+                    "peak_bytes": 123 * (1 if sys.platform == "darwin" else 1024),
+                    "method": "resource.getrusage ru_maxrss", "scope": "this_process_whole_run"})
+
+    def test_unhashable_class_values_are_a_clear_contract_refusal(self) -> None:
+        for value in ('[["alpha"], "beta"]', '[{"name": "alpha"}, "beta"]'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "различные непустые метки"):
+                readiness.parse_classes(value)
 
 
 class ShiftTableTests(ReadinessCase):
@@ -320,6 +344,22 @@ class FitAuditTests(ReadinessCase):
 
 
 class ExportTests(ReadinessCase):
+    def test_fit_export_survives_unavailable_process_memory_counters(self) -> None:
+        import psutil
+
+        task = classification_task(self.root)
+        process = mock.Mock()
+        process.memory_info.side_effect = psutil.AccessDenied(123)
+        with mock.patch("psutil.Process", return_value=process), \
+                mock.patch.dict(sys.modules, {"resource": None}):
+            report = self.fit(task, self.base / "unknown-memory")
+        self.assertEqual(report["generated"]["memory"], {
+            "peak_bytes": None, "method": None, "scope": "unknown"})
+        self.assertEqual(report["audit"]["decision"], "structurally_compatible")
+        self.assertEqual(report["audit"]["model_acceptance"], "not_evaluated")
+        self.assertEqual(next(item for item in report["audit"]["not_evaluated"]
+                              if item["id"] == "memory")["status"], "unknown")
+
     def test_test_changes_or_deletion_do_not_affect_fit_mode(self) -> None:
         task = classification_task(self.root)
         first = self.fit(task, self.base / "out-1")
