@@ -112,6 +112,23 @@ const state = {
   experimentFingerprint: null,
   inspectJob: null,
   currentDatasetFingerprint: null,
+  nativeQueues: [],
+  nativeActiveQueue: null,
+  nativeSelectedQueue: null,
+  nativeDetail: null,
+  nativePreflight: null,
+  nativeRegressionTask: null,
+  nativeClassificationTask: null,
+  nativeBudgetSeconds: 10500,
+  nativeStartBusy: false,
+  nativePreflightBusy: false,
+  nativePollBusy: false,
+  nativeDetailGeneration: 0,
+  nativeLogGeneration: 0,
+  nativeLogKind: "coordinator",
+  nativeLogProfile: "regression_off",
+  nativeActivityUpdated: 0,
+  nativeActivityBusy: false,
 };
 const main = $("#main");
 function apiBase(task = state.task) {
@@ -171,6 +188,279 @@ function warningList(values) {
     ? `<div class="warning-box"><ul>${values.map((v) => `<li>${esc(v)}</li>`).join("")}</ul></div>`
     : "";
 }
+
+// Native series use the pinned agent and retain their own history and audits.
+const NATIVE_PROFILES = ["regression_off", "regression_on", "classification"];
+const NATIVE_NAMES = {
+  regression_off: "Регрессия · rescue OFF",
+  regression_on: "Регрессия · rescue ON",
+  classification: "Классификация",
+};
+const NATIVE_STATUS = {
+  queued: ["В очереди", "gray"], pending: ["Ожидает", "gray"],
+  preparing: ["Подготовка", "amber"], running: ["Выполняется", "red"],
+  stopping: ["Останавливается", "amber"], completed: ["Завершено", "green"],
+  failed: ["Ошибка", "red"], stopped: ["Очередь остановлена", "amber"],
+  interrupted: ["Прервано", "amber"], cancelled: ["Остановлено", "gray"],
+  cleanup_pending: ["Остановка требует проверки", "amber"],
+  not_started: ["Не запускалось", "gray"],
+};
+function nativeStatus(status) {
+  const [label, tone] = NATIVE_STATUS[status] || ["Статус не подтверждён", "gray"];
+  return badge(label, tone);
+}
+function nativeRunning(queue) {
+  return Boolean(queue && ["queued", "preparing", "running", "stopping", "cleanup_pending"].includes(queue.status));
+}
+function nativePath(id) {
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id)) throw new Error("Неверный идентификатор серии.");
+  return `/api/native-queues/${encodeURIComponent(id)}`;
+}
+function nativeTasks(type) {
+  return state.tasks.filter((task) => task.available === true && task.task_type === type);
+}
+function nativeMetric(metric) {
+  return Number.isFinite(metric?.value) ? `${number(metric.value, 6)} ${metric.name || ""}`.trim() : "Пока нет метрики";
+}
+function nativePayload(regressionTask, classificationTask, seconds) {
+  if (!nativeTasks("regression").some((task) => task.id === regressionTask) ||
+      !nativeTasks("classification").some((task) => task.id === classificationTask))
+    throw new Error("Выберите готовые задачи регрессии и классификации.");
+  if (!Number.isInteger(seconds) || seconds < 301 || seconds > 10500)
+    throw new Error("Лимит одного задания — целое число секунд от 301 до 10 500.");
+  return {regression_task_id: regressionTask, classification_task_id: classificationTask, time_budget_seconds: seconds};
+}
+function nativeLaunchBlock() {
+  if (state.nativeStartBusy) return "Серия запускается…";
+  if (nativeRunning(state.nativeActiveQueue)) return "Сначала дождитесь завершения текущей серии или остановите её.";
+  if (runningJob(state.session?.active_job)) return "Сейчас выполняется другой запуск приложения.";
+  if (!state.nativePreflight) return "Сначала проверьте готовность компьютера.";
+  if (!state.nativePreflight.ready) return "Перед запуском устраните причины, указанные в проверке готовности.";
+  if (!nativeTasks("regression").length || !nativeTasks("classification").length)
+    return "Нужны готовые задачи регрессии и классификации.";
+  return null;
+}
+function setNativeActive(queue) {
+  state.nativeActiveQueue = nativeRunning(queue) ? queue : null;
+  state.nativeActivityUpdated = Date.now();
+  applyNativeLaneControls();
+}
+function applyNativeLaneControls() {
+  const blocked = nativeRunning(state.nativeActiveQueue);
+  $$('[data-launch]').forEach((button) => {
+    if (blocked && button.dataset.nativeBlocked !== "true") {
+      button.dataset.nativeWasDisabled = String(button.disabled);
+      button.dataset.nativeBlocked = "true";
+      button.disabled = true;
+    } else if (!blocked && button.dataset.nativeBlocked === "true") {
+      button.disabled = button.dataset.nativeWasDisabled === "true";
+      delete button.dataset.nativeBlocked;
+      delete button.dataset.nativeWasDisabled;
+    }
+  });
+}
+function nativeOptions(type, selected) {
+  const tasks = nativeTasks(type);
+  return tasks.length ? tasks.map((task) => `<option value="${esc(task.id)}" ${task.id === selected ? "selected" : ""}>${esc(task.name || task.id)}</option>`).join("")
+    : '<option value="">Нет готовой задачи</option>';
+}
+function nativePreflightPanel() {
+  const report = state.nativePreflight;
+  const errors = Array.isArray(report?.errors) ? report.errors : [];
+  return `<div class="native-readiness-head"><div><h3>Готовность компьютера</h3><p>Одна серия занимает общую очередь CPU. Нужны Windows, Python 3.12 и 32 ГБ памяти.</p></div><button class="button small" data-action="native-preflight" ${state.nativePreflightBusy ? "disabled" : ""}>${state.nativePreflightBusy ? '<span class="spinner"></span> Проверяем…' : `${icon("shield")} Проверить готовность`}</button></div>${report ? `<div class="native-readiness-result">${badge(report.ready ? "Готов к запуску" : "Запуск пока недоступен", report.ready ? "green" : "amber")}<span>CPU: ${number(report.threads || 8)} потоков</span>${Number.isFinite(report.physical_ram_bytes) ? `<span>RAM: ${number(report.physical_ram_bytes / 1024 ** 3, 1)} ГиБ</span>` : ""}${Number.isFinite(report.free_disk_bytes) ? `<span>Свободно: ${number(report.free_disk_bytes / 1024 ** 3, 1)} ГиБ</span>` : ""}</div>${errors.length ? warningList(errors.map((error) => typeof error === "string" ? error : error?.message || error?.reason || "Проверка не завершена")) : ""}${report.release_sha ? `<p class="native-source">Версия агента <code>${esc(report.release_sha)}</code></p>` : ""}` : '<p class="native-hint">Проверка подтвердит среду, свободное место и доступность CPU.</p>'}`;
+}
+function nativeShell() {
+  const block = nativeLaunchBlock();
+  return heading("ПРОВЕРКА НА ВАШЕМ КОМПЬЮТЕРЕ", "Ночные тесты", "Три последовательных задания: контрольная регрессия, регрессия с rescue и классификация.", false) +
+    `<section class="panel native-plan"><div class="native-plan-title"><div><h2>Новая серия</h2><p>Каждое задание получит отдельную копию данных и собственный отчёт.</p></div>${badge("Без API", "green")}</div><ol class="native-plan-steps">${NATIVE_PROFILES.map((profile, index) => `<li><span class="native-step-number">${index + 1}</span><div><strong>${esc(NATIVE_NAMES[profile])}</strong><small>${index === 0 ? "Контрольный результат" : index === 1 ? "Та же задача и те же входные данные" : "Отдельная проверка классификации"}</small></div></li>`).join("")}</ol><form id="native-launch-form"><div class="form-grid"><label class="form-field">Регрессия (требуется RMSE)<select id="native-regression-task" name="regression_task_id" ${nativeTasks("regression").length ? "" : "disabled"} required>${nativeOptions("regression", state.nativeRegressionTask)}</select></label><label class="form-field">Классификация<select id="native-classification-task" name="classification_task_id" ${nativeTasks("classification").length ? "" : "disabled"} required>${nativeOptions("classification", state.nativeClassificationTask)}</select></label><label class="form-field">Лимит одного задания<select id="native-budget" name="time_budget_seconds">${[[3600, "До 1 часа"], [10500, "До 2 ч 55 мин"]].map(([value, label]) => `<option value="${value}" ${value === state.nativeBudgetSeconds ? "selected" : ""}>${label}</option>`).join("")}</select></label><div class="native-budget-summary"><span>Потолок обучения всей серии</span><strong id="native-total-budget">${duration(state.nativeBudgetSeconds * 3)}</strong><small>Подготовка и проверка отчётов займут дополнительное время.</small></div></div><p class="native-hint">Это верхние лимиты: агент может закончить раньше. Серия работает на CPU в 8 потоков. Видеокарта в этом плане не используется.</p><div id="native-readiness" class="native-readiness">${nativePreflightPanel()}</div><p id="native-launch-error" class="form-error" role="alert"></p><div class="native-launch-footer"><p id="native-launch-block">${esc(block || "Задания выполняются по одному. Ошибка обязательной проверки остановит очередь.")}</p><button class="button primary" id="native-start" type="submit" ${block ? "disabled" : ""}>${icon("activity")} ${state.nativeStartBusy ? "Запускаем…" : "Запустить три задания"}</button></div></form></section>` +
+    `<div class="native-history-heading"><h2>История серий</h2><span id="native-refresh-time" class="subtle-text">Обновление каждые 3 секунды</span></div><div class="native-layout"><section class="panel native-history-panel" aria-label="История ночных тестов"><div id="native-history" class="native-history"></div></section><div class="native-detail-column"><section id="native-queue-detail"></section><section class="panel native-logs" id="native-log-panel" hidden><div class="panel-head"><div><h2>Журнал серии</h2><p id="native-log-caption">Журнал координатора · обновляется во время работы</p></div></div><div class="native-log-controls"><label class="form-field">Источник<select id="native-log-kind"><option value="coordinator">Координатор · текущий журнал</option><option value="stdout">stdout · итог задания</option><option value="stderr">stderr · итог задания</option></select></label><label class="form-field" id="native-log-profile-field" hidden>Задание<select id="native-log-profile">${NATIVE_PROFILES.map((profile) => `<option value="${profile}">${esc(NATIVE_NAMES[profile])}</option>`).join("")}</select></label></div><pre id="native-log" class="code-content native-log-text" tabindex="0">Выберите серию.</pre></section></div></div>`;
+}
+function nativeCheckLabel(name) {
+  return ({root_exit_zero: "Процесс завершился успешно", watchdog_not_reached: "Внешний лимит не превышен",
+    memory_limit_not_reached: "Лимит памяти не превышен", tree_resources_observed: "Ресурсы процесса измерены",
+    owned_cleanup_complete: "Дочерние процессы завершены", input_hashes_unchanged: "Входные данные не изменились",
+    flat_hashes_unchanged: "Код агента не изменился", worker_config_unchanged: "Настройки задания не изменились",
+    source_identity_unchanged: "Версия исходников сохранена", worker_returned: "Получен отчёт текущего запуска",
+    observer_complete: "Наблюдения сохранены", one_adaptive_offline_invocation: "Выполнен offline-поиск",
+    original_deadline_respected: "Исходный бюджет соблюдён", zero_api: "API не использовался",
+    fresh_full_refit_published: "Есть новое обучение на полном TRAIN", selected_outer_execution_clean: "Проверочное обучение завершено",
+    selected_refit_execution_clean: "Полное обучение завершено", requested_rescue_profile_recorded: "Режим rescue подтверждён",
+    output_structure_valid: "Формат предсказаний корректен", outer_and_full_refit_receipts_valid: "Квитанции обучения проверены"})[name] || name.replaceAll("_", " ");
+}
+function nativeProfileCard(row) {
+  const resources = row.resources || {};
+  const measured = resources.available === true;
+  const stage = ({inner_research: "Поиск на INNER", outer_validation: "Проверка на outer", full_refit: "Обучение на полном TRAIN",
+    preparing: "Подготовка", startup: "Подготовка исходной модели", baseline: "Подготовка исходной модели",
+    waiting: "Ожидает очереди", not_started: "Следующее задание не запускалось",
+    result: "Результат", finished: "Завершение"})[row.stage] || row.stage;
+  const checks = row.checks && typeof row.checks === "object" ? Object.entries(row.checks) : [];
+  return `<article class="native-profile-card ${row.status === "running" ? "active" : ""}"><div class="native-profile-head"><h3>${esc(NATIVE_NAMES[row.profile] || row.profile)}</h3>${nativeStatus(row.status)}</div><div class="native-profile-metric">${esc(nativeMetric(row.metric))}</div><p class="native-profile-stage">${esc(stage || "Обучение ещё не началось")}${Number.isFinite(row.elapsed_seconds) ? ` · ${duration(row.elapsed_seconds)}` : ""}</p><p class="native-resource">${measured ? `Измеренный пик RAM: ${Number.isFinite(resources.peak_rss_bytes) ? `${number(resources.peak_rss_bytes / 1024 ** 3, 2)} ГиБ` : "не указан"}` : "Измерения ресурсов пока не подтверждены"}</p>${row.continuation_allowed === true ? `<p class="native-admission good">${icon("check")} Обязательные проверки пройдены</p>` : row.continuation_allowed === false ? `<p class="native-admission bad">${icon("missing")} Переход к следующему заданию запрещён</p>` : ""}${row.qualification === "requires_review" ? '<p class="native-review">Результат требует разбора. Это отдельно от технического допуска продолжения.</p>' : ""}${row.error ? `<p class="native-error">${esc(row.error)}</p>` : ""}${checks.length ? `<details class="native-audit" data-profile="${esc(row.profile)}"><summary>Проверки завершения · ${checks.filter(([, value]) => value === true).length}/${checks.length}</summary><ul>${checks.map(([name, value]) => `<li><span>${esc(nativeCheckLabel(name))}</span>${badge(value === true ? "Пройдено" : value === false ? "Не пройдено" : "Неизвестно", value === true ? "green" : value === false ? "red" : "gray")}</li>`).join("")}</ul></details>` : ""}</article>`;
+}
+function nativeComparison(comparison) {
+  if (!comparison || comparison.status === "incomplete") return '<div class="native-comparison"><h3>Сравнение OFF / ON</h3><p>Появится после двух успешно проверенных прогонов регрессии.</p></div>';
+  if (comparison.status !== "comparable") return '<div class="native-comparison"><h3>Сравнение OFF / ON</h3><p>Результаты не подтверждены как совместимые. Изучите отчёты каждого задания.</p></div>';
+  return `<div class="native-comparison"><h3>Сравнение OFF / ON</h3><div class="native-comparison-values"><span>OFF<strong>${esc(nativeMetric(comparison.off))}</strong></span><span>ON<strong>${esc(nativeMetric(comparison.on))}</strong></span><span>RMSE · ON − OFF<strong>${Number.isFinite(comparison.on_minus_off) ? number(comparison.on_minus_off, 6) : "—"}</strong></span></div><p>Отрицательная разница RMSE означает меньшую ошибку ON в этой проверке.</p>${comparison.rescue_exercised === false ? badge("Rescue был пропущен", "amber") : comparison.rescue_exercised === true ? badge("Rescue был запущен", "gray") : badge("Выполнение rescue не подтверждено", "gray")}<p>Одна пара на известных данных не доказывает общий прирост качества.</p></div>`;
+}
+function nativeDetailHTML(queue) {
+  const rows = NATIVE_PROFILES.map((profile) => {
+    const row = (queue.profiles || []).find((item) => item.profile === profile) || {profile, status: "pending"};
+    return row.status === "pending" && ["stopped", "cancelled", "interrupted", "failed", "cleanup_pending"].includes(queue.status)
+      ? {...row, status: "not_started", stage: "not_started"} : row;
+  });
+  const stopLabel = queue.status === "cleanup_pending" ? "Повторить остановку" : "Остановить всю очередь";
+  return `<section class="panel native-detail"><div class="panel-head"><div><h2>Серия ${esc(queue.id.slice(0, 8))}</h2><p>${esc(date(queue.created_at))} · до ${duration(queue.total_native_seconds || queue.time_budget_seconds * 3)} обучения</p></div>${nativeStatus(queue.status)}</div><div class="panel-body"><div class="native-series-actions">${nativeRunning(queue) ? `<button class="button danger" data-action="native-stop" data-native-id="${esc(queue.id)}" ${queue.status === "stopping" ? "disabled" : ""}>${icon("missing")} ${stopLabel}</button>` : ""}${queue.artifact_available ? `<a class="button" href="${nativePath(queue.id)}/evidence" download>${icon("download")} Скачать отчёты ZIP</a>` : '<span class="subtle-text">Архив появится после сохранения отчётов. При прерывании часть файлов может быть доступна только в папке результатов.</span>'}</div>${queue.error ? `<div class="warning-box native-error">${esc(queue.error)}</div>` : ""}<div class="native-profile-grid">${rows.map(nativeProfileCard).join("")}</div>${nativeComparison(queue.comparison)}<p class="native-hint">Метрики рассчитаны на известных проверочных строках TRAIN и не равны баллам платформы.</p><details class="native-location"><summary>Версия и папка результатов</summary><p>Версия агента <code>${esc(queue.release_sha || "Не подтверждена")}</code></p><p>Результаты <code>${esc(queue.output_dir || "Папка ещё не назначена")}</code></p><p>Прерванные серии сохраняются в истории. Продолжение старого обучения автоматически не запускается.</p></details></div></section>`;
+}
+function renderNativeHistory() {
+  const node = $("#native-history");
+  if (!node) return;
+  node.innerHTML = state.nativeQueues.length ? state.nativeQueues.map((queue) => `<button class="native-history-item ${queue.id === state.nativeSelectedQueue ? "selected" : ""}" data-native-queue="${esc(queue.id)}" aria-pressed="${queue.id === state.nativeSelectedQueue}"><span><strong>Серия ${esc(queue.id.slice(0, 8))}</strong><small>${esc(date(queue.created_at))}</small></span>${nativeStatus(queue.status)}</button>`).join("") : '<div class="job-empty"><h3>Серий пока нет</h3><p>Выберите две задачи и проверьте готовность компьютера.</p></div>';
+}
+function updateNativeLaunchState() {
+  const block = nativeLaunchBlock(), start = $("#native-start");
+  if (start) {
+    start.disabled = Boolean(block);
+    start.innerHTML = `${icon("activity")} ${state.nativeStartBusy ? "Запускаем…" : "Запустить три задания"}`;
+  }
+  const note = $("#native-launch-block");
+  if (note) note.textContent = block || "Задания выполняются по одному. Ошибка обязательной проверки остановит очередь.";
+}
+async function loadNativePage(generation) {
+  const [history, tasks, session, preflight] = await Promise.all([
+    api("/api/native-queues"), api("/api/tasks"), api("/api/session"),
+    state.nativePreflight ? Promise.resolve(state.nativePreflight) : api("/api/native-queues/preflight").catch((error) => ({ready: false, errors: [error.message]})),
+  ]);
+  if (generation !== state.generation || state.view !== "native") return;
+  state.tasks = Array.isArray(tasks.tasks) ? tasks.tasks : [];
+  if (!state.tasks.some((task) => task.id === state.task)) state.task = state.tasks.find((task) => task.available)?.id || state.tasks[0]?.id || null;
+  const taskSelect = $("#task-select");
+  taskSelect.innerHTML = state.tasks.length ? state.tasks.map((task) => `<option value="${esc(task.id)}">${esc(taskName(task))}</option>`).join("") : "<option>Задач пока нет</option>";
+  taskSelect.value = state.task || "";
+  taskSelect.disabled = !state.tasks.length;
+  state.session = session;
+  state.nativePreflight = preflight;
+  state.nativeQueues = Array.isArray(history.queues) ? history.queues : [];
+  setNativeActive(history.active_queue);
+  if (!nativeTasks("regression").some((task) => task.id === state.nativeRegressionTask)) state.nativeRegressionTask = nativeTasks("regression")[0]?.id || null;
+  if (!nativeTasks("classification").some((task) => task.id === state.nativeClassificationTask)) state.nativeClassificationTask = nativeTasks("classification")[0]?.id || null;
+  if (!state.nativeQueues.some((queue) => queue.id === state.nativeSelectedQueue)) state.nativeSelectedQueue = state.nativeActiveQueue?.id || state.nativeQueues[0]?.id || null;
+  main.innerHTML = nativeShell();
+  renderNativeHistory();
+  if (state.nativeSelectedQueue) await loadNativeDetail(state.nativeSelectedQueue, generation);
+  else $("#native-queue-detail").innerHTML = empty("Готово к ночным тестам", "После запуска здесь появятся этапы, метрики и проверки каждого задания.", "clock", false);
+}
+async function checkNativePreflight() {
+  if (state.nativePreflightBusy) return;
+  state.nativePreflightBusy = true;
+  const generation = state.generation;
+  $("#native-readiness").innerHTML = nativePreflightPanel();
+  try {
+    const [value, session] = await Promise.all([api("/api/native-queues/preflight"), api("/api/session")]);
+    if (generation === state.generation && state.view === "native") {
+      state.nativePreflight = value;
+      state.session = session;
+    }
+  } catch (error) {
+    if (generation === state.generation) state.nativePreflight = {ready: false, errors: [error.message]};
+  } finally {
+    state.nativePreflightBusy = false;
+    if (generation === state.generation && state.view === "native") {
+      $("#native-readiness").innerHTML = nativePreflightPanel();
+      updateNativeLaunchState();
+    }
+  }
+}
+async function loadNativeDetail(id, generation = state.generation) {
+  const request = ++state.nativeDetailGeneration;
+  const response = await api(nativePath(id));
+  if (generation !== state.generation || state.view !== "native" || state.nativeSelectedQueue !== id || request !== state.nativeDetailGeneration) return;
+  const queue = response.queue;
+  state.nativeDetail = queue;
+  const open = new Set($$(".native-audit[open]").map((node) => node.dataset.profile));
+  $("#native-queue-detail").innerHTML = nativeDetailHTML(queue);
+  $$(".native-audit").forEach((node) => { node.open = open.has(node.dataset.profile); });
+  $("#native-log-panel").hidden = false;
+  $("#native-log-kind").value = state.nativeLogKind;
+  $("#native-log-profile").value = state.nativeLogProfile;
+  $("#native-log-profile-field").hidden = state.nativeLogKind === "coordinator";
+  await loadNativeLog(id, generation);
+}
+async function loadNativeLog(id = state.nativeSelectedQueue, generation = state.generation) {
+  if (!id) return;
+  const kind = state.nativeLogKind, profile = state.nativeLogProfile, request = ++state.nativeLogGeneration;
+  const query = new URLSearchParams({kind});
+  if (kind !== "coordinator") query.set("profile", profile);
+  try {
+    const response = await api(`${nativePath(id)}/logs?${query}`);
+    if (generation !== state.generation || state.view !== "native" || state.nativeSelectedQueue !== id || kind !== state.nativeLogKind || profile !== state.nativeLogProfile || request !== state.nativeLogGeneration) return;
+    const node = $("#native-log"), atEnd = node.scrollTop + node.clientHeight >= node.scrollHeight - 10;
+    node.textContent = response.text || (kind === "coordinator" ? "В журнале пока нет записей." : "Итоговый журнал появится после завершения задания.");
+    if (atEnd) node.scrollTop = node.scrollHeight;
+    $("#native-log-caption").textContent = kind === "coordinator" ? "Журнал координатора · обновляется во время работы" : `${kind} · ${NATIVE_NAMES[profile]} · ${response.finalized ? "сохранённый итоговый журнал" : "будет сохранён после завершения задания"}`;
+  } catch (error) {
+    if (generation === state.generation && state.view === "native" && state.nativeSelectedQueue === id && request === state.nativeLogGeneration)
+      $("#native-log").textContent = error.message;
+  }
+}
+async function startNativeQueue(event) {
+  event.preventDefault();
+  if (nativeLaunchBlock()) return;
+  const generation = state.generation, errorNode = $("#native-launch-error");
+  errorNode.textContent = "";
+  let payload;
+  try { payload = nativePayload(state.nativeRegressionTask, state.nativeClassificationTask, state.nativeBudgetSeconds); }
+  catch (error) { errorNode.textContent = error.message; return; }
+  state.nativeStartBusy = true;
+  updateNativeLaunchState();
+  try {
+    const response = await post("/api/native-queues", payload);
+    setNativeActive(response.queue);
+    state.nativeSelectedQueue = response.queue.id;
+    if (generation === state.generation && state.view === "native") await loadNativePage(generation);
+    toast("Серия запущена. Задания выполняются последовательно.");
+  } catch (error) {
+    if (generation === state.generation && state.view === "native") errorNode.textContent = error.message;
+    else toast(error.message);
+  } finally {
+    state.nativeStartBusy = false;
+    if (state.view === "native") updateNativeLaunchState();
+  }
+}
+async function stopNativeQueue(id, button) {
+  button.disabled = true;
+  try {
+    const response = await post(`${nativePath(id)}/stop`, {});
+    if (!nativeRunning(response.queue)) setNativeActive(null);
+    if (state.view === "native" && state.nativeSelectedQueue === id) await loadNativeDetail(id);
+    toast("Остановка всей очереди запрошена.");
+  } catch (error) { toast(error.message); }
+  finally { if (button.isConnected) button.disabled = false; }
+}
+async function pollNativeQueues() {
+  if (document.hidden || state.view !== "native" || state.nativePollBusy) return;
+  const generation = state.generation;
+  state.nativePollBusy = true;
+  try {
+    const [response, session] = await Promise.all([api("/api/native-queues"), api("/api/session")]);
+    if (generation !== state.generation || state.view !== "native") return;
+    state.session = session;
+    state.nativeQueues = Array.isArray(response.queues) ? response.queues : [];
+    setNativeActive(response.active_queue);
+    renderNativeHistory();
+    updateNativeLaunchState();
+    if (state.nativeSelectedQueue) await loadNativeDetail(state.nativeSelectedQueue, generation);
+    $("#native-refresh-time").textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+  } catch {
+    if (generation === state.generation && $("#native-refresh-time")) $("#native-refresh-time").textContent = "Нет обновления. Сохранённые результаты остаются на экране.";
+  } finally { state.nativePollBusy = false; }
+}
+async function syncNativeActivity() {
+  if (state.nativeActivityBusy || Date.now() - state.nativeActivityUpdated < 3000) return;
+  state.nativeActivityBusy = true;
+  try { setNativeActive((await api("/api/native-queues")).active_queue); }
+  catch { /* The server remains authoritative if activity cannot be refreshed. */ }
+  finally { state.nativeActivityBusy = false; }
+}
 function typeName(type) {
   return (
     {
@@ -206,18 +496,24 @@ async function loadTasks() {
   const generation = ++state.generation;
   main.innerHTML = loading("Ищем локальные задачи…");
   try {
-    const [data, session] = await Promise.all([
+    const [data, session, native] = await Promise.all([
       api("/api/tasks"),
       api("/api/session"),
+      api("/api/native-queues").catch(() => ({active_queue: null})),
     ]);
     if (generation === state.generation) state.session = session;
     if (generation !== state.generation) return;
+    setNativeActive(native.active_queue);
     state.tasks = Array.isArray(data.tasks) ? data.tasks : [];
     const select = $("#task-select");
     if (!state.tasks.length) {
       state.task = null;
       select.innerHTML = "<option>Задач пока нет</option>";
       select.disabled = true;
+      if (state.view === "native") {
+        await renderView();
+        return;
+      }
       main.innerHTML =
         heading(
           "ОБЗОР ДАННЫХ",
@@ -260,7 +556,7 @@ async function renderView() {
   state.fileGeneration++;
   state.jobGeneration++;
   state.lastRunFingerprint = null;
-  const names = { data: "Данные", runs: "Запуски", result: "Результат" };
+  const names = { data: "Данные", runs: "Запуски", result: "Результат", native: "Ночные тесты" };
   $$(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === state.view);
     if (button.dataset.view === state.view)
@@ -268,6 +564,15 @@ async function renderView() {
     else button.removeAttribute("aria-current");
   });
   $("#crumb-name").textContent = names[state.view];
+  if (state.view === "native") {
+    main.innerHTML = loading("Открываем серии тестов…");
+    try {
+      await loadNativePage(generation);
+    } catch (error) {
+      if (generation === state.generation) main.innerHTML = errorView(error, "Не удалось открыть ночные тесты");
+    }
+    return;
+  }
   if (!state.task) {
     if (state.view === "runs") await loadJobsPage(generation);
     else await loadTasks();
@@ -299,6 +604,7 @@ async function renderView() {
     else if (state.view === "runs") await loadRuns(generation);
     else await loadResult(generation);
     if (generation === state.generation) mountWorkflow();
+    applyNativeLaneControls();
   } catch (error) {
     if (generation === state.generation) main.innerHTML = errorView(error);
   }
@@ -861,7 +1167,7 @@ async function refresh() {
   await loadTasks();
 }
 function navigate(view) {
-  if (!["data", "runs", "result"].includes(view)) return;
+  if (!["data", "runs", "result", "native"].includes(view)) return;
   state.view = view;
   history.replaceState(null, "", `#${view}`);
   renderView();
@@ -903,7 +1209,13 @@ $("#help-dialog").addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
-  if (button.dataset.closeDialog) $("#" + button.dataset.closeDialog)?.close();
+  if (button.dataset.nativeQueue) {
+    state.nativeSelectedQueue = button.dataset.nativeQueue;
+    renderNativeHistory();
+    loadNativeDetail(button.dataset.nativeQueue).catch((error) => toast(error.message));
+  } else if (button.dataset.action === "native-preflight") checkNativePreflight();
+  else if (button.dataset.action === "native-stop") stopNativeQueue(button.dataset.nativeId, button);
+  else if (button.dataset.closeDialog) $("#" + button.dataset.closeDialog)?.close();
   else if (button.dataset.launch) showLaunch(button.dataset.launch);
   else if (button.dataset.editJob) editJobSettings(button.dataset.editJob);
   else if (button.dataset.openJob)
@@ -944,7 +1256,28 @@ document.addEventListener("click", (event) => {
 });
 window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
 setInterval(pollWorkspace, 1500);
-if (["data", "runs", "result"].includes(location.hash.slice(1)))
+setInterval(pollNativeQueues, 3000);
+document.addEventListener("change", (event) => {
+  if (event.target.id === "native-regression-task") state.nativeRegressionTask = event.target.value;
+  else if (event.target.id === "native-classification-task") state.nativeClassificationTask = event.target.value;
+  else if (event.target.id === "native-budget") {
+    state.nativeBudgetSeconds = Number(event.target.value);
+    $("#native-total-budget").textContent = duration(state.nativeBudgetSeconds * 3);
+  } else if (event.target.id === "native-log-kind") {
+    if (!["coordinator", "stdout", "stderr"].includes(event.target.value)) return;
+    state.nativeLogKind = event.target.value;
+    $("#native-log-profile-field").hidden = state.nativeLogKind === "coordinator";
+    loadNativeLog();
+  } else if (event.target.id === "native-log-profile") {
+    if (!NATIVE_PROFILES.includes(event.target.value)) return;
+    state.nativeLogProfile = event.target.value;
+    loadNativeLog();
+  }
+});
+document.addEventListener("submit", (event) => {
+  if (event.target.id === "native-launch-form") startNativeQueue(event);
+});
+if (["data", "runs", "result", "native"].includes(location.hash.slice(1)))
   state.view = location.hash.slice(1);
 loadTasks();
 
@@ -1041,6 +1374,7 @@ function workflowStrip() {
   return `<div class="workflow-strip" id="workflow-strip" aria-label="Этапы работы">${steps.map((step, i) => `<button class="workflow-step ${step.done ? "done" : ""} ${step.active ? "active" : ""}" data-workflow-view="${step.view}"><span class="workflow-number">${step.done ? icon("check") : i + 1}</span><span><strong>${step.name}</strong><small>${esc(step.detail)}</small></span></button>`).join("")}</div>`;
 }
 function mountWorkflow() {
+  applyNativeLaneControls();
   if (!state.task) return;
   const current = $("#workflow-strip");
   if (current) current.outerHTML = workflowStrip();
@@ -1786,6 +2120,10 @@ function updateLaunchFields() {
   if ($("#model-fields")) $("#model-fields").disabled = !fixedRecipe;
 }
 async function showLaunch(action = "automl", editReference = null) {
+  if (nativeRunning(state.nativeActiveQueue)) {
+    toast("Сейчас выполняется ночная серия. Дождитесь её завершения или остановите всю очередь.");
+    return;
+  }
   if (action === "prepare") {
     startPrepare();
     return;
@@ -1887,6 +2225,10 @@ $("#launch-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget,
     button = $("#launch-submit");
   if (button.disabled) return;
+  if (nativeRunning(state.nativeActiveQueue)) {
+    $("#launch-error").textContent = "Ночная серия занимает очередь CPU. Дождитесь завершения или остановите её.";
+    return;
+  }
   const action = $('input[name="recipe"]:checked', form)?.value,
     author = form.elements.author.value.trim(),
     hypothesis = form.elements.hypothesis.value.trim(),
@@ -2151,7 +2493,9 @@ $("#report-file").addEventListener("change", async (event) => {
   }
 });
 async function pollWorkspace() {
+  if (state.view === "native") return;
   if (document.hidden || state.jobPollBusy || state.pollBusy) return;
+  await syncNativeActivity();
   const generation = state.generation,
     task = state.task;
   if (state.view === "runs") {

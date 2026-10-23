@@ -26,7 +26,7 @@ from app.profiling import DataCatalog
 from app.runs import RunReader
 from app.sharing import ReportStore
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -49,15 +49,26 @@ class WorkspaceServer(ThreadingHTTPServer):
         self.state_root = Path(state_root) if state_root is not None else APP_DIR / ".workspace"
         self.jobs = JobManager(Path(data_root), self.state_root, self.catalog)
         self.reports = ReportStore(self.state_root)
+        self.execution_gate = threading.RLock()
+        self.native_queues = None
         try:
+            from app.native_queues import NativeQueueManager
+            self.native_queues = NativeQueueManager(Path(data_root), self.state_root, self.catalog,
+                                                   ordinary_jobs=self.jobs)
             super().__init__(("127.0.0.1", port), WorkspaceHandler)
         except Exception:
+            if self.native_queues is not None:
+                self.native_queues.close()
             self.jobs.close()
             raise
 
     def server_close(self):
         try:
-            self.jobs.close()
+            try:
+                if self.native_queues is not None:
+                    self.native_queues.close()
+            finally:
+                self.jobs.close()
         finally:
             super().server_close()
 
@@ -92,6 +103,7 @@ class WorkspaceServer(ThreadingHTTPServer):
                           "model": baseline.get("model", {}).get("name")} if baseline else None),
             "submission": {name: result["submission"].get(name) for name in ("exists", "valid")},
             "api": api_settings(), "active_job": self.jobs.active_job(),
+            "active_queue": self.native_queues.active_queue(),
             "latest_job": jobs[0] if jobs else None,
             "experiments_count": len(jobs) + len(self.reports.list(task_id)),
             "published_job_id": next((item["id"] for item in jobs if item.get("published")), None),
@@ -190,11 +202,32 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/session":
                 self._json({"token": self.server.token, "api": api_settings(),
-                            "active_job": self.server.jobs.active_job(), "version": VERSION})
+                            "active_job": self.server.jobs.active_job(),
+                            "active_queue": self.server.native_queues.active_queue(), "version": VERSION})
                 return
             if path == "/api/tasks":
                 self._json({"tasks": self.server.catalog.discover(), "version": VERSION})
                 return
+            if parts[:2] == ["api", "native-queues"]:
+                manager = self.server.native_queues
+                if len(parts) == 2 and not query:
+                    self._json({"queues": manager.list(), "active_queue": manager.active_queue()})
+                    return
+                if len(parts) == 3 and parts[2] == "preflight" and not query:
+                    self._json(manager.preflight())
+                    return
+                if len(parts) in {3, 4} and re.fullmatch(r"[0-9a-f]{32}", parts[2]):
+                    if len(parts) == 3 and not query:
+                        self._json({"queue": manager.detail(parts[2])})
+                        return
+                    if len(parts) == 4 and parts[3] == "logs" and not set(query) - {"kind", "profile"}:
+                        self._json(manager.logs(parts[2], kind=self._one(query, "kind") if "kind" in query else "coordinator",
+                                                profile=self._one(query, "profile") if "profile" in query else None))
+                        return
+                    if len(parts) == 4 and parts[3] == "evidence" and not query:
+                        self._download_native(manager.artifact(parts[2]), parts[2])
+                        return
+                raise FileNotFoundError("Серия тестов не найдена.")
             if parts[:2] == ["api", "jobs"]:
                 task_id = self._query_task(query)
                 if len(parts) == 2:
@@ -250,7 +283,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 elif action == "experiments":
                     self._json({"experiments": self.server.experiments(task_id),
                                 "dataset_fingerprint": self.server.catalog.fingerprint(task_id),
-                                "active_job": self.server.jobs.active_job()})
+                                "active_job": self.server.jobs.active_job(),
+                                "active_queue": self.server.native_queues.active_queue()})
                 elif action == "export":
                     envelope = self.server.reports.export(task_id, self.server.catalog.fingerprint(task_id),
                                                           self.server.experiments(task_id))
@@ -304,18 +338,34 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             path, parts, query = self._address()
             is_job = path == "/api/jobs"
             is_delivery = path == "/api/delivery"
+            is_native = path == "/api/native-queues"
+            is_native_stop = (len(parts) == 4 and parts[:2] == ["api", "native-queues"]
+                              and re.fullmatch(r"[0-9a-f]{32}", parts[2]) and parts[3] == "stop")
             is_job_action = (len(parts) == 4 and parts[:2] == ["api", "jobs"]
                              and SAFE_ID.fullmatch(parts[2]) and parts[3] in {"stop", "publish"})
             is_import = (len(parts) == 4 and parts[:2] == ["api", "tasks"]
                          and SAFE_ID.fullmatch(parts[2]) and parts[3] == "import")
-            if not (is_job or is_job_action or is_import or is_delivery):
+            if not (is_job or is_job_action or is_import or is_delivery or is_native or is_native_stop):
                 self._json({"error": "Это действие не поддерживается."}, 405)
                 return
             token = self.headers.get("X-Alfa-Token", "")
             if not hmac.compare_digest(token, self.server.token):
                 raise PermissionError()
             body = self._body(allow_zip=is_import)
-            if is_delivery:
+            if is_native:
+                if set(body) - {"regression_task_id", "classification_task_id", "time_budget_seconds"}:
+                    raise ValueError("Неизвестные параметры серии тестов.")
+                regression = self._task_value(body.get("regression_task_id"))
+                classification = self._task_value(body.get("classification_task_id"))
+                with self.server.execution_gate:
+                    queue = self.server.native_queues.start(regression, classification,
+                                time_budget_seconds=body.get("time_budget_seconds", 10500))
+                self._json({"queue": queue}, 202)
+            elif is_native_stop:
+                if body:
+                    raise ValueError("Остановка серии не принимает дополнительные параметры.")
+                self._json({"queue": self.server.native_queues.stop(parts[2])})
+            elif is_delivery:
                 if body:
                     raise ValueError("Сборка решения не принимает дополнительные параметры.")
                 self._bytes(delivery_archive(), "application/zip", filename="solution.zip")
@@ -327,7 +377,10 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 if "model_params" in body and body.get("action") not in ("baseline", "extra_trees", "catboost", "lightgbm", "linear"):
                     raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
-                job = self.server.jobs.start(task_id, body.get("action"),
+                with self.server.execution_gate:
+                    if self.server.native_queues.active_queue():
+                        raise RuntimeError("Выполняется серия тестов. Дождитесь завершения или остановите её.")
+                    job = self.server.jobs.start(task_id, body.get("action"),
                                              author=body.get("author", ""),
                                              hypothesis=body.get("hypothesis", ""),
                                              minutes=body.get("minutes", 10 if body.get("action") == "automl" else 20),
@@ -367,6 +420,22 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             if size > 128 * 1024 * 1024:
                 raise ValueError("Файл слишком большой для скачивания через панель.")
             self._headers(200, "text/csv; charset=utf-8", size, filename="submission.csv")
+            if self.command != "HEAD":
+                remaining = size
+                while remaining:
+                    block = stream.read(min(64 * 1024, remaining))
+                    if not block:
+                        break
+                    self.wfile.write(block)
+                    remaining -= len(block)
+
+    def _download_native(self, path, queue_id):
+        with path.open("rb") as stream:
+            import os
+            size = os.fstat(stream.fileno()).st_size
+            if size > 300 * 1024 * 1024:
+                raise ValueError("Архив диагностики превышает допустимый размер.")
+            self._headers(200, "application/zip", size, filename=f"alfa-native-{queue_id[:8]}.zip")
             if self.command != "HEAD":
                 remaining = size
                 while remaining:
