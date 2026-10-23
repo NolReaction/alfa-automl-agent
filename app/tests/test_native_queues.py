@@ -305,7 +305,7 @@ class NativeQueueTests(unittest.TestCase):
         self.assertEqual(restored.active_queue()["status"], "cleanup_pending")
         self.assertIsNone(restored.detail(identifier)["finished_at"])
         self.assertFalse(restored.preflight()["ready"])
-        persisted = json.loads((restored._folder(identifier) / "registry.json").read_text())
+        persisted = json.loads((restored._folder(identifier) / "registry.json").read_text(encoding="utf-8"))
         self.assertEqual((persisted["_runtime"]["pid"], persisted["_runtime"]["identity"]),
                          (99999, "fixture-birth"))
         with patch.object(native, "_identity", return_value="a-new-process-birth"), \
@@ -314,7 +314,7 @@ class NativeQueueTests(unittest.TestCase):
         reused_kill.assert_not_called()
         self.assertEqual(result["status"], "interrupted")
         self.assertIsNone(restored.active_queue())
-        self.assertNotIn("_runtime", json.loads((restored._folder(identifier) / "registry.json").read_text()))
+        self.assertNotIn("_runtime", json.loads((restored._folder(identifier) / "registry.json").read_text(encoding="utf-8")))
 
     def test_unknown_recovered_identity_stays_retryable_without_killing_arbitrary_pid(self):
         identifier, _ = self.queued()
@@ -345,7 +345,7 @@ class NativeQueueTests(unittest.TestCase):
             self.manager.close()
             self.assertEqual(self.manager.detail(identifier)["status"], "cleanup_pending")
             self.assertIn(10, active["thread"].join_timeouts)
-            self.assertIn("_runtime", json.loads((self.manager._folder(identifier) / "registry.json").read_text()))
+            self.assertIn("_runtime", json.loads((self.manager._folder(identifier) / "registry.json").read_text(encoding="utf-8")))
         self.assertEqual(self.manager.stop(identifier)["status"], "cancelled")
         self.assertIsNone(self.manager.active_queue())
         self.assertTrue(process.terminated)
