@@ -1,0 +1,930 @@
+{
+  "arms": {
+    "off": {
+      "api_attempts": 0,
+      "api_responses": 0,
+      "cleanup_elapsed_seconds": 0.0010269659978803247,
+      "existing_extension_attempts": 3,
+      "existing_extension_verified": 3,
+      "experiment_qualification": "incomplete",
+      "final_stage_budgets": {
+        "baseline_outer": {
+          "completed_stages": [],
+          "pending_allocations": {
+            "baseline_outer": 244.47110190133952,
+            "baseline_refit": 695.547333937805,
+            "candidate_outer": 134.5189913017272,
+            "candidate_refit": 382.38997509512865
+          },
+          "remaining_seconds": 1458.9273616970022,
+          "timeout_seconds": 244.47110190133952
+        },
+        "baseline_refit": {
+          "completed_stages": [
+            "baseline_outer",
+            "candidate_outer"
+          ],
+          "pending_allocations": {
+            "baseline_refit": 495.4258189284636,
+            "candidate_refit": 729.6695329095373
+          },
+          "remaining_seconds": 1227.0953448670007,
+          "timeout_seconds": 495.4258189284636
+        },
+        "candidate_outer": {
+          "completed_stages": [
+            "baseline_outer"
+          ],
+          "pending_allocations": {
+            "baseline_refit": 455.71707320246014,
+            "candidate_outer": 235.8284147793398,
+            "candidate_refit": 671.1859802982024
+          },
+          "remaining_seconds": 1364.7314594870004,
+          "timeout_seconds": 235.8284147793398
+        },
+        "candidate_refit": {
+          "completed_stages": [
+            "baseline_outer",
+            "candidate_outer",
+            "baseline_refit"
+          ],
+          "pending_allocations": {
+            "candidate_refit": 1111.8193619720005
+          },
+          "remaining_seconds": 1113.8193555220023,
+          "timeout_seconds": 1111.8193619720005
+        }
+      },
+      "fresh_full_train_rows": 87670,
+      "inner_macro_f1": 0.648249277039707,
+      "inner_scores": {
+        "class_order": [
+          "Analysis",
+          "Backdoor",
+          "DoS",
+          "Exploits",
+          "Fuzzers",
+          "Generic",
+          "Normal",
+          "Reconnaissance",
+          "Shellcode",
+          "Worms"
+        ],
+        "confusion_matrix": [
+          [
+            43,
+            18,
+            84,
+            7,
+            1,
+            0,
+            8,
+            0,
+            0,
+            0
+          ],
+          [
+            11,
+            27,
+            71,
+            11,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0
+          ],
+          [
+            41,
+            91,
+            668,
+            151,
+            20,
+            0,
+            3,
+            6,
+            11,
+            0
+          ],
+          [
+            79,
+            161,
+            821,
+            1518,
+            45,
+            4,
+            9,
+            86,
+            15,
+            1
+          ],
+          [
+            11,
+            18,
+            96,
+            21,
+            1196,
+            3,
+            112,
+            4,
+            12,
+            0
+          ],
+          [
+            0,
+            0,
+            25,
+            26,
+            3,
+            3371,
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            28,
+            0,
+            0,
+            38,
+            530,
+            0,
+            3845,
+            5,
+            5,
+            0
+          ],
+          [
+            5,
+            17,
+            99,
+            49,
+            3,
+            1,
+            0,
+            572,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            4,
+            16,
+            0,
+            1,
+            0,
+            72,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7
+          ]
+        ],
+        "macro_f1": 0.648249277039707,
+        "per_class": {
+          "Analysis": {
+            "f1": 0.22691292875989447,
+            "precision": 0.19724770642201836,
+            "recall": 0.2670807453416149,
+            "support": 161
+          },
+          "Backdoor": {
+            "f1": 0.11920529801324503,
+            "precision": 0.08132530120481928,
+            "recall": 0.2231404958677686,
+            "support": 121
+          },
+          "DoS": {
+            "f1": 0.4679509632224168,
+            "precision": 0.3583690987124464,
+            "recall": 0.6740665993945509,
+            "support": 991
+          },
+          "Exploits": {
+            "f1": 0.6650602409638554,
+            "precision": 0.8313253012048193,
+            "recall": 0.5542168674698795,
+            "support": 2739
+          },
+          "Fuzzers": {
+            "f1": 0.7277152418618801,
+            "precision": 0.659316427783903,
+            "recall": 0.811948404616429,
+            "support": 1473
+          },
+          "Generic": {
+            "f1": 0.9905965324713488,
+            "precision": 0.9976324356318438,
+            "recall": 0.983659177122848,
+            "support": 3427
+          },
+          "Normal": {
+            "f1": 0.9121100699798363,
+            "precision": 0.9660804020100503,
+            "recall": 0.8638508200404403,
+            "support": 4451
+          },
+          "Reconnaissance": {
+            "f1": 0.8056338028169014,
+            "precision": 0.8486646884272997,
+            "recall": 0.7667560321715817,
+            "support": 746
+          },
+          "Shellcode": {
+            "f1": 0.6923076923076923,
+            "precision": 0.6260869565217392,
+            "recall": 0.7741935483870968,
+            "support": 93
+          },
+          "Worms": {
+            "f1": 0.875,
+            "precision": 0.875,
+            "recall": 0.875,
+            "support": 8
+          }
+        }
+      },
+      "internal_execution_stops": [
+        ".agent_runs/eb812f4058264203a2f23e61c6e8f8d3/run.json/baseline_search/search/candidates/13/resources/timed_out",
+        ".agent_runs/eb812f4058264203a2f23e61c6e8f8d3/run.json/baseline_search/search/candidates/14/resources/timed_out",
+        ".agent_runs/eb812f4058264203a2f23e61c6e8f8d3/startup/automl_report.json/search/candidates/13/resources/timed_out",
+        ".agent_runs/eb812f4058264203a2f23e61c6e8f8d3/startup/automl_report.json/search/candidates/14/resources/timed_out"
+      ],
+      "metric_use": "standalone_OFF_diagnostic; no paired OOF quality claim",
+      "native_allocated_seconds": 3593.738794942001,
+      "native_cli_budget_seconds": 3600,
+      "native_elapsed_seconds": 2661.551,
+      "native_status": "completed",
+      "ordinary_local_attempts": 54,
+      "ordinary_local_failed": 1,
+      "ordinary_local_verified": 53,
+      "outer_scores": {
+        "class_order": [
+          "Analysis",
+          "Backdoor",
+          "DoS",
+          "Exploits",
+          "Fuzzers",
+          "Generic",
+          "Normal",
+          "Reconnaissance",
+          "Shellcode",
+          "Worms"
+        ],
+        "confusion_matrix": [
+          [
+            58,
+            13,
+            106,
+            5,
+            0,
+            0,
+            10,
+            0,
+            0,
+            0
+          ],
+          [
+            9,
+            41,
+            125,
+            12,
+            0,
+            0,
+            1,
+            2,
+            1,
+            1
+          ],
+          [
+            59,
+            69,
+            872,
+            180,
+            9,
+            0,
+            3,
+            8,
+            12,
+            0
+          ],
+          [
+            99,
+            82,
+            1037,
+            1871,
+            51,
+            5,
+            14,
+            112,
+            23,
+            2
+          ],
+          [
+            9,
+            10,
+            131,
+            20,
+            1517,
+            1,
+            91,
+            7,
+            17,
+            0
+          ],
+          [
+            2,
+            4,
+            39,
+            32,
+            8,
+            4062,
+            2,
+            1,
+            0,
+            0
+          ],
+          [
+            44,
+            0,
+            3,
+            36,
+            672,
+            0,
+            4900,
+            4,
+            6,
+            0
+          ],
+          [
+            13,
+            11,
+            132,
+            45,
+            1,
+            0,
+            0,
+            678,
+            1,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            7,
+            13,
+            0,
+            3,
+            2,
+            82,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            12
+          ]
+        ],
+        "macro_f1": 0.6469928093378587,
+        "per_class": {
+          "Analysis": {
+            "f1": 0.23917525773195877,
+            "precision": 0.19795221843003413,
+            "recall": 0.3020833333333333,
+            "support": 192
+          },
+          "Backdoor": {
+            "f1": 0.1943127962085308,
+            "precision": 0.1782608695652174,
+            "recall": 0.21354166666666666,
+            "support": 192
+          },
+          "DoS": {
+            "f1": 0.4766329598250888,
+            "precision": 0.3563547200653862,
+            "recall": 0.7194719471947195,
+            "support": 1212
+          },
+          "Exploits": {
+            "f1": 0.6794988196840385,
+            "precision": 0.8462234283129806,
+            "recall": 0.5676577669902912,
+            "support": 3296
+          },
+          "Fuzzers": {
+            "f1": 0.7447226313205695,
+            "precision": 0.6679876706296786,
+            "recall": 0.841375485302274,
+            "support": 1803
+          },
+          "Generic": {
+            "f1": 0.9885616938427841,
+            "precision": 0.9985250737463127,
+            "recall": 0.9787951807228915,
+            "support": 4150
+          },
+          "Normal": {
+            "f1": 0.91683038637852,
+            "precision": 0.9753184713375797,
+            "recall": 0.8649602824360106,
+            "support": 5665
+          },
+          "Reconnaissance": {
+            "f1": 0.8,
+            "precision": 0.8329238329238329,
+            "recall": 0.7695800227014756,
+            "support": 881
+          },
+          "Shellcode": {
+            "f1": 0.656,
+            "precision": 0.5774647887323944,
+            "recall": 0.7592592592592593,
+            "support": 108
+          },
+          "Worms": {
+            "f1": 0.7741935483870968,
+            "precision": 0.8,
+            "recall": 0.75,
+            "support": 16
+          }
+        }
+      },
+      "physical_fit_accounting": {
+        "by_category": {
+          "existing_extension": {
+            "actual_fits_completed": 10,
+            "actual_fits_started": 10,
+            "completed_fit_lower_bound": 10,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 5,
+            "source_inferred_completed_fits": 10,
+            "started_fit_lower_bound": 10,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 5
+          },
+          "ordinary": {
+            "actual_fits_completed": null,
+            "actual_fits_started": null,
+            "completed_fit_lower_bound": 59,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 57,
+            "source_inferred_completed_fits": 59,
+            "started_fit_lower_bound": 59,
+            "unknown_fit_invocations": [
+              "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/inner_evaluations/inner_selection_2cb3e2a4f55c4d04aba289d1d25db5ed"
+            ],
+            "unknown_fit_invocations_count": 1,
+            "worker_entered_confirmed": 56
+          },
+          "other_source": {
+            "actual_fits_completed": 0,
+            "actual_fits_started": 0,
+            "completed_fit_lower_bound": 0,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 0,
+            "source_inferred_completed_fits": 0,
+            "started_fit_lower_bound": 0,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 0
+          },
+          "round5_custom": {
+            "actual_fits_completed": 0,
+            "actual_fits_started": 0,
+            "completed_fit_lower_bound": 0,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 0,
+            "source_inferred_completed_fits": 0,
+            "started_fit_lower_bound": 0,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 0
+          },
+          "startup": {
+            "actual_fits_completed": null,
+            "actual_fits_started": null,
+            "completed_fit_lower_bound": 19,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 19,
+            "source_inferred_completed_fits": 19,
+            "started_fit_lower_bound": 19,
+            "unknown_fit_invocations": [
+              "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/workspace/.agent_runs/f7688cbcb1e749c6bdcd93e394baa2f7/refine_5/selection",
+              "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/workspace/.agent_runs/f7688cbcb1e749c6bdcd93e394baa2f7/refine_6/selection"
+            ],
+            "unknown_fit_invocations_count": 2,
+            "worker_entered_confirmed": 19
+          }
+        },
+        "by_phase": {
+          "full_refit": {
+            "actual_fits_completed": 4,
+            "actual_fits_started": 4,
+            "completed_fit_lower_bound": 4,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 2,
+            "source_inferred_completed_fits": 4,
+            "started_fit_lower_bound": 4,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 2
+          },
+          "inner_selection": {
+            "actual_fits_completed": null,
+            "actual_fits_started": null,
+            "completed_fit_lower_bound": 61,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 58,
+            "source_inferred_completed_fits": 61,
+            "started_fit_lower_bound": 61,
+            "unknown_fit_invocations": [
+              "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/inner_evaluations/inner_selection_2cb3e2a4f55c4d04aba289d1d25db5ed"
+            ],
+            "unknown_fit_invocations_count": 1,
+            "worker_entered_confirmed": 57
+          },
+          "outer_validation": {
+            "actual_fits_completed": 4,
+            "actual_fits_started": 4,
+            "completed_fit_lower_bound": 4,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 2,
+            "source_inferred_completed_fits": 4,
+            "started_fit_lower_bound": 4,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 2
+          },
+          "refit": {
+            "actual_fits_completed": 2,
+            "actual_fits_started": 2,
+            "completed_fit_lower_bound": 2,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 1,
+            "source_inferred_completed_fits": 2,
+            "started_fit_lower_bound": 2,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 1
+          },
+          "seed": {
+            "actual_fits_completed": 2,
+            "actual_fits_started": 2,
+            "completed_fit_lower_bound": 2,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 1,
+            "source_inferred_completed_fits": 2,
+            "started_fit_lower_bound": 2,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 1
+          },
+          "selection": {
+            "actual_fits_completed": null,
+            "actual_fits_started": null,
+            "completed_fit_lower_bound": 12,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 14,
+            "source_inferred_completed_fits": 12,
+            "started_fit_lower_bound": 12,
+            "unknown_fit_invocations": [
+              "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/workspace/.agent_runs/f7688cbcb1e749c6bdcd93e394baa2f7/refine_5/selection",
+              "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/workspace/.agent_runs/f7688cbcb1e749c6bdcd93e394baa2f7/refine_6/selection"
+            ],
+            "unknown_fit_invocations_count": 2,
+            "worker_entered_confirmed": 14
+          },
+          "verification": {
+            "actual_fits_completed": 3,
+            "actual_fits_started": 3,
+            "completed_fit_lower_bound": 3,
+            "event_verified_completed_fits": 0,
+            "invocation_attempts": 3,
+            "source_inferred_completed_fits": 3,
+            "started_fit_lower_bound": 3,
+            "unknown_fit_invocations": [],
+            "unknown_fit_invocations_count": 0,
+            "worker_entered_confirmed": 3
+          }
+        },
+        "definition": "base-estimator fit calls; excludes preprocessing fits, tree/iteration counts, pure prediction blending, smoke and test fixtures",
+        "qualification": "Ordinary counts infer completed calls from sealed code and completion artifacts; custom completed events are direct observations. Missing completion evidence never proves zero fits. Unmatched started events may precede a process kill before actual fit entry.",
+        "summary": {
+          "actual_fits_completed": null,
+          "actual_fits_started": null,
+          "completed_fit_lower_bound": 88,
+          "event_verified_completed_fits": 0,
+          "invocation_attempts": 81,
+          "source_inferred_completed_fits": 88,
+          "started_fit_lower_bound": 88,
+          "unknown_fit_invocations": [
+            "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/inner_evaluations/inner_selection_2cb3e2a4f55c4d04aba289d1d25db5ed",
+            "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/workspace/.agent_runs/f7688cbcb1e749c6bdcd93e394baa2f7/refine_5/selection",
+            "arms/off/task/.agent_runs/eb812f4058264203a2f23e61c6e8f8d3/workspace/.agent_runs/f7688cbcb1e749c6bdcd93e394baa2f7/refine_6/selection"
+          ],
+          "unknown_fit_invocations_count": 3,
+          "worker_entered_confirmed": 80
+        }
+      },
+      "published_identity": {
+        "code_hash": "137c05075dec9f9044e8b7bf46c978235a3a182d9a31db1239eb3dd0b005f8ef",
+        "recipe_hash": "859619b388cb801792b025c60366506615b9eb9c31098b06deb49a8f99b991ea"
+      },
+      "published_outer_macro_f1": 0.6469928093378587,
+      "published_phase_proof": {
+        "outer": {
+          "context_sha256": "6066c88346ea0ee58ed526457dce2687b2a6bb79ee1ae702cf871521e78ba8c8",
+          "fit_rows": 70155,
+          "nonce": "f9093720a8604fd5a306eded691e4a4e",
+          "output_sha256": "9600fcdaaa5a8c4b647bd1bd1ffc79c91fa91bdcc5a24f65023e9f6e5dc146b1",
+          "predict_rows": 17515,
+          "receipt": ".agent_runs/eb812f4058264203a2f23e61c6e8f8d3/outer_evaluations/candidate/outer_validation_9e5e85f84c5e499995ea75c28a5d8a56/receipt.json",
+          "receipt_sha256": "a4ab24dc89343e3ad7b258637a68cb2fa9fe2dc582960452516e6f981e34b36c"
+        },
+        "refit": {
+          "context_sha256": "60cc0a5f1fdafe1804d6f7d277547e001691506dc611756654958b03c7a6cf34",
+          "fit_rows": 87670,
+          "nonce": "73b609675b1149a3ac2081bbab40872f",
+          "output_sha256": "cb368550f8a3709bb5dece5845fe692394b2f01f86e9e4c1920e542eb7de828f",
+          "predict_rows": 41166,
+          "receipt": ".agent_runs/eb812f4058264203a2f23e61c6e8f8d3/full_refit/candidate/full_refit_9563773d20e74a9c825145ae0adb8ec4/receipt.json",
+          "receipt_sha256": "8662eb083c2d70990a6b20da71383824b97e33face8b915a03216c548ccddcc6"
+        }
+      },
+      "published_recipe": {
+        "base_recipe": {
+          "components": [
+            {
+              "action": "lightgbm",
+              "feature_config": {
+                "date_columns": [],
+                "missing_indicators": false,
+                "rare_min_count": 0,
+                "signed_log": false,
+                "text_columns": []
+              },
+              "model_config": {
+                "model": "LGBMClassifier",
+                "parameters": {
+                  "class_weight": "balanced",
+                  "colsample_bytree": 1.0,
+                  "learning_rate": 0.05,
+                  "max_depth": -1,
+                  "min_child_samples": 40,
+                  "n_estimators": 500,
+                  "num_leaves": 63,
+                  "reg_lambda": 1.0
+                }
+              }
+            },
+            {
+              "action": "catboost",
+              "feature_config": {
+                "date_columns": [],
+                "missing_indicators": true,
+                "rare_min_count": 5,
+                "signed_log": false,
+                "text_columns": []
+              },
+              "model_config": {
+                "model": "CatBoostClassifier",
+                "parameters": {
+                  "auto_class_weights": "SqrtBalanced",
+                  "depth": 4,
+                  "iterations": 400,
+                  "l2_leaf_reg": 3.0,
+                  "learning_rate": 0.08
+                }
+              }
+            }
+          ]
+        },
+        "family": "frequency_candidate_v1",
+        "frequency": {
+          "categorical_columns": [
+            "proto",
+            "service",
+            "state"
+          ],
+          "feature_name_prefix": "__frequency_log1p_",
+          "max_categories": 4096,
+          "max_columns": 16,
+          "missing_policy": "genuine_missing_own_category"
+        },
+        "version": 1
+      },
+      "reached_mode": "off",
+      "requested_mode": "off",
+      "research_stop_reason": "finalization_reserve",
+      "round5_eligibility_support_guard_feasibility": "not_assessed; OFF disabled",
+      "round5_oof_attempts": 0,
+      "round5_probe_attempts": 0,
+      "round5_rule_accepted": 0,
+      "round5_rule_applied": 0,
+      "round5_rule_trained": 0,
+      "selected_candidate_host_measurements": [
+        {
+          "at_seconds": 1302.3664423289993,
+          "elapsed_seconds": 113.24715643700256,
+          "fit_rows": 55945,
+          "predict_rows": 14210
+        },
+        {
+          "at_seconds": 2366.591171459,
+          "elapsed_seconds": 137.58382063000317,
+          "fit_rows": 70155,
+          "predict_rows": 17515
+        },
+        {
+          "at_seconds": 2659.2737181759985,
+          "elapsed_seconds": 179.3542624820002,
+          "fit_rows": 87670,
+          "predict_rows": 41166
+        }
+      ],
+      "supervisor_elapsed_seconds": 2663.8812289669986,
+      "test_prediction_rows": 41166,
+      "test_predictions_sha256": "cb368550f8a3709bb5dece5845fe692394b2f01f86e9e4c1920e542eb7de828f",
+      "watchdog_seconds": 3630,
+      "worker_wall_seconds": 2663.880147148
+    },
+    "on": {
+      "full_train_refit": false,
+      "inner_macro_f1": null,
+      "oof_attempts": 0,
+      "physical_fit_attempts": 0,
+      "probe_attempts": 0,
+      "published_outer_macro_f1": null,
+      "reason": "OFF failed sealed stop policy",
+      "status": "not_started",
+      "test_output_sha256": null
+    }
+  },
+  "audit_only_repair": {
+    "allowed_postrun_source_changes": [
+      "experiment_round5_classification_native.py",
+      "tests/test_round5_classification_native.py"
+    ],
+    "audit_only_fixes": [
+      "preserve_full_identity_after_INNER",
+      "require_published_OOF_for_promising_opt_in"
+    ],
+    "corrected_auditor_sha256": "a26c94822c0e60f235dae01cb653d9de4a21fe17e8d9bc377700358bbcaa38d4",
+    "corrected_report_sha256": "1b6565029a2fc278e2db23eac3139f5852ba4b4d3b9890c1c19c70b0212afa79",
+    "corrected_test_sha256": "d26da4f791aaf152345d986c20fa6f598a07aa9376f5dcce0424cd237fe74da8",
+    "manifest_sha256": "36a7edfc6be5a413e4a78baa1b41ce638c24c0ea1f899713cc868a26b7156cf7",
+    "model_runs": 0,
+    "native_execution_guard_unchanged": true,
+    "off_report_sha256": "1b6565029a2fc278e2db23eac3139f5852ba4b4d3b9890c1c19c70b0212afa79",
+    "on_started": false,
+    "operation": "read_only_corrected_audit_with_original_sealed_manifest",
+    "original_auditor_sha256": "36f1236cde37b7484525eef968d95011c2e4d92491823a3ada511e23e9669f0c",
+    "runtime_package_and_inputs_reverified": true,
+    "same_off_result": true,
+    "status": "incomplete",
+    "tested_sha": "4dce6ffae076ba40cfc659c8b81555c256d1cef3",
+    "tested_tree": "ab3d9c5d0ca50a3d356b5ad3ea6c3c1ab6ce698c",
+    "utc": "2026-10-23T02:04:12.032682+00:00",
+    "version": 2
+  },
+  "base_sha": "66e9481cb61cb83cfecab53be6984d7d2bf829b3",
+  "comparison_type": "model_plus_scheduling_plus_paid_probe",
+  "default_mode": "off",
+  "engineering_threshold": 0.002,
+  "environment": {
+    "api_credentials": "absent in sanitized solver environment",
+    "cgroup": {
+      "cpu.max": "800000 100000",
+      "memory.max": "8589934592"
+    },
+    "cuda_visible_devices": "",
+    "executable": "/workspace/scratch/df1d37ea75a8/alfa-automl-agent/.venv/bin/python",
+    "host_cpu_count": 9,
+    "packages": {
+      "autogluon.tabular": null,
+      "catboost": "1.2.8",
+      "httpx": "0.28.1",
+      "joblib": "1.4.2",
+      "lightgbm": "4.6.0",
+      "numpy": "1.26.4",
+      "openai": "1.68.2",
+      "optuna": "4.2.1",
+      "pandas": "2.2.3",
+      "psutil": "6.1.1",
+      "pydantic": "2.10.6",
+      "python-dotenv": "1.0.1",
+      "scikit-learn": "1.5.2",
+      "scipy": "1.12.0",
+      "threadpoolctl": "3.6.0",
+      "tqdm": "4.67.1",
+      "xgboost": "2.1.4"
+    },
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "threads": 8
+  },
+  "evidence": {
+    "archive_sha256_location": "PR #51 delivery metadata; excluded here to avoid self-reference",
+    "fit_accounting_sha256": "5bc46baa67d490f7952f60f23aa51aa15e136558e60a78eb623c9bd9bab30ef0",
+    "full_dependency_manifest": "evidence/run_manifest.json and evidence/frozen_identity.json in archive",
+    "original_inputs_and_models_in_archive": false,
+    "portable_archive": "round5-classification-host-evidence.zip",
+    "run_report_sha256": "1c9edb8a95a2d6de79044fca4ce89bccb13ac8e88449fdfe8731e1d836217978"
+  },
+  "flat_zip_sha256": "eb522aa656675d203bf69a2d0d223e7c00cd4466d44c2bc0fe02e471f45c4160",
+  "frozen_oof_identity": {
+    "classes": [
+      "Analysis",
+      "Backdoor",
+      "DoS",
+      "Exploits",
+      "Fuzzers",
+      "Generic",
+      "Normal",
+      "Reconnaissance",
+      "Shellcode",
+      "Worms"
+    ],
+    "recipe_sha256": "cde4de874b1b236c9dc485d25b4be01a59788666b91ffe8f4341069525fa9dfc",
+    "source_sha256": "1cb8a3f9df7588b5c4773351b9426c29eedd4c55f297f59fafeeaeefaf300862"
+  },
+  "limitations": [
+    "ON was not run; delta and OOF benefit are unmeasured.",
+    "Public outer participates in native final candidate acceptance and is not an unbiased blind estimate.",
+    "Three invocations lack exact fit completion evidence; only safe lower bounds are claimed.",
+    "INNER labels in the dataset-free archive rely on the SHA-verified original TRAIN projection provenance.",
+    "Linux cgroup 8 CPU/8 GiB is not Windows/32 GB or full platform qualification."
+  ],
+  "main_observed_after_native": {
+    "base_preserved": "66e9481cb61cb83cfecab53be6984d7d2bf829b3",
+    "commit_utc": "2026-10-23T01:46:37Z",
+    "observed_after_native": true,
+    "observed_utc": "2026-10-23T02:01:52.209570+00:00",
+    "rebase_performed": false,
+    "sha": "954ef923e69190c0ea1a4c8b379c0f711de37bdb",
+    "source": "https://api.github.com/repos/NolReaction/alfa-automl-agent/branches/main"
+  },
+  "manifest_sha256": "36a7edfc6be5a413e4a78baa1b41ce638c24c0ea1f899713cc868a26b7156cf7",
+  "on_minus_off_macro_f1": null,
+  "oof_model_quality_claim": false,
+  "plan_sha256": "44ea3d91908ec9d3ce8d9914cec22554865f6485204d94e4ad7768191dd1c635",
+  "preparation_elapsed_seconds": 22.739551558999665,
+  "public_outer_is_independent_test": false,
+  "reason": "two_startup_timeouts_stop_series_before_on",
+  "resources": {
+    "cleanup_complete": null,
+    "legacy_child_requested_threshold_bytes": 30064771072,
+    "observed_tree_cpu_seconds": null,
+    "observed_tree_peak_rss_bytes": null,
+    "qualification": "unknown_process_inventory; requested sampled thresholds are not observed peaks or hard OS caps",
+    "requested_native_tree_threshold_bytes": 6442450944
+  },
+  "runtime_changed_after_native": false,
+  "separate_smoke": {
+    "elapsed_seconds": 3.3736874559981516,
+    "fixture": "synthetic_400_rows_two_classes",
+    "flat_dependency_origins": 29,
+    "physical_fits_completed": 2,
+    "physical_fits_started": 2,
+    "quality_admission": false,
+    "result": "calibration_deadline_exhausted; identity fallback with fresh final fit",
+    "status": "completed"
+  },
+  "status": "incomplete",
+  "test_quality": "unknown",
+  "tested_sha": "4dce6ffae076ba40cfc659c8b81555c256d1cef3",
+  "tested_tree": "ab3d9c5d0ca50a3d356b5ad3ea6c3c1ab6ce698c",
+  "validation": {
+    "compileall_before_native": "passed",
+    "corrected_audit": "same_off_result",
+    "fit_free_tests_before_native": 186,
+    "git_diff_check_before_native": "passed",
+    "original_audit": "passed_with_incomplete_experiment",
+    "outer_independent_rescore": "passed",
+    "postrun_native_suite": 30,
+    "selected_inner_independent_rescore": "passed"
+  },
+  "version": 1
+}
