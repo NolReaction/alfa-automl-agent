@@ -7,10 +7,13 @@
 
 - Исходная база PR #22: `ccdf49e333495d496ee3a712571199e493d790d4`. Проверенный head PR #22 до этой правки:
   `3e10edd0679b86d1b3dac2ec729c22afd9b50219`.
-- **База версии 2:** `git fetch origin` и `git merge origin/main`; `origin/main` на момент слияния —
-  `a45861d7e5588288db66f9ae088a9726f9597370` (в ТЗ при ревью упоминался `664bd5a…`, `main` с тех пор ушёл
-  вперёд). Merge-коммит `2be55c3e2650988a85d45440363b16897cb61400` (родители: `3e10edd…` и `a45861d…`) сделан
-  без конфликтов, история коммитов ветки сохранена, force push не используется.
+- **База версии 2:** `git fetch origin` и `git merge origin/main`, два слияния без конфликтов, история коммитов
+  ветки сохранена, force push не используется:
+  1. `origin/main` = `a45861d7e5588288db66f9ae088a9726f9597370`, merge-коммит
+     `2be55c3e2650988a85d45440363b16897cb61400` (в ТЗ при ревью упоминался `664bd5a…`);
+  2. `origin/main` ушёл вперёд до **`66e9481cb61cb83cfecab53be6984d7d2bf829b3`**, merge-коммит
+     `08e49af5dd3dd2dc2758d20f9aeaf44e598e6c54` (родители: правки ветки `a0e25f92…` и `66e9481…`) — это **итоговая
+     база** версии 2. Относительно `origin/main` отличаются ровно четыре разрешённых файла.
 - Ветка: `work/nika-research-policy`. Разрешённые файлы те же четыре: `agent/research_policy.py`,
   `tests/test_research_policy.py`, `experiment_research_policy.py`, этот отчёт. Runtime, `research_v3.py`,
   `llm.py`, `research.py`, `research_budget.py`, `execution.py`, зависимости, CI, CLI и default-параметры не
@@ -537,7 +540,8 @@ messages = context.messages + [budget_message]    # бюджетное сооб�
 
 ## Проверки
 
-Команды и фактические результаты. Версия 2 проверена на **закреплённых зависимостях** `requirements.txt`
+Команды и фактические результаты. Полный набор выполнен на базе `a45861d`; после второго слияния (`66e9481`) повторно выполнены только
+наборы policy, связанные и v3 (результат ниже), а полный прогон не повторялся. Версия 2 проверена на **закреплённых зависимостях** `requirements.txt`
 (отдельное виртуальное окружение: Python 3.12.3, scikit-learn 1.5.2, numpy 1.26.4, pandas 2.2.3, openai 1.68.2,
 catboost 1.2.8, lightgbm 4.6.0, optuna 4.2.1, Linux).
 
@@ -549,6 +553,7 @@ catboost 1.2.8, lightgbm 4.6.0, optuna 4.2.1, Linux).
 | `python -m unittest discover -s tests` (второй шаг `dev_check.py`): 89 модулей в пяти последовательных кусках | `Ran 1278 tests` (462 + 202 + 211 + 236 + 167), все `OK`, 2 пропущенных теста проекта (не из `test_research_policy`) |
 | связанные наборы: `test_llm`, `test_research`, `test_research_protocol`, `test_research_feedback`, `test_research_validation`, `test_research_policy` | `Ran 164 tests`, `OK` |
 | наборы v3: `test_research_v3_archive`, `test_research_workspace`, `test_research_budget`, `test_inner_feedback` | `Ran 43 tests`, `OK` (1 пропущен) |
+| после второго слияния (`66e9481`): `test_llm`, `test_research`, `test_research_protocol`, `test_research_feedback`, `test_research_validation`, `test_research_policy`, `test_research_v3_archive`, `test_research_workspace`, `test_research_budget`, `test_inner_feedback`; эксперимент `v3-compat` | `Ran 211 tests`, `OK` (1 пропущен); в `test_research_policy` 120 тестов; результаты эксперимента те же (−46,3 % к контролю, переходы 36/36) |
 | дифференциальная проверка legacy: все 11 сценариев legacy replay через модуль версии 1 (`3e10edd`) и текущий | 76 записей (38 решений, 37 сборок сообщений, 1 отказ), **0 различий**; 5 SHA-256 зафиксированы в `LegacyBytesUnchangedTests` |
 | целевые мутации кода (8 штук, см. «Что нашли и что изменили при переходе к v3») | 8 из 8 пойманы тестами |
 
