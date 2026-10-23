@@ -354,6 +354,11 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager._collect(self.manager._jobs[job["id"]])
         self.manager._jobs[job["id"]].pop("model_config")
+        # Legacy results predate both canonical recipes and saved model files.
+        # A new exported model must keep its recipe bound to its manifest.
+        changed.pop("model_artifact", None)
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        self.manager._jobs[job["id"]].pop("model_artifact", None)
         self.manager._collect(self.manager._jobs[job["id"]])
 
     def test_restore_accepts_legacy_split_and_rejects_invalid_validation_metadata(self):
@@ -475,7 +480,7 @@ class JobTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(self.manager.stop("example", job["id"])["status"], "cancelled")
         self.assertIsNone(self.manager.active_job())
-        with patch.object(jobs, "LOCAL_TIMEOUT", 0):
+        with patch.object(jobs, "_execution_timeout", return_value=0):
             result = self.wait(self.manager.start("example", "baseline"))
         self.assertEqual(result["status"], "failed")
         self.assertIn("лимит времени", result["error"])
@@ -507,7 +512,7 @@ class JobTests(unittest.TestCase):
             self.skipTest("Arbitrary subprocess fixtures require /proc in the current PID namespace")
         before = (self.task / "submission.csv").read_bytes()
         command = [sys.executable, "-u", "-c", "import time; print('waiting',flush=True); time.sleep(60)"]
-        with patch.object(self.manager, "_command", return_value=command), patch.object(jobs, "LOCAL_TIMEOUT", 0.1):
+        with patch.object(self.manager, "_command", return_value=command), patch.object(jobs, "_execution_timeout", return_value=0.1):
             result = self.wait(self.manager.start("example", "baseline"))
         self.assertEqual(result["status"], "failed")
         self.assertIn("лимит времени", result["error"])

@@ -30,7 +30,7 @@ from app.campaign_reports import build_campaign_report, report_bytes
 from app.telemetry import SystemMonitor
 from app.power import SleepGuard
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -267,6 +267,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                             "active_campaign": self.server.campaigns.active_campaign(),
                             "active_queue": self.server.native_queues.active_queue(), "version": VERSION})
                 return
+            if path == "/api/training-devices":
+                if query:
+                    raise ValueError("Этот запрос не принимает параметры.")
+                from app.training_devices import training_device_capabilities
+                self._json(training_device_capabilities())
+                return
             if path in {"/api/dashboard", "/api/system", "/api/campaign-presets"}:
                 if query:
                     raise ValueError("Этот запрос не принимает параметры.")
@@ -349,6 +355,14 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                         return
                     if parts[3] == "submission":
                         self._download(self.server.jobs.artifact(task_id, parts[2]))
+                        return
+                    model_kinds = {"model": "model", "model-manifest": "manifest", "recipe": "recipe"}
+                    if parts[3] in model_kinds:
+                        from app.model_artifacts import MAX_MODEL_BYTES
+                        kind = model_kinds[parts[3]]
+                        artifact = self.server.jobs.model_artifact(task_id, parts[2], kind)
+                        self._download(artifact, content_type="application/octet-stream" if kind == "model" else "application/json; charset=utf-8",
+                                       filename=artifact.name, max_bytes=MAX_MODEL_BYTES)
                         return
                     if parts[3] == "bundle":
                         body = result_archive(task_id, parts[2], jobs=self.server.jobs,
@@ -484,12 +498,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                     raise ValueError("Сборка решения не принимает дополнительные параметры.")
                 self._bytes(delivery_archive(), "application/zip", filename="solution.zip")
             elif is_job:
-                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params"}:
+                if set(body) - {"task_id", "action", "author", "hypothesis", "minutes", "validation", "model_params", "model_config", "feature_config", "training_device"}:
                     raise ValueError("Неизвестные параметры запуска.")
                 if "validation" in body and body.get("action") not in ("baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"):
                     raise ValueError("Выбор валидации доступен только для локальных моделей и автоподбора.")
                 if "model_params" in body and body.get("action") not in ("baseline", "extra_trees", "catboost", "lightgbm", "linear"):
-                    raise ValueError("Настройка модели доступна только для baseline и ExtraTrees.")
+                    raise ValueError("Настройка модели доступна только для отдельных локальных рецептов.")
                 task_id = self._task_value(body.get("task_id"), allow_none=True)
                 with self.server.execution_gate:
                     if self.server.campaigns.active_campaign():
@@ -501,7 +515,10 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                                              hypothesis=body.get("hypothesis", ""),
                                              minutes=body.get("minutes", 10 if body.get("action") == "automl" else 20),
                                              validation=body.get("validation"),
-                                             model_params=body.get("model_params"))
+                                             model_params=body.get("model_params"),
+                                             model_config=body.get("model_config"),
+                                             feature_config=body.get("feature_config"),
+                                             training_device=body.get("training_device", "cpu"))
                 self._json({"job": job}, 202)
             elif is_job_action:
                 if set(body) != {"task_id"}:
@@ -534,13 +551,13 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             return None
         return self._task_value(self._one(query, "task_id"))
 
-    def _download(self, path):
+    def _download(self, path, *, content_type="text/csv; charset=utf-8", filename="submission.csv", max_bytes=128 * 1024 * 1024):
         with path.open("rb") as stream:
             import os
             size = os.fstat(stream.fileno()).st_size
-            if size > 128 * 1024 * 1024:
+            if size > max_bytes:
                 raise ValueError("Файл слишком большой для скачивания через панель.")
-            self._headers(200, "text/csv; charset=utf-8", size, filename="submission.csv")
+            self._headers(200, content_type, size, filename=filename)
             if self.command != "HEAD":
                 remaining = size
                 while remaining:

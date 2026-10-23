@@ -107,6 +107,11 @@ const state = {
   launchProfile: null,
   launchModelDrafts: {},
   launchModelRecipe: null,
+  launchTrainingDevice: "cpu",
+  launchFeatureConfigs: {},
+  launchOriginalConfigs: {},
+  trainingDevices: null,
+  trainingDevicesBusy: false,
   resultData: null,
   workflowUpdated: 0,
   experimentFingerprint: null,
@@ -151,6 +156,8 @@ const state = {
   campaignError: "",
   campaignControlBusy: null,
   campaignEditorOpen: false,
+  campaignSourceJobs: [],
+  campaignStudyRequest: null,
 };
 const main = $("#main");
 function apiBase(task = state.task) {
@@ -250,7 +257,7 @@ function systemHTML(system) {
 }
 function phaseName(job) {
   if (job?.status === "cleanup_pending") return "Остановка требует проверки. Повторите остановку в эксперименте.";
-  return ({queued: "Ожидание запуска", preparing: "Подготовка данных", training: "Обучение и подбор моделей", validating: "Проверка качества", refitting: "Обучение выбранной модели на всех данных", finished: "Сохранение результата"})[job?.stage] || (job?.status === "queued" ? "Ожидание запуска" : "Работа продолжается");
+  return ({queued: "Ожидание запуска", preparing: "Подготовка данных", training: "Обучение и подбор моделей", validating: "Проверка качества", refitting: "Обучение выбранной модели на всех данных", saving_model: "Сохранение обученной модели", finished: "Сохранение результата"})[job?.stage] || (job?.status === "queued" ? "Ожидание запуска" : "Работа продолжается");
 }
 function campaignCompleted(campaign) {
   return (campaign?.steps || []).filter((step) => step.status === "completed").length;
@@ -296,11 +303,64 @@ async function loadOverview(generation, quiet = false) {
   applyNativeLaneControls();
 }
 function campaignPreset(id) { return (state.campaignPresets?.presets || []).find((preset) => preset.id === id); }
+function lightgbmStudySource(job, taskId) {
+  return job?.source === "local" && job.task_id === taskId && job.status === "completed" &&
+    job.output_valid === true && ["lightgbm", "automl"].includes(job.action) &&
+    /^LGBM(Classifier|Regressor)$/.test(job.model_config?.model || "") &&
+    Number.isInteger(job.model_config?.parameters?.n_estimators) && job.model_config.parameters.n_estimators > 0;
+}
+function lightgbmStudySources(taskId) {
+  const jobs = [...(state.campaignSourceJobs || []), ...state.jobs, ...state.experimentReports];
+  const seen = new Set();
+  return jobs.filter((job) => lightgbmStudySource(job, taskId) && !seen.has(job.id) && seen.add(job.id));
+}
+function lightgbmStudySteps(taskIds, sourceId = null, minutes = 30) {
+  const task_id = taskIds[0];
+  if (!task_id) return [];
+  const source = lightgbmStudySources(task_id).find((job) => job.id === sourceId);
+  const base = source?.model_config.parameters.n_estimators || 500;
+  const counts = [...new Set([base, Math.min(2000, Math.ceil(base * 1.5)), Math.min(2000, base * 2)])];
+  return counts.map((count, index) => ({task_id, action: "lightgbm", minutes,
+    validation: structuredClone(source?.validation || {strategy: "auto"}),
+    model_params: {...source?.model_config.parameters, n_estimators: count},
+    ...(source?.feature_config ? {feature_config: structuredClone(source.feature_config)} : {}),
+    is_control: index === 0,
+    label: `${index === 0 ? "Контроль" : "Вариант " + index} · LightGBM · ${count} деревьев`,
+  }));
+}
+function openLightgbmStudy(sourceId = null, taskId = state.task) {
+  if (!readyTasks().some((task) => task.id === taskId)) { toast("Выберите готовую задачу."); return; }
+  if (sourceId && !lightgbmStudySources(taskId).some((job) => job.id === sourceId)) {
+    toast("Выберите завершённый локальный LightGBM с сохранёнными настройками."); return;
+  }
+  state.campaignStudyRequest = {task_id: taskId, source_job_id: sourceId};
+  invalidateCampaignPreview();
+  navigate("campaigns");
+}
+function updateLightgbmStudy(sourceId, minutes) {
+  const draft = state.campaignDraft;
+  if (draft?.preset !== "lightgbm_trees") return;
+  draft.source_job_id = sourceId || null;
+  draft.minutes_per_step = Number(minutes);
+  draft.steps = lightgbmStudySteps(draft.task_ids, draft.source_job_id, draft.minutes_per_step);
+  invalidateCampaignPreview(); renderCampaignEditor();
+}
+function lightgbmStudySetupHTML() {
+  const draft = state.campaignDraft;
+  if (draft?.preset !== "lightgbm_trees") return "";
+  const sources = lightgbmStudySources(draft.task_ids[0]), source = sources.find((job) => job.id === draft.source_job_id);
+  return `<section class="training-study-setup" aria-label="Настройки сравнения обучения"><div><h3>Проверяем одну гипотезу</h3><p>Поможет ли большее число деревьев? Приложение последовательно обучит контроль и более крупные варианты на одинаковых проверочных строках.</p></div><div class="form-grid"><label class="form-field">Отправная точка<select id="campaign-source-job"><option value="">Базовый рецепт · 500 / 750 / 1000 деревьев</option>${sources.map((job) => `<option value="${esc(job.id)}" ${source?.id === job.id ? "selected" : ""}>${esc(job.hypothesis || jobTitle(job))} · ${job.model_config.parameters.n_estimators} деревьев · ${esc(date(job.started_at))}</option>`).join("")}</select></label><label class="form-field">Лимит каждого варианта, минут<input id="campaign-minutes-per-step" type="number" min="1" max="175" step="1" value="${esc(draft.minutes_per_step || 30)}"></label></div><p class="campaign-note">${source ? "Сохраняем параметры, обработку признаков и схему проверки выбранного запуска; меняется только число деревьев. Контроль обучается заново." : "Используется базовый рецепт приложения. Он не считается точной копией победителя вашего ночного прогона. После первого LightGBM можно выбрать его здесь."}</p><p class="campaign-note">Это сравнение рецептов на локальных данных. Оно помогает выбрать следующую проверку; поведение полного конкурсного агента проверяется отдельно.</p></section>`;
+}
+function campaignStudyPreviewHTML(preview) {
+  if (preview?.experiment?.kind !== "lightgbm_tree_count") return "";
+  return `<section class="training-study-plan"><h3>Что именно будет обучаться</h3><p>${esc(preview.experiment.control_description || "Контроль и варианты используют одинаковые данные, обработку признаков и проверочные строки.")}</p><div class="table-wrap" tabindex="0" role="region" aria-label="Проверенные варианты обучения"><table><thead><tr><th>Вариант</th><th>Деревьев</th><th>Лимит исполнения</th><th>Проверка и настройки</th></tr></thead><tbody>${(preview.steps || []).map((step) => `<tr><th scope="row">${esc(step.label || "LightGBM")}${step.is_control ? badge("Контроль", "gray") : ""}</th><td>${number(step.model_config?.parameters?.n_estimators ?? step.model_params?.n_estimators)}</td><td>${duration(step.worker_timeout_seconds)}</td><td>${esc(validationLabel({validation: step.validation}))}${modelParameterView({action: step.action, model_config: step.model_config || {parameters: step.model_params}} , true)}${searchFeatureView(step.feature_config)}${step.feature_config ? `<details class="model-parameters compact"><summary>Обработка признаков</summary><dl>${Object.entries(step.feature_config).map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(JSON.stringify(value))}</dd>`).join("")}</dl></details>` : ""}</td></tr>`).join("")}</tbody></table></div><p class="campaign-note">Каждый вариант проходит проверку качества и отдельное финальное обучение на полном train. Сохранённая модель относится к финальному обучению; метрика получена до него.</p></section>`;
+}
 function campaignTaskOptions(selected) {
   return readyTasks().map((task) => `<option value="${esc(task.id)}" ${selected === task.id ? "selected" : ""}>${esc(taskName(task))}</option>`).join("");
 }
 function campaignDefaultSteps(presetId, taskIds) {
   const preset = campaignPreset(presetId);
+  if (presetId === "lightgbm_trees") return lightgbmStudySteps(taskIds, state.campaignDraft?.source_job_id, state.campaignDraft?.minutes_per_step || 30);
   if (!preset || !Array.isArray(preset.actions) || !Array.isArray(preset.budgets_minutes)) return [];
   return preset.budgets_minutes.flatMap((minutes) => preset.actions.flatMap((action) => taskIds.map((task_id) => ({task_id, action, minutes, validation: {strategy: action === "automl" ? "auto" : "random"}}))));
 }
@@ -322,12 +382,20 @@ function campaignValidationOptions(step) {
 }
 function campaignStepEditor(step, index) {
   const numeric = (state.profiles.get(step.task_id)?.columns || []).filter((column) => column.role === "feature" && column.dtype === "numeric");
-  const fixed = step.action !== "automl";
-  return `<li class="campaign-step"><span class="campaign-step-number">${index + 1}</span><div class="campaign-step-fields"><label class="form-field">Задача<select data-campaign-index="${index}" data-campaign-field="task_id">${campaignTaskOptions(step.task_id)}</select></label><label class="form-field">Метод<select data-campaign-index="${index}" data-campaign-field="action">${Object.entries(CAMPAIGN_ACTION_NAMES).map(([action, name]) => `<option value="${action}" ${step.action === action ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></label><label class="form-field">Лимит, минут<input type="number" min="1" max="${fixed ? 30 : 175}" step="1" data-campaign-index="${index}" data-campaign-field="minutes" value="${esc(fixed ? 30 : step.minutes)}" ${fixed ? "disabled" : ""}></label><label class="form-field">Проверка качества<select data-campaign-index="${index}" data-campaign-field="strategy">${campaignValidationOptions(step).map(([value, label]) => `<option value="${value}" ${step.validation?.strategy === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></label>${step.validation?.strategy === "time" ? `<label class="form-field">Столбец периода<select data-campaign-index="${index}" data-campaign-field="time_column"><option value="">Выберите столбец</option>${numeric.map((column) => `<option value="${esc(column.name)}" ${step.validation.time_column === column.name ? "selected" : ""}>${esc(column.name)}</option>`).join("")}</select></label>` : ""}</div><div class="campaign-step-actions"><button class="icon-button" type="button" data-campaign-move="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="Поднять задание ${index + 1}">${icon("arrowup")}</button><button class="icon-button" type="button" data-campaign-move="${index}" data-direction="1" ${index === state.campaignDraft.steps.length - 1 ? "disabled" : ""} aria-label="Опустить задание ${index + 1}">${icon("arrowdown")}</button><button class="icon-button" type="button" data-campaign-remove="${index}" aria-label="Удалить задание ${index + 1}">×</button></div></li>`;
+  return `<li class="campaign-step"><span class="campaign-step-number">${index + 1}</span><div class="campaign-step-fields"><label class="form-field">Задача<select data-campaign-index="${index}" data-campaign-field="task_id">${campaignTaskOptions(step.task_id)}</select></label><label class="form-field">Метод<select data-campaign-index="${index}" data-campaign-field="action">${Object.entries(CAMPAIGN_ACTION_NAMES).map(([action, name]) => `<option value="${action}" ${step.action === action ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></label><label class="form-field">Лимит, минут<input type="number" min="1" max="175" step="1" data-campaign-index="${index}" data-campaign-field="minutes" value="${esc(step.minutes)}"></label><label class="form-field">Проверка качества<select data-campaign-index="${index}" data-campaign-field="strategy">${campaignValidationOptions(step).map(([value, label]) => `<option value="${value}" ${step.validation?.strategy === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></label>${step.validation?.strategy === "time" ? `<label class="form-field">Столбец периода<select data-campaign-index="${index}" data-campaign-field="time_column"><option value="">Выберите столбец</option>${numeric.map((column) => `<option value="${esc(column.name)}" ${step.validation.time_column === column.name ? "selected" : ""}>${esc(column.name)}</option>`).join("")}</select></label>` : ""}</div><div class="campaign-step-actions"><button class="icon-button" type="button" data-campaign-move="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="Поднять задание ${index + 1}">${icon("arrowup")}</button><button class="icon-button" type="button" data-campaign-move="${index}" data-direction="1" ${index === state.campaignDraft.steps.length - 1 ? "disabled" : ""} aria-label="Опустить задание ${index + 1}">${icon("arrowdown")}</button><button class="icon-button" type="button" data-campaign-remove="${index}" aria-label="Удалить задание ${index + 1}">×</button></div></li>`;
 }
 function campaignBody() {
   const draft = state.campaignDraft;
   if (!draft) throw new Error("Выберите план серии.");
+  if (draft.preset === "lightgbm_trees") {
+    if (draft.task_ids.length !== 1 || !readyTasks().some((task) => task.id === draft.task_ids[0])) throw new Error("Выберите одну готовую задачу для сравнения обучения.");
+    if (!Number.isInteger(draft.minutes_per_step) || draft.minutes_per_step < 1 || draft.minutes_per_step > 175) throw new Error("Лимит каждого варианта — целое число минут от 1 до 175.");
+    if (!Number.isFinite(draft.max_hours) || draft.max_hours <= 0 || draft.max_hours > 12) throw new Error("Общий лимит — больше 0 и не больше 12 часов.");
+    if (draft.source_job_id && !lightgbmStudySources(draft.task_ids[0]).some((job) => job.id === draft.source_job_id)) throw new Error("Исходный LightGBM недоступен. Выберите другой запуск или базовый рецепт.");
+    if (draft.source_job_id && lightgbmStudySources(draft.task_ids[0]).find((job) => job.id === draft.source_job_id)?.model_config.parameters.n_estimators >= 2000) throw new Error("У исходной модели уже 2000 деревьев или больше. Выберите другой контроль для увеличения числа деревьев.");
+    return {preset: draft.preset, task_ids: [...draft.task_ids], name: draft.name.trim().slice(0, 100), max_hours: draft.max_hours,
+      minutes_per_step: draft.minutes_per_step, ...(draft.source_job_id ? {source_job_id: draft.source_job_id} : {})};
+  }
   const allowed = new Set(readyTasks().map((task) => task.id)), task_ids = [...new Set(draft.steps.map((step) => step.task_id))];
   if (task_ids.length < 1 || task_ids.length > 2 || task_ids.some((id) => !allowed.has(id))) throw new Error("Выберите одну или две готовые задачи.");
   if (draft.steps.length < 1 || draft.steps.length > 12) throw new Error("В серии должно быть от 1 до 12 заданий.");
@@ -343,7 +411,7 @@ function campaignBody() {
       if (!(state.profiles.get(step.task_id)?.columns || []).some((item) => item.name === column && item.role === "feature" && item.dtype === "numeric")) throw new Error("Укажите числовой столбец периода.");
       validation.time_column = column;
     }
-    return {task_id: step.task_id, action: step.action, minutes: step.action === "automl" ? step.minutes : 30, validation, ...(step.model_params ? {model_params: structuredClone(step.model_params)} : {}), ...(step.label ? {label: step.label} : {})};
+    return {task_id: step.task_id, action: step.action, minutes: step.minutes, validation, ...(step.model_config ? {model_config: structuredClone(step.model_config)} : step.model_params ? {model_params: structuredClone(step.model_params)} : {}), ...(step.feature_config ? {feature_config: structuredClone(step.feature_config)} : {}), ...(typeof step.is_control === "boolean" ? {is_control: step.is_control} : {}), ...(step.label ? {label: step.label} : {})};
   });
   const body = {preset: draft.preset, task_ids, name: draft.name.trim().slice(0, 100), max_hours: draft.max_hours};
   if (draft.preset === "custom") body.steps = steps;
@@ -367,17 +435,17 @@ function campaignSealsHTML(value) {
 function campaignPreviewHTML() {
   const preview = state.campaignPreview;
   if (!preview) return '<div class="campaign-note"><strong>План ещё не проверен</strong><p>Проверка не обучает модели. Сервер подтвердит данные, версию кода и реальные лимиты.</p></div>';
-  return `<div class="campaign-preview">${badge(preview.ready ? "План готов к запуску" : "План требует исправления", preview.ready ? "green" : "amber")}${campaignSealsHTML(preview)}<div class="campaign-preview-metrics"><div><span>Заданий</span><strong>${(preview.steps || []).length}</strong></div><div><span>Потолок всех исполнений</span><strong>${duration(preview.worker_upper_bound_seconds)}</strong></div><div><span>Общий лимит серии</span><strong>${duration(preview.wall_budget_seconds)}</strong></div></div><p>Подготовка данных и сохранение отчётов могут занять дополнительное время. Задания могут закончиться раньше лимита. Фиксированные модели ограничены 30 минутами, автоподбор — выбранным временем.</p>${warningList(preview.errors)}${warningList(preview.warnings)}<p class="campaign-note">Сравнимы только результаты на тех же данных и проверочных строках. Выбор лучшего по этой проверке не заменяет независимый тест и не обещает баллы платформы.</p><details><summary>Проверенный порядок и версия</summary><ol>${(preview.steps || []).map((step) => `<li>${esc(displayTask(step.task_id))} · ${esc(CAMPAIGN_ACTION_NAMES[step.action] || step.action)} · до ${duration(step.worker_timeout_seconds)} исполнения</li>`).join("")}</ol><p>Код <code>${esc(preview.source_seal?.sha || "Не подтверждён")}</code></p></details></div>`;
+  return `<div class="campaign-preview">${badge(preview.ready ? "План готов к запуску" : "План требует исправления", preview.ready ? "green" : "amber")}${campaignSealsHTML(preview)}<div class="campaign-preview-metrics"><div><span>Заданий</span><strong>${(preview.steps || []).length}</strong></div><div><span>Потолок всех исполнений</span><strong>${duration(preview.worker_upper_bound_seconds)}</strong></div><div><span>Общий лимит серии</span><strong>${duration(preview.wall_budget_seconds)}</strong></div></div><p>Подготовка данных и сохранение отчётов могут занять дополнительное время. Задания могут закончиться раньше лимита. Лимит каждого задания включает его обучение и формирование результата; точное ограничение показано в проверенном порядке.</p>${warningList(preview.errors)}${warningList(preview.warnings)}${campaignStudyPreviewHTML(preview)}<p class="campaign-note">Сравнимы только результаты на тех же данных и проверочных строках. Выбор лучшего по этой проверке не заменяет независимый тест и не обещает баллы платформы.</p><details><summary>Проверенный порядок и версия</summary><ol>${(preview.steps || []).map((step) => `<li>${esc(displayTask(step.task_id))} · ${esc(CAMPAIGN_ACTION_NAMES[step.action] || step.action)} · до ${duration(step.worker_timeout_seconds)} исполнения</li>`).join("")}</ol><p>Код <code>${esc(preview.source_seal?.sha || "Не подтверждён")}</code></p></details></div>`;
 }
 function campaignDraftPlanHTML() {
   const steps = state.campaignDraft.steps;
-  const budgets = steps.map((step) => step.action === "automl" ? step.minutes : 30);
+  const budgets = steps.map((step) => step.minutes);
   const valid = budgets.every((value) => Number.isInteger(value) && value >= 1 && value <= 175);
   return `<div class="campaign-draft-summary"><div><strong>${steps.length} последовательных заданий</strong><p>${valid && steps.length ? `До ${duration(budgets.reduce((sum, value) => sum + value, 0) * 60)} обучения по текущему плану` : "Добавьте задания и укажите лимиты"}</p></div><span>Точные лимиты подтвердит проверка плана</span></div><details class="campaign-step-editor" id="campaign-step-editor" ${state.campaignEditorOpen ? "open" : ""}><summary>Изменить задания, порядок и проверку качества</summary><ol class="campaign-step-list">${steps.map(campaignStepEditor).join("")}</ol><div class="campaign-toolbar"><button class="button small" data-action="campaign-add" ${steps.length >= 12 || !readyTasks().length ? "disabled" : ""}>+ Добавить задание</button><span class="subtle-text">${steps.length} / 12 заданий · любое изменение требует новой проверки</span></div></details>`;
 }
 function campaignEditorHTML() {
   const draft = state.campaignDraft, presets = state.campaignPresets?.presets || [], block = campaignLaunchBlock();
-  return `<section class="panel campaign-builder"><div class="panel-head"><div><h2>План новой серии</h2><p>Выберите готовый план и при необходимости измените задания.</p></div>${badge("CPU · 8 потоков · без API", "green")}</div><div class="panel-body"><div class="campaign-presets">${presets.map((preset) => `<button class="preset-card ${draft.preset === preset.id ? "selected" : ""}" type="button" data-campaign-preset="${esc(preset.id)}" aria-pressed="${draft.preset === preset.id}"><strong>${esc(preset.name)}</strong><span>${esc(preset.description)}</span><small>${preset.id === "day" ? "30 / 90 / 175 минут на задачу · до 9 ч 50 мин для двух" : preset.id === "models" ? "Пять методов · до 30 минут каждый" : preset.id === "custom" ? "Редактируемый порядок · до 12 заданий" : "До 5 минут на задачу"}</small></button>`).join("")}</div><fieldset class="campaign-task-picker"><legend>Задачи серии · выберите одну или две</legend>${readyTasks().map((task) => `<label><input type="checkbox" data-campaign-task="${esc(task.id)}" ${draft.task_ids.includes(task.id) ? "checked" : ""}> ${esc(taskName(task))}</label>`).join("") || '<p>Нет готовых задач. <button class="text-button" data-launch="prepare">Загрузить публичные данные</button></p>'}</fieldset><div class="form-grid"><label class="form-field">Название серии<input id="campaign-name" maxlength="100" value="${esc(draft.name)}"></label><label class="form-field">Общий лимит, часов<input id="campaign-max-hours" type="number" min="0.1" max="12" step="0.1" value="${esc(draft.max_hours)}"></label></div>${campaignDraftPlanHTML()}<p class="campaign-note">Последовательное обучение на CPU. Отдельная модель может закончить за минуты; лимит не обещает непрерывную нагрузку. Показания GPU на обзоре относятся ко всему компьютеру.</p><div id="campaign-preview">${campaignPreviewHTML()}</div><p id="campaign-editor-error" class="form-error" role="alert">${esc(state.campaignError)}</p><div class="campaign-toolbar"><button class="button" data-action="campaign-preview" ${state.campaignPreviewBusy ? "disabled" : ""}>${state.campaignPreviewBusy ? '<span class="spinner"></span> Проверяем…' : `${icon("shield")} Проверить план`}</button><button class="button primary" data-action="campaign-start" ${block ? "disabled" : ""}>${icon("activity")} Запустить серию</button><span id="campaign-launch-block" class="subtle-text">${esc(block || "План проверен. Можно запускать.")}</span></div></div></section>`;
+  return `<section class="panel campaign-builder"><div class="panel-head"><div><h2>План новой серии</h2><p>Выберите готовый план и при необходимости измените задания.</p></div>${badge("CPU · 8 потоков · без API", "green")}</div><div class="panel-body"><div class="campaign-presets">${presets.map((preset) => `<button class="preset-card ${draft.preset === preset.id ? "selected" : ""}" type="button" data-campaign-preset="${esc(preset.id)}" aria-pressed="${draft.preset === preset.id}"><strong>${esc(preset.name)}</strong><span>${esc(preset.description)}</span><small>${preset.id === "day" ? "30 / 90 / 175 минут на задачу · до 9 ч 50 мин для двух" : preset.id === "models" ? "Пять методов · до 30 минут каждый" : preset.id === "custom" ? "Редактируемый порядок · до 12 заданий" : preset.id === "lightgbm_trees" ? "Контроль и до двух более крупных вариантов · одна задача" : "До 5 минут на задачу"}</small></button>`).join("")}</div><fieldset class="campaign-task-picker"><legend>${draft.preset === "lightgbm_trees" ? "Задача для сравнения · выберите одну" : "Задачи серии · выберите одну или две"}</legend>${readyTasks().map((task) => `<label><input type="${draft.preset === "lightgbm_trees" ? "radio" : "checkbox"}" name="campaign-task" data-campaign-task="${esc(task.id)}" ${draft.task_ids.includes(task.id) ? "checked" : ""}> ${esc(taskName(task))}</label>`).join("") || '<p>Нет готовых задач. <button class="text-button" data-launch="prepare">Загрузить публичные данные</button></p>'}</fieldset><div class="form-grid"><label class="form-field">Название серии<input id="campaign-name" maxlength="100" value="${esc(draft.name)}"></label><label class="form-field">Общий лимит, часов<input id="campaign-max-hours" type="number" min="0.1" max="12" step="0.1" value="${esc(draft.max_hours)}"></label></div>${lightgbmStudySetupHTML()}${campaignDraftPlanHTML()}<p class="campaign-note">Последовательное обучение на CPU. Отдельная модель может закончить за минуты; лимит не обещает непрерывную нагрузку. Показания GPU на обзоре относятся ко всему компьютеру.</p><div id="campaign-preview">${campaignPreviewHTML()}</div><p id="campaign-editor-error" class="form-error" role="alert">${esc(state.campaignError)}</p><div class="campaign-toolbar"><button class="button" data-action="campaign-preview" ${state.campaignPreviewBusy ? "disabled" : ""}>${state.campaignPreviewBusy ? '<span class="spinner"></span> Проверяем…' : `${icon("shield")} Проверить план`}</button><button class="button primary" data-action="campaign-start" ${block ? "disabled" : ""}>${icon("activity")} Запустить серию</button><span id="campaign-launch-block" class="subtle-text">${esc(block || "План проверен. Можно запускать.")}</span></div></div></section>`;
 }
 function renderCampaignEditor() {
   const node = $("#campaign-editor");
@@ -409,15 +477,22 @@ function campaignComparisonsHTML(groups) {
   return valid.map(({group, rows}) => {
     const available = group.comparison_available !== false && rows.length > 1;
     const best = available ? rows.find((row) => row.job_id === group.best_job_id) : null;
-    return `<section class="campaign-comparison"><div class="workbench-section-head"><h3>${esc(displayTask(group.task_id))} · ${esc(group.metric_name)}</h3>${best ? badge("Лучший в этой локальной группе", "green") : badge(available ? "Победитель не определён" : rows.length < 2 ? "Пока один результат" : "Сравнение ещё недоступно", "gray")}</div><p class="campaign-note">${esc(validationLabel({split: group.split}))} · одна версия данных и одни проверочные строки</p>${available ? campaignCurve(group, rows) : '<p class="campaign-note">Для сравнения разных моделей или лимитов нужен ещё один совместимый результат.</p>'}<div class="table-wrap" tabindex="0" role="region" aria-label="Сравнимые результаты серии"><table><thead><tr><th>Метод</th><th>Лимит</th><th>${esc(group.metric_name)}</th><th>Эксперимент</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(CAMPAIGN_ACTION_NAMES[row.action] || row.action)} ${row.job_id === best?.job_id ? '<span aria-label="Лучший локально">★</span>' : ""}</td><td>${row.minutes} мин</td><td>${number(row.value, 6)}</td><td><button class="text-button" data-open-job="${esc(row.job_id)}" data-task-id="${esc(group.task_id)}">Открыть</button></td></tr>`).join("")}</tbody></table></div><details><summary>Основание сравнения</summary><p>Данные <code>${esc(group.dataset_fingerprint)}</code></p><p>Разбиение <code>${esc(group.comparison_key)}</code></p></details></section>`;
+    const control = rows.find((row) => row.job_id === group.control_job_id || row.is_control === true);
+    const missingControl = group.comparison_reason === "control_not_admitted" || group.comparison_reason === "multiple_controls";
+    const difference = (row) => available && Number.isFinite(row.improvement) ? `${row.improvement > 0 ? "+" : ""}${number(row.improvement, 6)}` : "—";
+    return `<section class="campaign-comparison"><div class="workbench-section-head"><h3>${esc(displayTask(group.task_id))} · ${esc(group.metric_name)}</h3>${best ? badge((group.tied_best_job_ids || []).length > 1 ? "Одинаковый лучший результат" : "Лучший в этой локальной группе", "green") : badge(available ? "Победитель не определён" : rows.length < 2 ? "Пока один результат" : "Сравнение ещё недоступно", "gray")}</div><p class="campaign-note">${esc(validationLabel({split: group.split}))} · одна версия данных и одни проверочные строки</p>${missingControl ? '<p class="campaign-error">Контроль не прошёл обязательные проверки или определён неоднозначно. Прирост к нему не рассчитывается; другой вариант не назначается контролем автоматически.</p>' : control ? `<p class="campaign-note">Контроль: ${esc(control.label || CAMPAIGN_ACTION_NAMES[control.action] || "Первый сравнимый запуск")} · ${number(control.value, 6)}. Положительное улучшение означает более качественный результат.</p>` : ""}${available && Number.isFinite(group.gain) ? `<div class="training-comparison-summary"><strong>${group.gain > 0 ? "+" : ""}${number(group.gain, 6)}</strong><span>${group.gain > 0 ? "лучший локальный прирост к контролю" : "прироста к контролю пока нет"}</span></div>` : ""}${available && rows.some((row) => row.action === "automl") ? campaignCurve(group, rows) : !available ? '<p class="campaign-note">Для сравнения разных моделей или лимитов нужен ещё один совместимый результат.</p>' : ""}<div class="table-wrap" tabindex="0" role="region" aria-label="Сравнимые результаты серии"><table><thead><tr><th>Вариант</th><th>Лимит</th><th>Фактически</th><th>${esc(group.metric_name)}</th><th>Улучшение к контролю</th><th>Эксперимент</th></tr></thead><tbody>${rows.map((row) => `<tr class="${row.job_id === control?.job_id ? "training-control-row" : ""}"><td>${esc(row.label || CAMPAIGN_ACTION_NAMES[row.action] || row.action)} ${row.job_id === best?.job_id ? '<span aria-label="Лучший локально">★</span>' : ""}${row.job_id === control?.job_id ? badge("Контроль", "gray") : ""}</td><td>${row.minutes} мин</td><td>${Number.isFinite(row.elapsed_seconds) ? duration(row.elapsed_seconds) : "—"}</td><td>${number(row.value, 6)}</td><td class="${available && row.improvement > 0 ? "training-gain" : available && row.improvement < 0 ? "training-loss" : ""}">${difference(row)}</td><td><button class="text-button" data-open-job="${esc(row.job_id)}" data-task-id="${esc(group.task_id)}">Открыть</button></td></tr>`).join("")}</tbody></table></div><p class="campaign-note">Выбор по этой локальной проверке требует последующего подтверждения на других данных. Баллы площадки здесь не измеряются.</p><details><summary>Основание сравнения</summary><p>Данные <code>${esc(group.dataset_fingerprint)}</code></p><p>Разбиение <code>${esc(group.comparison_key)}</code></p></details></section>`;
   }).join("");
 }
 function campaignReportGroups(report, campaign) {
   if (report?.campaign?.id !== campaign.id || !Array.isArray(report.groups)) return [];
   return report.groups.map((group) => ({...group, best_job_id: group.best?.job_id,
+    control_job_id: group.control?.job_id || group.control_job_id,
+    control_value: group.control?.metric?.value ?? group.control_value,
     jobs: (Array.isArray(group.budget_curve) ? group.budget_curve : []).flatMap((point) => {
       const step = (campaign.steps || []).find((step) => step.id === point.step_id && step.job_id === point.job_id);
-      return step ? [{job_id: point.job_id, step_id: point.step_id, value: point.metric?.value, action: step.action, minutes: point.minutes}] : [];
+      return step ? [{job_id: point.job_id, step_id: point.step_id, value: point.metric?.value, action: step.action, minutes: point.minutes,
+        elapsed_seconds: point.elapsed_seconds, label: step.label, is_control: step.is_control === true,
+        difference: point.difference, improvement: point.improvement}] : [];
     })}));
 }
 function campaignDetailHTML(campaign, report = null) {
@@ -427,7 +502,7 @@ function campaignDetailHTML(campaign, report = null) {
   const resumeNote = ["paused", "interrupted"].includes(campaign.status)
     ? `<p class="campaign-note">${campaign.status === "paused" ? "Очередь сохранена за этой серией. Для другого плана остановите эту серию. " : "После прерывания можно явно продолжить оставшиеся задания. "}Продолжение запускает только оставшиеся задания со статусом «Ещё не запускалось»; прежнее обучение не повторяется. Действует первоначальный срок серии${campaign.deadline_at ? `: ${esc(date(campaign.deadline_at))}` : ""}. Пауза и время после закрытия приложения его не продлевают.</p>` : "";
   const controlsBusy = state.campaignControlBusy?.id === campaign.id;
-  return `<section class="panel campaign-detail"><div class="panel-head"><div><h2>${esc(campaign.name || "Серия тестов")}</h2><p>${esc(date(campaign.created_at))} · ${campaignCompleted(campaign)} из ${steps.length} заданий выполнены</p></div>${campaignStatus(campaign.status)}</div><div class="panel-body"><div class="campaign-preview-metrics"><div><span>Прошло</span><strong>${duration(campaign.elapsed_seconds)}</strong></div><div><span>Общий лимит</span><strong>${duration(campaign.wall_budget_seconds)}</strong></div><div><span>Потолок исполнений</span><strong>${duration(campaign.worker_upper_bound_seconds)}</strong></div></div><div class="campaign-toolbar">${canPause ? `<button class="button" data-campaign-control="pause" data-campaign-id="${esc(campaign.id)}" ${controlsBusy ? "disabled" : ""}>Пауза после задания</button>` : ""}${canResume ? `<button class="button primary" data-campaign-control="resume" data-campaign-id="${esc(campaign.id)}" ${controlsBusy ? "disabled" : ""}>Продолжить оставшиеся</button>` : ""}${active ? `<button class="button danger" data-campaign-control="stop" data-campaign-id="${esc(campaign.id)}" ${campaign.status === "stopping" || controlsBusy ? "disabled" : ""}>${campaign.status === "cleanup_pending" ? "Повторить остановку" : "Остановить всю серию"}</button>` : ""}</div>${campaign.status === "pausing" ? '<p class="campaign-note">Текущее задание продолжает работу. Следующее будет ждать команды «Продолжить оставшиеся».</p>' : ""}${resumeNote}${campaign.error ? `<div class="warning-box campaign-error">${esc(campaign.error)}</div>` : ""}${campaignSealsHTML(campaign)}<ol class="campaign-step-list campaign-current">${steps.map((step, index) => `<li class="campaign-step"><span class="campaign-step-number">${index + 1}</span><div class="campaign-step-status"><strong>${esc(displayTask(step.task_id))} · ${esc(CAMPAIGN_ACTION_NAMES[step.action] || step.action)}</strong><p>${["launching", "running"].includes(step.status) ? esc(phaseName(step.job)) : step.job?.metric ? esc(nativeMetric(step.job.metric)) : ""}</p><small>Лимит ${duration(step.worker_timeout_seconds || step.minutes * 60)}${Number.isFinite(step.job?.elapsed_seconds) ? ` · прошло ${duration(step.job.elapsed_seconds)}` : ""}</small>${step.admissible === false ? '<p class="campaign-error">Результат не допущен к сравнению. Изучите эксперимент.</p>' : ""}${step.error ? `<p class="campaign-error">${esc(step.error)}</p>` : ""}</div>${campaignStatus(step.status)}${step.job_id ? `<button class="button small" data-open-job="${esc(step.job_id)}" data-task-id="${esc(step.task_id)}">Эксперимент</button>` : ""}</li>`).join("")}</ol><div class="workbench-section-head"><h3>Результаты серии</h3></div>${report ? campaignComparisonsHTML(campaignReportGroups(report, campaign)) : '<p class="campaign-error">Сводный отчёт пока не загружен. Повторим автоматически; отдельные эксперименты доступны выше.</p>'}<div class="campaign-exports"><a class="button small" href="${path}/report.json" download>${icon("download")} Отчёт JSON</a><a class="button small" href="${path}/report.csv" download>Таблица CSV</a><a class="button small" href="${path}/bundle.zip" download>Пакет для команды ZIP</a></div><p class="campaign-note">Пакет содержит доступные на момент выгрузки отчёты. Локальный лучший результат не равен баллам платформы.</p><details><summary>Версия и ограничения</summary><p>Код <code>${esc(campaign.source_seal?.sha || "Не подтверждён")}</code></p>${warningList(campaign.warnings)}<p>CPU · 8 потоков · API не используется. Остановленные задания не возобновляются с середины.</p></details></div></section>`;
+  return `<section class="panel campaign-detail"><div class="panel-head"><div><h2>${esc(campaign.name || "Серия тестов")}</h2><p>${esc(date(campaign.created_at))} · ${campaignCompleted(campaign)} из ${steps.length} заданий выполнены</p></div>${campaignStatus(campaign.status)}</div><div class="panel-body"><div class="campaign-preview-metrics"><div><span>Прошло</span><strong>${duration(campaign.elapsed_seconds)}</strong></div><div><span>Общий лимит</span><strong>${duration(campaign.wall_budget_seconds)}</strong></div><div><span>Потолок исполнений</span><strong>${duration(campaign.worker_upper_bound_seconds)}</strong></div></div><div class="campaign-toolbar">${canPause ? `<button class="button" data-campaign-control="pause" data-campaign-id="${esc(campaign.id)}" ${controlsBusy ? "disabled" : ""}>Пауза после задания</button>` : ""}${canResume ? `<button class="button primary" data-campaign-control="resume" data-campaign-id="${esc(campaign.id)}" ${controlsBusy ? "disabled" : ""}>Продолжить оставшиеся</button>` : ""}${active ? `<button class="button danger" data-campaign-control="stop" data-campaign-id="${esc(campaign.id)}" ${campaign.status === "stopping" || controlsBusy ? "disabled" : ""}>${campaign.status === "cleanup_pending" ? "Повторить остановку" : "Остановить всю серию"}</button>` : ""}</div>${campaign.status === "pausing" ? '<p class="campaign-note">Текущее задание продолжает работу. Следующее будет ждать команды «Продолжить оставшиеся».</p>' : ""}${resumeNote}${campaign.error ? `<div class="warning-box campaign-error">${esc(campaign.error)}</div>` : ""}${campaignSealsHTML(campaign)}<ol class="campaign-step-list campaign-current">${steps.map((step, index) => `<li class="campaign-step"><span class="campaign-step-number">${index + 1}</span><div class="campaign-step-status"><strong>${esc(displayTask(step.task_id))} · ${esc(step.label || CAMPAIGN_ACTION_NAMES[step.action] || step.action)}${step.is_control ? " · контроль" : ""}</strong><p>${["launching", "running"].includes(step.status) ? esc(phaseName(step.job)) : step.job?.metric ? esc(nativeMetric(step.job.metric)) : ""}</p><small>Лимит ${duration(step.worker_timeout_seconds || step.minutes * 60)}${Number.isFinite(step.job?.elapsed_seconds) ? ` · прошло ${duration(step.job.elapsed_seconds)}` : ""}</small>${step.admissible === false ? '<p class="campaign-error">Результат не допущен к сравнению. Изучите эксперимент.</p>' : ""}${step.error ? `<p class="campaign-error">${esc(step.error)}</p>` : ""}</div>${campaignStatus(step.status)}${step.job_id ? `<button class="button small" data-open-job="${esc(step.job_id)}" data-task-id="${esc(step.task_id)}">Эксперимент</button>` : ""}</li>`).join("")}</ol><div class="workbench-section-head"><h3>Результаты серии</h3></div>${report ? campaignComparisonsHTML(campaignReportGroups(report, campaign)) : '<p class="campaign-error">Сводный отчёт пока не загружен. Повторим автоматически; отдельные эксперименты доступны выше.</p>'}<div class="campaign-exports"><a class="button small" href="${path}/report.json" download>${icon("download")} Отчёт JSON</a><a class="button small" href="${path}/report.csv" download>Таблица CSV</a><a class="button small" href="${path}/bundle.zip" download>Пакет для команды ZIP</a></div><p class="campaign-note">Пакет содержит доступные на момент выгрузки отчёты. Локальный лучший результат не равен баллам платформы.</p><details><summary>Версия и ограничения</summary><p>Код <code>${esc(campaign.source_seal?.sha || "Не подтверждён")}</code></p>${warningList(campaign.warnings)}<p>CPU · 8 потоков · API не используется. Остановленные задания не возобновляются с середины.</p></details></div></section>`;
 }
 async function loadCampaignDetail(id, generation = state.generation) {
   const request = ++state.campaignDetailGeneration;
@@ -440,11 +515,20 @@ async function loadCampaignDetail(id, generation = state.generation) {
   $$("details", node).forEach((detail, index) => { detail.open = opened[index] === true; });
 }
 async function loadCampaignPage(generation) {
-  const [presets, response, session] = await Promise.all([api("/api/campaign-presets"), api("/api/campaigns"), api("/api/session")]);
+  const [presets, response, session, sourceJobs] = await Promise.all([api("/api/campaign-presets"), api("/api/campaigns"), api("/api/session"), api("/api/jobs").catch(() => ({jobs: []}))]);
   if (generation !== state.generation || state.view !== "campaigns") return;
   state.campaignPresets = presets; state.session = session; state.campaigns = Array.isArray(response.campaigns) ? response.campaigns : [];
   setNativeActive(session.active_queue); setCampaignActive(response.active_campaign || session.active_campaign);
   if (!state.campaignDraft) state.campaignDraft = newCampaignDraft();
+  state.campaignSourceJobs = Array.isArray(sourceJobs.jobs) ? sourceJobs.jobs : [];
+  if (state.campaignStudyRequest) {
+    const requested = state.campaignStudyRequest;
+    state.campaignStudyRequest = null;
+    state.campaignDraft = {...newCampaignDraft(), preset: "lightgbm_trees", task_ids: [requested.task_id], name: "Сравнение обучения LightGBM", minutes_per_step: 30, ...(requested.source_job_id ? {source_job_id: requested.source_job_id} : {})};
+    state.campaignDraft.steps = lightgbmStudySteps(state.campaignDraft.task_ids, requested.source_job_id, 30);
+    state.campaignEditorOpen = false;
+    invalidateCampaignPreview();
+  }
   main.innerHTML = heading("ПОСЛЕДОВАТЕЛЬНЫЕ ЭКСПЕРИМЕНТЫ", "Серии тестов", "План на несколько минут или на весь день. Вы задаёте порядок, приложение сохраняет каждый результат.", false) + '<section id="campaign-editor"></section><div class="workbench-section-head"><h2>История и ход работы</h2><span id="campaign-refresh" class="subtle-text">Обновляется каждые 3 секунды</span></div><div class="campaign-layout"><section class="panel campaign-history" id="campaign-history" aria-label="История серий тестов"></section><div id="campaign-detail"></div></div>';
   renderCampaignEditor(); renderCampaignHistory();
   if (!state.campaigns.some((campaign) => campaign.id === state.campaignSelected)) state.campaignSelected = state.campaignActive?.id || state.campaigns[0]?.id || null;
@@ -468,7 +552,7 @@ async function previewCampaign() {
     if (generation !== state.generation || state.view !== "campaigns" || revision !== state.campaignRevision) return;
     state.campaignPreview = preview; state.campaignPreviewBody = structuredClone(body); state.campaignPreviewRevision = revision;
     // Show the server's exact expansion before the user commits to running it.
-    if (Array.isArray(preview.steps) && preview.steps.length) state.campaignDraft.steps = preview.steps.map(({task_id, action, minutes, validation, model_params, label}) => ({task_id, action, minutes, validation, ...(model_params ? {model_params} : {}), ...(label ? {label} : {})}));
+    if (Array.isArray(preview.steps) && preview.steps.length) state.campaignDraft.steps = preview.steps.map(({task_id, action, minutes, validation, model_params, model_config, feature_config, is_control, label}) => ({task_id, action, minutes, validation, ...(model_params ? {model_params} : {}), ...(model_config ? {model_config} : {}), ...(feature_config ? {feature_config} : {}), ...(typeof is_control === "boolean" ? {is_control} : {}), ...(label ? {label} : {})}));
   } catch (error) {
     if (generation === state.generation && revision === state.campaignRevision) state.campaignError = error.message;
   } finally { state.campaignPreviewBusy = false; if (generation === state.generation && state.view === "campaigns") renderCampaignEditor(); }
@@ -500,6 +584,7 @@ async function controlCampaign(id, action, button) {
 function campaignChanged() {
   state.campaignEditorOpen = true;
   state.campaignDraft.preset = "custom";
+  delete state.campaignDraft.source_job_id;
   state.campaignDraft.task_ids = [...new Set(state.campaignDraft.steps.map((step) => step.task_id))];
   invalidateCampaignPreview(); renderCampaignEditor();
 }
@@ -508,6 +593,11 @@ function selectCampaignPreset(id) {
   state.campaignDraft.preset = id;
   state.campaignDraft.name = preset.name;
   state.campaignEditorOpen = id === "custom";
+  if (id === "lightgbm_trees") {
+    state.campaignDraft.task_ids = [readyTasks().some((task) => task.id === state.task) ? state.task : state.campaignDraft.task_ids[0] || readyTasks()[0]?.id].filter(Boolean);
+    state.campaignDraft.minutes_per_step = 30;
+    delete state.campaignDraft.source_job_id;
+  } else delete state.campaignDraft.source_job_id;
   if (id !== "custom") state.campaignDraft.steps = campaignDefaultSteps(id, state.campaignDraft.task_ids);
   invalidateCampaignPreview(); renderCampaignEditor();
 }
@@ -528,7 +618,7 @@ function changeCampaignField(index, field, value) {
   } else if (field === "action" && Object.hasOwn(CAMPAIGN_ACTION_NAMES, value)) {
     step.action = value; if (value !== "automl") step.minutes = 30;
     if (value !== "automl" && step.validation?.strategy === "auto") step.validation = {strategy: "random"};
-    delete step.model_params;
+    delete step.model_params; delete step.model_config; delete step.feature_config;
   } else if (field === "strategy" && campaignValidationOptions(step).some(([strategy]) => strategy === value)) {
     step.validation = {strategy: value};
   } else if (field === "time_column") step.validation = {strategy: "time", time_column: value};
@@ -1601,7 +1691,10 @@ $("#help-dialog").addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
-  if (button.dataset.campaignPreset) selectCampaignPreset(button.dataset.campaignPreset);
+  if (button.dataset.lightgbmStudySource) openLightgbmStudy(button.dataset.lightgbmStudySource, button.dataset.taskId);
+  else if (button.dataset.action === "lightgbm-study") openLightgbmStudy();
+  else if (button.dataset.action === "training-device-probe") refreshTrainingDevices();
+  else if (button.dataset.campaignPreset) selectCampaignPreset(button.dataset.campaignPreset);
   else if (button.dataset.campaignMove !== undefined) moveCampaignStep(Number(button.dataset.campaignMove), Number(button.dataset.direction));
   else if (button.dataset.campaignRemove !== undefined) {
     const index = Number(button.dataset.campaignRemove);
@@ -1675,12 +1768,18 @@ document.addEventListener("change", (event) => {
   if (target.dataset.campaignIndex !== undefined) changeCampaignField(Number(target.dataset.campaignIndex), target.dataset.campaignField, target.value);
   else if (target.dataset.campaignTask !== undefined) {
     const id = target.dataset.campaignTask, draft = state.campaignDraft;
-    const ids = target.checked ? [...draft.task_ids.filter((item) => item !== id), id] : draft.task_ids.filter((item) => item !== id);
+    const ids = draft.preset === "lightgbm_trees" ? [id] : target.checked ? [...draft.task_ids.filter((item) => item !== id), id] : draft.task_ids.filter((item) => item !== id);
+    if (draft.preset === "lightgbm_trees" && !draft.task_ids.includes(id)) delete draft.source_job_id;
     if (ids.length > 2) { target.checked = false; toast("Выберите не больше двух задач для одной серии."); return; }
     draft.task_ids = ids;
     draft.steps = draft.preset === "custom" ? draft.steps.filter((step) => ids.includes(step.task_id)) : campaignDefaultSteps(draft.preset, ids);
     if (draft.preset === "custom") for (const task_id of ids) if (!draft.steps.some((step) => step.task_id === task_id) && draft.steps.length < 12) draft.steps.push({task_id, action: "automl", minutes: 30, validation: {strategy: "auto"}});
     invalidateCampaignPreview(); renderCampaignEditor();
+  } else if (target.id === "campaign-source-job" || target.id === "campaign-minutes-per-step") {
+    const draft = state.campaignDraft;
+    if (draft?.preset !== "lightgbm_trees") return;
+    updateLightgbmStudy(target.id === "campaign-source-job" ? target.value : draft.source_job_id,
+      target.id === "campaign-minutes-per-step" ? target.value : draft.minutes_per_step);
   } else if (target.id === "campaign-name") { state.campaignDraft.name = target.value; invalidateCampaignPreview(); renderCampaignEditor(); }
   else if (target.id === "campaign-max-hours") { state.campaignDraft.max_hours = Number(target.value); invalidateCampaignPreview(); renderCampaignEditor(); }
   else if (event.target.id === "native-regression-task") state.nativeRegressionTask = event.target.value;
@@ -1737,6 +1836,7 @@ const STAGE_NAMES = {
   training: "Обучение модели",
   validating: "Проверка на holdout",
   refitting: "Обучение на всей выборке",
+  saving_model: "Сохранение обученной модели",
   finished: "Работа завершена",
   research: "Исследование с Qwen",
   downloading: "Загрузка публичных данных",
@@ -1950,7 +2050,7 @@ async function loadJobsPage(generation, quiet = false) {
       ) +
       (state.task ? taskStrip(taskInfo()) : "") +
       runTabs() +
-      `<div class="run-start-actions"><button class="button primary" data-launch="automl" ${state.task ? "" : "disabled"}>${icon("search")} Автоподбор</button><button class="button" data-launch="baseline" ${state.task ? "" : "disabled"}>Одна модель</button><button class="button" data-launch="extra_trees" ${state.task ? "" : "disabled"}>ExtraTrees</button><span class="subtle-text">Без API · на этом компьютере</span></div><div class="jobs-layout" style="margin-top:20px"><section class="panel run-list-panel"><div class="panel-head"><h2>История</h2><span class="subtle-text" id="job-count"></span></div><div id="job-list" class="job-list"></div></section><section id="job-detail"></section></div>`;
+      `<div class="run-start-actions"><button class="button primary" data-launch="automl" ${state.task ? "" : "disabled"}>${icon("search")} Автоподбор</button><button class="button" data-launch="baseline" ${state.task ? "" : "disabled"}>Одна модель</button><button class="button" data-launch="extra_trees" ${state.task ? "" : "disabled"}>ExtraTrees</button><button class="button" data-action="lightgbm-study" ${state.task ? "" : "disabled"}>${icon("test")} Сравнить обучение LightGBM</button><span class="subtle-text">Без API · на этом компьютере</span></div><div class="jobs-layout" style="margin-top:20px"><section class="panel run-list-panel"><div class="panel-head"><h2>История</h2><span class="subtle-text" id="job-count"></span></div><div id="job-list" class="job-list"></div></section><section id="job-detail"></section></div>`;
     mountWorkflow();
   }
   renderJobList();
@@ -1980,6 +2080,23 @@ function currentLocalResult(job) {
     fingerprint &&
     job.dataset_fingerprint === fingerprint
   );
+}
+function trainedModelView(job) {
+  if (job?.source !== "local" || job.status !== "completed" || job.output_valid !== true) return "";
+  const artifact = job.model_artifact;
+  if (!artifact) return "";
+  if (artifact.available !== true) return `<section class="trained-model-panel"><h3>Обученная модель</h3><p>${esc(artifact.reason || "Для этого запуска отдельный файл обученной модели не сохранён.")}</p>${lightgbmStudySource(job, job.task_id) ? '<p>Настройки победителя можно использовать кнопкой «Сравнить обучение LightGBM».</p>' : ""}</section>`;
+  if (!/^[0-9a-f]{32}$/.test(job.id || "") || !/^[0-9a-f]{64}$/.test(artifact.sha256 || "") ||
+      !Number.isFinite(artifact.size_bytes) || artifact.size_bytes <= 0 || artifact.format !== "joblib") return "";
+  const base = `/api/jobs/${encodeURIComponent(job.id)}`, query = `?task_id=${encodeURIComponent(job.task_id)}`;
+  return `<section class="trained-model-panel" aria-label="Сохранённая обученная модель"><div class="training-artifact-heading"><div><h3>Обученная модель сохранена</h3><p>Финальное обучение на полном train · ${number(artifact.size_bytes / 1024 ** 2, 1)} МиБ</p></div>${badge("Локальная модель", "green")}</div><p>Файл содержит обученную модель и обработку признаков. Метрика выше получена на отдельном обучении с отложенными строками.</p><div class="action-buttons"><a class="button" href="${base}/model${query}" download>${icon("download")} Модель .joblib</a><a class="button" href="${base}/model-manifest${query}" download>Паспорт модели JSON</a><a class="button" href="${base}/recipe${query}" download>Рецепт обучения JSON</a></div><p class="campaign-note">Это модель для локального использования. Кнопка «Собрать solution.zip» выгружает код конкурсного агента отдельно.</p><details><summary>Проверка файла</summary><p>SHA-256 <code>${esc(artifact.sha256)}</code></p></details></section>`;
+}
+function trainingDeviceEvidenceView(job) {
+  if (job?.source !== "local" || job.training_device !== "gpu") return "";
+  const evidence = job.training_device_evidence;
+  return `<div class="training-device-result">${evidence?.fit_completed === true && evidence.backend_verified === true && evidence.backend === "GPU"
+    ? `${badge("Обучено на GPU", "green")}<span>${esc(evidence.device_name || "GPU · CatBoost")}</span>`
+    : `${badge("GPU запрошен", "amber")}<span>Завершённое обучение на GPU пока не подтверждено.</span>`}<p>Экспериментальное GPU-обучение. Время и метрика относятся к этому устройству; воспроизводимость на CPU проверяется отдельно.</p></div>`;
 }
 function jobBundleLink(job, label = "Скачать пакет запуска", small = false) {
   if (!currentLocalResult(job) || job.output_valid !== true) return "";
@@ -2178,7 +2295,12 @@ function launchPayload(values) {
     payload = { task_id, action, author, hypothesis, minutes };
   if (isOfflineRecipe(action)) {
     if (values.validation) payload.validation = values.validation;
-    if (action !== "automl" && values.model_params) payload.model_params = values.model_params;
+    if (action !== "automl") {
+      if (values.model_config) payload.model_config = values.model_config;
+      else if (values.model_params) payload.model_params = values.model_params;
+      if (values.feature_config) payload.feature_config = values.feature_config;
+      if (action === "catboost" && values.training_device) payload.training_device = values.training_device;
+    }
   }
   return payload;
 }
@@ -2426,7 +2548,7 @@ async function loadJobDetail(id, quiet = false) {
     const validMetric = job.metric && Number.isFinite(job.metric.value);
     const stopped = ["cancelled", "interrupted"].includes(job.status);
     $("#job-detail").innerHTML =
-      `<div class="run-detail-header"><div><h2>${esc(jobTitle(job))}</h2><p>${esc(date(job.started_at))} · ${esc(job.author || "Без автора")}</p></div>${statusBadge(job.agent_status === "fallback" ? "fallback" : job.status)}</div>${job.hypothesis ? `<p class="job-hypothesis">${esc(job.hypothesis)}</p>` : ""}<div class="job-stage">${runningJob(job) ? '<span class="spinner"></span>' : icon(job.status === "completed" ? "check" : stopped ? "clock" : "missing")}<span>${esc(job.status === "cancelled" ? "Остановлен пользователем" : job.status === "failed" ? "Запуск завершился с ошибкой" : STAGE_NAMES[job.stage] || "Подготовка")}</span><span style="margin-left:auto">${duration(job.elapsed_seconds)}</span></div>${job.error ? `<div class="warning-box">${esc(job.error)}</div>` : ""}${job.action === "agent" ? researchView(job.research, { status: job.agent_status, imported: job.source === "imported" }) : ""}${autoSearchView(job)}${validMetric ? jobMetricView(job) : job.status === "completed" && job.action === "agent" ? `<div class="info-box">${job.agent_status === "fallback" ? "Сохранён резервный CSV. Исследование не завершилось штатно." : "Процесс Qwen завершён."} Результаты проверки качества и выбора модели смотрите в журнале агента. В сравнение запусков эта метрика пока не включена.</div>` : ""}<div class="job-actions">${currentLocalResult(job) && isFixedRecipe(job.action) ? `<button class="button" data-edit-job="${esc(job.id)}">Изменить настройки</button>` : ""}${runningJob(job) ? `<button class="button danger" data-action="stop-job">${job.status === "cleanup_pending" ? "Повторить остановку" : "Остановить"}</button>` : ""}${job.status === "completed" && job.output_valid === true ? `<a class="button" href="/api/jobs/${encodeURIComponent(job.id)}/submission${task ? "?task_id=" + encodeURIComponent(task) : ""}" download>${icon("download")} Скачать CSV</a>${job.published ? badge("CSV используется", "green") : `<button class="button primary" data-action="publish-job" data-publish-id="${esc(job.id)}">Использовать CSV</button>`}` : ""}${jobBundleLink(job)}${job.action === "prepare" && job.status === "completed" ? '<button class="button primary" data-action="open-data">Открыть данные</button>' : ""}${job.action === "agent" ? '<button class="button" data-action="inspect-agent">Код агента</button>' : ""}<span class="subtle-text">${job.action === "agent" ? "Qwen · общий API-бюджет" : "Без API"}</span></div>${job.api ? `<div class="usage-row">${usageView(job.api)}</div>` : ""}<section class="panel job-logs"><div class="panel-head"><h2>Журнал запуска</h2><span class="job-log-time" id="job-refresh-time">Обновляется автоматически</span></div><div class="code-tabs" role="tablist" aria-label="Вывод процесса"><button class="code-tab ${state.jobLogKind === "stdout" ? "active" : ""}" data-job-log="stdout" role="tab" aria-selected="${state.jobLogKind === "stdout"}">Вывод</button><button class="code-tab ${state.jobLogKind === "stderr" ? "active" : ""}" data-job-log="stderr" role="tab" aria-selected="${state.jobLogKind === "stderr"}">Ошибки</button></div><pre id="job-log-output" class="code-content" role="tabpanel"></pre><div class="code-footnote">${detail.truncated ? "Показан ограниченный фрагмент журнала" : "Вывод процесса"} · ${esc(job.id?.slice(0, 8) || "")}</div></section>`;
+      `<div class="run-detail-header"><div><h2>${esc(jobTitle(job))}</h2><p>${esc(date(job.started_at))} · ${esc(job.author || "Без автора")}</p></div>${statusBadge(job.agent_status === "fallback" ? "fallback" : job.status)}</div>${job.hypothesis ? `<p class="job-hypothesis">${esc(job.hypothesis)}</p>` : ""}<div class="job-stage">${runningJob(job) ? '<span class="spinner"></span>' : icon(job.status === "completed" ? "check" : stopped ? "clock" : "missing")}<span>${esc(job.status === "cancelled" ? "Остановлен пользователем" : job.status === "failed" ? "Запуск завершился с ошибкой" : STAGE_NAMES[job.stage] || "Подготовка")}</span><span style="margin-left:auto">${duration(job.elapsed_seconds)}</span></div>${job.error ? `<div class="warning-box">${esc(job.error)}</div>` : ""}${job.action === "agent" ? researchView(job.research, { status: job.agent_status, imported: job.source === "imported" }) : ""}${autoSearchView(job)}${validMetric ? jobMetricView(job) : job.status === "completed" && job.action === "agent" ? `<div class="info-box">${job.agent_status === "fallback" ? "Сохранён резервный CSV. Исследование не завершилось штатно." : "Процесс Qwen завершён."} Результаты проверки качества и выбора модели смотрите в журнале агента. В сравнение запусков эта метрика пока не включена.</div>` : ""}<div class="job-actions">${currentLocalResult(job) && isFixedRecipe(job.action) ? `<button class="button" data-edit-job="${esc(job.id)}">Изменить настройки</button>` : ""}${runningJob(job) ? `<button class="button danger" data-action="stop-job">${job.status === "cleanup_pending" ? "Повторить остановку" : "Остановить"}</button>` : ""}${job.status === "completed" && job.output_valid === true ? `<a class="button" href="/api/jobs/${encodeURIComponent(job.id)}/submission${task ? "?task_id=" + encodeURIComponent(task) : ""}" download>${icon("download")} Скачать CSV</a>${job.published ? badge("CSV используется", "green") : `<button class="button primary" data-action="publish-job" data-publish-id="${esc(job.id)}">Использовать CSV</button>`}` : ""}${lightgbmStudySource(job, task) && currentLocalResult(job) ? `<button class="button" data-lightgbm-study-source="${esc(job.id)}" data-task-id="${esc(task)}">Сравнить обучение LightGBM</button>` : ""}${jobBundleLink(job)}${job.action === "prepare" && job.status === "completed" ? '<button class="button primary" data-action="open-data">Открыть данные</button>' : ""}${job.action === "agent" ? '<button class="button" data-action="inspect-agent">Код агента</button>' : ""}<span class="subtle-text">${job.action === "agent" ? "Qwen · общий API-бюджет" : "Без API"}</span></div>${trainedModelView(job)}${trainingDeviceEvidenceView(job)}${job.api ? `<div class="usage-row">${usageView(job.api)}</div>` : ""}<section class="panel job-logs"><div class="panel-head"><h2>Журнал запуска</h2><span class="job-log-time" id="job-refresh-time">Обновляется автоматически</span></div><div class="code-tabs" role="tablist" aria-label="Вывод процесса"><button class="code-tab ${state.jobLogKind === "stdout" ? "active" : ""}" data-job-log="stdout" role="tab" aria-selected="${state.jobLogKind === "stdout"}">Вывод</button><button class="code-tab ${state.jobLogKind === "stderr" ? "active" : ""}" data-job-log="stderr" role="tab" aria-selected="${state.jobLogKind === "stderr"}">Ошибки</button></div><pre id="job-log-output" class="code-content" role="tabpanel"></pre><div class="code-footnote">${detail.truncated ? "Показан ограниченный фрагмент журнала" : "Вывод процесса"} · ${esc(job.id?.slice(0, 8) || "")}</div></section>`;
     renderJobLog();
     if (scroll) {
       $("#job-log-output").scrollTop = scroll.top;
@@ -2509,12 +2631,36 @@ function validationFields(profile, selected, action = "baseline") {
     options.push(["grouped", "Разделить дубли", "Копии только в одной части", true]);
   return `<fieldset id="validation-controls" class="validation-controls"><legend>Проверка качества</legend><div class="validation-options"><label class="validation-option" id="validation-auto-option" ${action === "automl" ? "" : "hidden"}><input type="radio" name="validation_strategy" value="auto" ${selected.strategy === "auto" ? "checked" : ""} ${action === "automl" ? "" : "disabled"}><span><strong>Автоматически</strong><small>С учётом периодов и дублей</small></span></label>${options.map(([value, label, description, enabled]) => `<label class="validation-option"><input type="radio" name="validation_strategy" value="${value}" ${selected.strategy === value ? "checked" : ""} ${enabled ? "" : "disabled"}><span><strong>${label}</strong><small>${enabled ? description : "Нет числовых признаков"}</small></span></label>`).join("")}</div><label class="form-field validation-time-column" id="validation-time-field" hidden>Столбец периода<select name="time_column" required disabled><option value="">Выберите столбец периода</option>${numeric.map((column) => `<option value="${esc(column.name)}" ${selected.time_column === column.name ? "selected" : ""}>${esc(column.name)}</option>`).join("")}</select></label></fieldset>`;
 }
+function trainingDeviceControlsHTML() {
+  const gpu = state.trainingDevices?.gpu, ready = gpu?.available === true;
+  const description = state.trainingDevicesBusy ? "Проверяем доступность GPU через CatBoost…"
+    : !gpu ? "Проверка видеокарты ещё не выполнена. CPU доступен сразу."
+    : ready ? `${gpu.device_name || gpu.label || "GPU"} · CatBoost видит устройство. Проверка доступности не запускает обучение.`
+    : gpu.reason || "CatBoost пока не видит доступную видеокарту.";
+  return `<div class="training-device-picker"><label class="form-field">Устройство обучения<select name="training_device" id="training-device"><option value="cpu" ${state.launchTrainingDevice !== "gpu" ? "selected" : ""}>CPU · 8 потоков</option><option value="gpu" ${state.launchTrainingDevice === "gpu" ? "selected" : ""} ${ready ? "" : "disabled"}>GPU · CatBoost${ready ? "" : " · недоступно"}</option></select></label><button class="button small" type="button" data-action="training-device-probe" ${state.trainingDevicesBusy ? "disabled" : ""}>${state.trainingDevicesBusy ? '<span class="spinner"></span> Проверяем…' : "Проверить видеокарту"}</button><p class="campaign-note" role="status">${esc(description)}</p><p class="campaign-note">GPU — отдельный локальный эксперимент. Автоматического перехода на CPU при ошибке нет. Сравнение LightGBM и конкурсная проверка используют CPU.</p></div>`;
+}
+function renderTrainingDeviceControls() {
+  const container = $("#training-device-controls");
+  if (!container) return;
+  container.innerHTML = trainingDeviceControlsHTML();
+  container.hidden = state.launchModelRecipe !== "catboost";
+}
+async function refreshTrainingDevices() {
+  if (state.trainingDevicesBusy) return;
+  state.trainingDevicesBusy = true; renderTrainingDeviceControls();
+  try {
+    const devices = await api("/api/training-devices");
+    state.trainingDevices = devices && typeof devices.gpu?.available === "boolean" ? devices
+      : {gpu: {available: false, reason: "Сервер не подтвердил доступность GPU."}};
+  } catch (error) { state.trainingDevices = {gpu: {available: false, reason: error.message}}; }
+  finally { state.trainingDevicesBusy = false; renderTrainingDeviceControls(); }
+}
 function updateLaunchFields() {
   const form = $("#launch-form"),
     value = $('input[name="recipe"]:checked', form)?.value,
     offline = isOfflineRecipe(value),
     fixedRecipe = isFixedRecipe(value),
-    timed = ["agent", "automl"].includes(value),
+    timed = value === "agent" || offline,
     autoOption = $('input[name="validation_strategy"][value="auto"]', form);
   if (value !== "automl" && autoOption.checked) {
     autoOption.checked = false;
@@ -2524,6 +2670,7 @@ function updateLaunchFields() {
   $("#validation-auto-option").hidden = value !== "automl";
   const strategy = $('input[name="validation_strategy"]:checked', form)?.value;
   if (state.launchModelRecipe !== value) {
+    state.launchTrainingDevice = "cpu";
     if (state.launchModelRecipe)
       $("#launch-title").textContent = {
         automl: "Подобрать лучшую модель", baseline: "Измерить стартовое качество",
@@ -2539,7 +2686,7 @@ function updateLaunchFields() {
       : "Без API · обучение на этом компьютере";
   $("#launch-cost").classList.toggle("paid", value === "agent");
   $("#qwen-time-field").hidden = !timed;
-  $("#time-budget-label").textContent = value === "automl" ? "Лимит автоподбора, минут" : "Время исследования Qwen, минут";
+  $("#time-budget-label").textContent = value === "automl" ? "Лимит автоподбора, минут" : value === "agent" ? "Время исследования Qwen, минут" : "Лимит обучения, минут";
   $("#automl-plan").hidden = value !== "automl";
   $("#hypothesis-label").textContent =
     value === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту";
@@ -2550,6 +2697,7 @@ function updateLaunchFields() {
   form.elements.time_column.disabled = !offline || strategy !== "time";
   $("#model-settings").hidden = !fixedRecipe;
   if ($("#model-fields")) $("#model-fields").disabled = !fixedRecipe;
+  renderTrainingDeviceControls();
 }
 async function showLaunch(action = "automl", editReference = null) {
   if (nativeRunning(state.nativeActiveQueue) || campaignRunning(state.campaignActive)) {
@@ -2596,6 +2744,9 @@ async function showLaunch(action = "automl", editReference = null) {
   state.profiles.set(task, profile);
   state.launchProfile = profile;
   state.launchModelRecipe = null;
+  state.launchTrainingDevice = "cpu";
+  state.launchFeatureConfigs = editReference?.feature_config ? {[action]: structuredClone(editReference.feature_config)} : {};
+  state.launchOriginalConfigs = editReference?.model_config ? {[action]: structuredClone(editReference.model_config)} : {};
   state.launchModelDrafts = Object.fromEntries(FIXED_RECIPES.flatMap((recipe) => {
     const schema = modelSchema(profile, recipe);
     return schema ? [[recipe, modelDraft(schema, editReference?.action === recipe ? editReference.model_config : null)]] : [];
@@ -2616,12 +2767,16 @@ async function showLaunch(action = "automl", editReference = null) {
     )
     .join(
       "",
-    )}</fieldset><div id="automl-plan" class="automl-plan" ${action === "automl" ? "" : "hidden"}><span>${icon("activity")} Быстрый результат</span><span>${icon("search")} Поиск</span><span>${icon("test")} Проверка</span><span>${icon("check")} Финальное обучение</span></div>${validationFields(profile, selectedValidation, action)}<details class="model-settings" id="model-settings"></details>${editReference && !editReference.model_config ? '<p class="model-schema-note">Параметры прежнего запуска не сохранены. Загружены стандартные.</p>' : ""}<div class="form-grid"><label class="form-field">Ваше имя<input name="author" maxlength="80" value="${esc(author)}" placeholder="Необязательно" autocomplete="name"></label><label class="form-field" id="qwen-time-field" ${["agent", "automl"].includes(action) ? "" : "hidden"}><span id="time-budget-label">${action === "automl" ? "Лимит автоподбора, минут" : "Время исследования Qwen, минут"}</span><input name="minutes" type="number" min="1" max="175" value="${action === "automl" ? 10 : 20}" ${["agent", "automl"].includes(action) ? "" : "disabled"} required></label><label class="form-field full"><span id="hypothesis-label">${action === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту"}</span><textarea name="hypothesis" maxlength="500" placeholder="Необязательно">${esc(editReference?.hypothesis || "")}</textarea></label></div><p class="launch-note">Каждый запуск сохранит свой результат. Текущий CSV изменится только после выбора «Использовать CSV».</p><p id="launch-error" class="form-error" role="alert"></p><div class="form-actions"><span id="launch-cost" class="form-cost">${action === "agent" ? "Qwen · расходует общий API-бюджет" : "Без API · обучение на этом компьютере"}</span><button class="button primary" type="submit" id="launch-submit">Запустить ${icon("activity")}</button></div>`;
-  $("#launch-form").onchange = updateLaunchFields;
+    )}</fieldset><div id="automl-plan" class="automl-plan" ${action === "automl" ? "" : "hidden"}><span>${icon("activity")} Быстрый результат</span><span>${icon("search")} Поиск</span><span>${icon("test")} Проверка</span><span>${icon("check")} Финальное обучение</span></div>${validationFields(profile, selectedValidation, action)}<details class="model-settings" id="model-settings"></details><section id="training-device-controls" hidden></section>${editReference && !editReference.model_config ? '<p class="model-schema-note">Параметры прежнего запуска не сохранены. Загружены стандартные.</p>' : ""}<div class="form-grid"><label class="form-field">Ваше имя<input name="author" maxlength="80" value="${esc(author)}" placeholder="Необязательно" autocomplete="name"></label><label class="form-field" id="qwen-time-field"><span id="time-budget-label">${action === "automl" ? "Лимит автоподбора, минут" : action === "agent" ? "Время исследования Qwen, минут" : "Лимит обучения, минут"}</span><input name="minutes" type="number" min="1" max="175" value="${action === "automl" ? 10 : action === "agent" ? 20 : 30}" required></label><label class="form-field full"><span id="hypothesis-label">${action === "agent" ? "Гипотеза для Qwen" : "Заметка к эксперименту"}</span><textarea name="hypothesis" maxlength="500" placeholder="Необязательно">${esc(editReference?.hypothesis || "")}</textarea></label></div><p class="launch-note">Каждый запуск сохранит свой результат. Текущий CSV изменится только после выбора «Использовать CSV».</p><p id="launch-error" class="form-error" role="alert"></p><div class="form-actions"><span id="launch-cost" class="form-cost">${action === "agent" ? "Qwen · расходует общий API-бюджет" : "Без API · обучение на этом компьютере"}</span><button class="button primary" type="submit" id="launch-submit">Запустить ${icon("activity")}</button></div>`;
+  $("#launch-form").onchange = (event) => {
+    if (event.target.name === "training_device") state.launchTrainingDevice = event.target.value;
+    updateLaunchFields();
+  };
   $("#launch-form").oninput = () => { saveModelDraft(); updateModelSummary(); };
   updateLaunchFields();
   if (editReference) $("#model-settings").open = true;
   $("#launch-dialog").showModal();
+  if (!state.trainingDevices) refreshTrainingDevices();
 }
 async function startPrepare() {
   const button = $('[data-launch="prepare"]');
@@ -2664,7 +2819,7 @@ $("#launch-form").addEventListener("submit", async (event) => {
   const action = $('input[name="recipe"]:checked', form)?.value,
     author = form.elements.author.value.trim(),
     hypothesis = form.elements.hypothesis.value.trim(),
-    minutes = ["agent", "automl"].includes(action) ? Number(form.elements.minutes.value) : 20,
+    minutes = Number(form.elements.minutes.value),
     task = state.launchTask;
   if (!action || !Number.isInteger(minutes) || minutes < 1 || minutes > 175) {
     $("#launch-error").textContent = "Укажите целое число минут от 1 до 175.";
@@ -2696,6 +2851,11 @@ $("#launch-form").addEventListener("submit", async (event) => {
       }
     }
   }
+  const training_device = action === "catboost" ? state.launchTrainingDevice : "cpu";
+  if (!["cpu", "gpu"].includes(training_device) || training_device === "gpu" && state.trainingDevices?.gpu?.available !== true) {
+    $("#launch-error").textContent = "Доступность GPU не подтверждена. Повторите проверку видеокарты или выберите CPU.";
+    return;
+  }
   button.disabled = true;
   $("#launch-error").textContent = "";
   try {
@@ -2707,6 +2867,9 @@ $("#launch-form").addEventListener("submit", async (event) => {
       minutes,
       validation,
       model_params,
+      model_config: state.launchOriginalConfigs[action] && model_params ? {...structuredClone(state.launchOriginalConfigs[action]), parameters: model_params} : null,
+      feature_config: state.launchFeatureConfigs[action],
+      training_device,
     }));
     try {
       localStorage.setItem("alfa-author", author);

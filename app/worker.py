@@ -28,19 +28,20 @@ from sklearn.base import clone
 from threadpoolctl import threadpool_limits
 
 from agent.diagnostics import classification_diagnostics, validate_classification_diagnostics
+from agent.features import normalize_feature_config
 from agent.models import build_pipeline, predict_for_metric
 from agent.task_spec import load_task, load_task_data, score_holdout
 from app.file_io import replace_file
 from app.model_config import make_model_config, model_task_type, validate_model_config, winner_feature_evidence
+from app.model_artifacts import save_model_artifacts
 from app.splits import normalize_validation, split_rows
-from offline_baseline import (
-    SEED, find_data, prepare_features,
-)
+from offline_baseline import SEED, find_data
 from validation import validate_predictions
 
 
 ACTIONS = {"baseline", "extra_trees", "catboost", "lightgbm", "linear", "automl"}
-OUTPUT_NAMES = ("stage.json", "result.json", "metrics.json", "holdout_predictions.csv", "automl_report.json")
+OUTPUT_NAMES = ("stage.json", "result.json", "metrics.json", "holdout_predictions.csv", "automl_report.json",
+                "model.joblib", "model_manifest.json", "training_recipe.json")
 
 
 def _plain_path(path: Path, root: Path | None = None, *, directory=False,
@@ -98,16 +99,19 @@ def load_config(config_path: Path) -> dict:
     config = json.loads(raw.decode("utf-8-sig"))
     required = {"job_dir", "task_path", "action", "dataset_fingerprint"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"validation", "model_params", "model_config", "time_budget"}):
+            or set(config) - required - {"validation", "model_params", "model_config", "time_budget",
+                                       "feature_config", "training_device"}):
         raise ValueError("Некорректные настройки запуска.")
     if any(not isinstance(config[key], str) for key in required):
         raise ValueError("Настройки запуска должны содержать строковые значения.")
     if config["action"] not in ACTIONS:
         raise ValueError("Неизвестный рецепт обучения.")
+    from app.training_devices import normalize_training_device
+    config["training_device"] = normalize_training_device(config.get("training_device"), action=config["action"])
     if "model_params" in config and "model_config" in config:
         raise ValueError("Передайте model_params или model_config, но не оба поля.")
     if config["action"] == "automl":
-        if "model_params" in config or "model_config" in config:
+        if "model_params" in config or "model_config" in config or "feature_config" in config:
             raise ValueError("Автоподбор сам выбирает параметры моделей.")
         requested = config.get("validation")
         config["validation"] = ({"strategy": "auto"} if requested is None or requested == {"strategy": "auto"}
@@ -120,6 +124,7 @@ def load_config(config_path: Path) -> dict:
         if "time_budget" in config:
             raise ValueError("Бюджет времени доступен только для автоподбора.")
         config["validation"] = normalize_validation(config.get("validation"))
+        config["feature_config"] = normalize_feature_config(config.get("feature_config"))
     if config.get("model_params") is not None and not isinstance(config["model_params"], dict):
         raise ValueError("Настройки модели должны быть объектом.")
     if "model_config" in config:
@@ -186,6 +191,9 @@ def _run_automl_job(config: dict) -> dict:
     result["model_config"] = validate_model_config(result["model_config"])
     result["search"] = validate_search_summary(result["search"], metric=result["metric"], model=result["model"])
     result.update(winner_feature_evidence(evidence, result["search"]))
+    result["training_device"] = "cpu"
+    result["model_artifact"] = {"available": False, "reason":
+        "Автоподбор сохранил рецепт и предсказания. Для файла обученной модели запустите выбранный рецепт отдельно."}
     if "classification_diagnostics" in evidence:
         result["classification_diagnostics"] = validate_classification_diagnostics(
             evidence["classification_diagnostics"], metric=result["metric"],
@@ -231,9 +239,9 @@ def run_job(config: dict) -> dict:
         model_config = make_model_config(config["action"], task_type, config.get("model_params"))
     x = train.loc[:, features]
     test_x = test.loc[:, features]
-    if config["action"] in {"baseline", "extra_trees"}:
-        x = prepare_features(train, features, numeric, categorical)
-        test_x = prepare_features(test, features, numeric, categorical)
+    # Every adapter owns its input preparation. Keeping raw declared columns
+    # here makes the saved fitted pipeline reusable directly on raw CSV rows.
+    feature_config = normalize_feature_config(config.get("feature_config"))
     validation = normalize_validation(config.get("validation"))
     if validation["strategy"] == "time" and validation["time_column"] not in numeric:
         raise ValueError("Столбец периода должен быть числовым признаком по словарю данных.")
@@ -251,7 +259,11 @@ def run_job(config: dict) -> dict:
         "metric": metric_name, "higher_is_better": spec.metric.higher_is_better, "split": split,
     })
     pipeline = build_pipeline(config["action"], spec.metric.task_type, numeric, categorical,
-                              model_config=model_config)
+                              model_config=model_config, feature_config=feature_config)
+    from app.training_devices import prepare_training_pipeline, confirm_training_device
+    training_device = config.get("training_device", "cpu")
+    pipeline, device_evidence = prepare_training_pipeline(
+        pipeline, action=config["action"], training_device=training_device)
 
     _atomic_json(job_dir / "stage.json", {"stage": "training"})
     fit_started = time.monotonic()
@@ -277,6 +289,7 @@ def run_job(config: dict) -> dict:
     with threadpool_limits(limits=8):
         final_pipeline.fit(x, y)
     refit_seconds = time.monotonic() - refit_started
+    device_evidence = confirm_training_device(final_pipeline, device_evidence)
     prediction_started = time.monotonic()
     with threadpool_limits(limits=8):
         predictions = predict_for_metric(final_pipeline, test_x, spec)
@@ -288,6 +301,25 @@ def run_job(config: dict) -> dict:
     if not output_check["valid"]:
         raise ValueError("Проверка предсказаний не пройдена: " + "; ".join(output_check["errors"]))
 
+    _atomic_json(job_dir / "stage.json", {"stage": "saving_model"})
+    export_started = time.monotonic()
+    recipe = {"version": 1, "action": config["action"], "task_type": task_type,
+              "model_config": model_config, "feature_config": feature_config,
+              "validation": validation, "training_device": training_device}
+    schema = {"features": list(features), "numeric": list(numeric), "categorical": list(categorical),
+              "id_column": id_column, "target_column": target,
+              "classes": [str(value) for value in getattr(final_pipeline, "classes_", [])]}
+    try:
+        model_artifact = save_model_artifacts(
+            job_dir, final_pipeline, recipe=recipe, schema=schema, train_rows=len(train), split=split,
+            dataset_fingerprint=config["dataset_fingerprint"], comparison_key=comparison_key)
+    except Exception as error:
+        # Prediction quality is already verified. A serialization/disk failure
+        # must be visible without discarding the valid completed experiment.
+        model_artifact = {"available": False, "reason":
+            "Обучение завершено, но файл модели сохранить не удалось (" + type(error).__name__ + ")."}
+        print("Trained model export unavailable: " + type(error).__name__, flush=True)
+    export_seconds = time.monotonic() - export_started
     elapsed = time.monotonic() - started
     metric = {"name": metric_name, "value": float(value), "higher_is_better": spec.metric.higher_is_better}
     model_name = model_config["model"]
@@ -302,6 +334,10 @@ def run_job(config: dict) -> dict:
         "seed": SEED, "split": split,
         "model": {"name": model_name, "parameters": fitted_model.get_params()},
         "model_config": model_config,
+        "feature_config": feature_config,
+        "model_artifact": model_artifact,
+        "training_device": training_device,
+        "training_device_evidence": device_evidence,
         "metric": {**metric, "source": "local_holdout_from_train.csv"},
         "shapes": {"train": list(train.shape), "test": list(test.shape),
                    "training_features": [len(fit_rows), len(features)],
@@ -313,6 +349,7 @@ def run_job(config: dict) -> dict:
         "timing_seconds": {"training": fit_seconds, "validation": validation_seconds,
                            "refit": refit_seconds, "prediction": prediction_seconds,
                            "refit_and_predict": refit_seconds + prediction_seconds,
+                           "model_export": export_seconds,
                            "total_before_save": elapsed},
         "elapsed_seconds": elapsed,
         "training_elapsed_seconds": fit_seconds + refit_seconds,
@@ -328,6 +365,10 @@ def run_job(config: dict) -> dict:
     result = {
         "model": model_name, "metric": metric, "split": split,
         "model_config": model_config,
+        "feature_config": feature_config,
+        "model_artifact": model_artifact,
+        "training_device": training_device,
+        "training_device_evidence": device_evidence,
         "comparison_key": comparison_key, "output_valid": True,
     }
     if metric_name == "Macro F1":
