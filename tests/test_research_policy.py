@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from contextlib import contextmanager
 import copy
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
@@ -13,7 +14,9 @@ import re
 import threading
 import unittest
 
+import experiment_research_policy as lab
 from agent import research_policy as policy
+from agent.research_v3 import SYSTEM_V3
 from agent.research_policy import (
     FAILURE_STOP_STREAK, REASON_CODES, PolicyBudgetExceeded, PolicyDecision, PolicyInputError,
     PolicyLimits, build_model_messages, compact_tool_feedback, decide_next_action, json_size,
@@ -911,6 +914,593 @@ class BuildMessagesTests(unittest.TestCase):
         self.assertTrue(any(m["role"] == "tool" for m in context.messages))
 
 
+
+def dlg_contract(**changes):
+    value = make_contract(
+        manifest_version=3, allowed_inputs=["task.md", "data/train.csv"],
+        required_outputs=["research_candidate.py", "research_recipe.json", "research_hypothesis.json"],
+        validation={"supported": True, "metric": metric(4.2), "scope": "inner_selection"},
+        completion={"required_verified_trials": 1, "allow_unverified": False, "mode": "research_dialogue"})
+    value.update(changes)
+    return value
+
+
+def llm_trial(number=1, **changes):
+    changes.setdefault("recipe_hash", f"recipe{number}")
+    return make_trial(number, origin="llm", **changes)
+
+
+def dlg_snapshot(rows=(), *, verified_llm=None, unverified_llm=0, host_can_finalize=True, closed=False,
+                 finish=False, **changes):
+    rows = list(rows)
+    llm = verified_llm if verified_llm is not None else sum(
+        1 for row in rows if row["verified"] and row.get("origin") == "llm")
+    merged = {
+        "baseline": {"retained_output_valid": False, "status": "measured"},
+        "counts": {"verified_trials": sum(1 for row in rows if row["verified"]), "unverified_trials": unverified_llm,
+                   "consecutive_execution_failures": 0, "verified_llm_trials": llm,
+                   "unverified_llm_trials": unverified_llm, "host_local_trials": 0, "host_history_trials": 0},
+        "finalization": {"verified_candidate": llm > 0, "host_can_finalize": host_can_finalize,
+                         "research_closed": closed}}
+    for key in merged:  # nested overrides merge into the defaults
+        if key in changes:
+            merged[key] = {**merged[key], **changes.pop(key)}
+    return make_snapshot(last_trial=rows[-1] if rows else None, recent_trials=rows, finish_requested=finish,
+                         **merged, **changes)
+
+
+def dlg_decide(snapshot=None, contract=None):
+    return decide_next_action(snapshot or dlg_snapshot(), contract=contract or dlg_contract())
+
+
+class ResearchDialogueCompletionTests(unittest.TestCase):
+    """A research dialogue closes on host facts; a final CSV is a separate fact."""
+
+    def test_frozen_inner_receipt_completes_without_a_final_csv(self):
+        rows = [llm_trial(1)]
+        snapshot = dlg_snapshot(rows, finish=True)
+        self.assertFalse(snapshot["baseline"]["retained_output_valid"])
+        decision = dlg_decide(snapshot)
+        self.assertEqual((decision.stage, decision.action, decision.reason), ("finished", "complete", "dialogue_complete"))
+        self.assertIn("does not mean that a final submission already exists", decision.instruction)
+        closed = dlg_decide(dlg_snapshot(rows, closed=True))
+        self.assertEqual((closed.action, closed.reason), ("complete", "dialogue_closed_by_host"))
+
+    def test_the_legacy_contract_still_needs_a_saved_csv(self):
+        legacy = snapshot_with(make_trial(2), verified=2, finish_requested=True,
+                               baseline={"retained_output_valid": False})
+        decision = decide(legacy)
+        self.assertEqual(decision.reason, "finish_too_early")
+        self.assertIn("no valid output", decision.instruction)
+        self.assertNotIn("finalization", json.dumps(build(snapshot=legacy).messages))
+
+    def test_no_trial_and_analysis_never_complete(self):
+        analysis = llm_trial(1, accepted=False, verified=False, metric=None, reason="no evidence")
+        for rows in ([], [analysis]):
+            with self.subTest(rows=len(rows)):
+                decision = dlg_decide(dlg_snapshot(rows, finish=True))
+                self.assertEqual((decision.action, decision.reason), ("continue", "finish_too_early"))
+                self.assertIn("1 more host-verified LLM experiment", decision.instruction)
+        closed = dlg_decide(dlg_snapshot([analysis], closed=True))
+        self.assertEqual((closed.action, closed.reason), ("fallback", "dialogue_closed_by_host"))
+
+    def test_other_origins_and_baseline_never_raise_the_llm_counter(self):
+        history = make_trial(1, origin="history", recipe_hash="h", hypothesis={"hypothesis": "blend"})
+        local = make_trial(2, origin="local", recipe_hash="l", hypothesis={"hypothesis": "depth 6"})
+        snapshot = dlg_snapshot([history, local], finish=True)
+        self.assertEqual(snapshot["counts"]["verified_llm_trials"], 0)
+        self.assertEqual(snapshot["counts"]["verified_trials"], 2)
+        decision = dlg_decide(snapshot)
+        self.assertEqual((decision.action, decision.reason), ("continue", "finish_too_early"))
+        context = build(snapshot=snapshot, contract=dlg_contract())
+        state = json.loads(context.messages[-1]["content"].split("\n")[1])
+        self.assertEqual((state["counts"]["verified_llm_trials"], state["counts"]["verified_trials"]), (0, 2))
+        self.assertEqual([entry["origin"] for entry in state["recent_trials"]], ["history", "local"])
+        self.assertEqual(state["recent_trials"][0]["hypothesis"], "blend")
+
+    def test_host_must_be_able_to_take_over(self):
+        decision = dlg_decide(dlg_snapshot([llm_trial(1)], finish=True, host_can_finalize=False))
+        self.assertEqual(decision.reason, "finish_too_early")
+        self.assertIn("host cannot take over", decision.instruction)
+
+    def test_unsupported_metric_dialogue_completion_is_unverified(self):
+        contract = dlg_contract(validation={"supported": False, "metric": None, "scope": "inner_selection"},
+                                completion={"required_verified_trials": 1, "allow_unverified": True,
+                                            "mode": "research_dialogue"})
+        trial = llm_trial(1, accepted=True, verified=False, metric=None, reason="host_metric_unsupported")
+        done = dlg_decide(dlg_snapshot([trial], unverified_llm=1, finish=True), contract)
+        self.assertEqual((done.action, done.reason), ("complete", "dialogue_unverified_complete"))
+        self.assertIn("NOT independently verified", done.instruction)
+        blocked = make_contract(validation={"supported": False, "metric": None, "scope": "s"},
+                                completion={"required_verified_trials": 1, "allow_unverified": False,
+                                            "mode": "research_dialogue"})
+        stopped = dlg_decide(dlg_snapshot([trial], finish=True), blocked)
+        self.assertEqual((stopped.action, stopped.reason), ("fallback", "dialogue_handover_unreachable"))
+
+    def test_close_when_met_is_explicit_and_off_by_default(self):
+        rows = [llm_trial(1)]
+        self.assertEqual(dlg_decide(dlg_snapshot(rows)).action, "continue")
+        contract = dlg_contract(completion={"required_verified_trials": 1, "allow_unverified": False,
+                                            "mode": "research_dialogue", "close_when_met": True})
+        decision = dlg_decide(dlg_snapshot(rows), contract)
+        self.assertEqual((decision.action, decision.reason), ("complete", "dialogue_complete"))
+
+    def test_after_a_freeze_research_is_never_resumed(self):
+        trials = [llm_trial(1), llm_trial(2, accepted=False, reason="not_better"),
+                  llm_trial(3, accepted=False, verified=False, metric=None, error_kind="execution", error="e")]
+        for rows in ([], trials[:1], trials[:2], trials):
+            for finish in (False, True):
+                for stage in ("inspect", "research", "finalize"):
+                    for can_request in (True, False):
+                        snapshot = dlg_snapshot(rows, closed=True, finish=finish, stage=stage,
+                                                budget={"can_request": can_request})
+                        self.assertNotEqual(dlg_decide(snapshot).action, "continue", (len(rows), finish, stage))
+
+    def test_hand_over_never_takes_the_place_of_host_guards(self):
+        decision = dlg_decide(dlg_snapshot([llm_trial(1, accepted=False, reason="not_better")],
+                                           budget={"can_request": False}))
+        self.assertEqual((decision.action, decision.reason), ("fallback", "dialogue_handover_resources"))
+        for text in (decision.instruction,):
+            self.assertIn("its own deadline", text)
+            self.assertIn("this policy changes none of them", text)
+        for retained in (True, False):  # a dialogue never reports "stop" because a CSV is missing
+            snapshot = dlg_snapshot([], budget={"remaining_requests": 0}, baseline={"retained_output_valid": retained})
+            self.assertEqual(dlg_decide(snapshot).action, "fallback")
+
+    def test_repeated_failures_hand_over(self):
+        failing = llm_trial(1, accepted=False, verified=False, metric=None, error_kind="execution", error="e")
+        snapshot = dlg_snapshot([failing], counts={"consecutive_execution_failures": FAILURE_STOP_STREAK})
+        snapshot["counts"].update(verified_llm_trials=0, unverified_llm_trials=0, host_local_trials=0,
+                                  host_history_trials=0)
+        self.assertEqual(dlg_decide(snapshot).reason, "dialogue_handover_failures")
+
+    def test_dialogue_contract_requires_its_facts_and_consistent_counters(self):
+        snapshot = dlg_snapshot()
+        del snapshot["finalization"]
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(snapshot)
+        snapshot = dlg_snapshot()
+        del snapshot["counts"]["verified_llm_trials"]
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(snapshot)
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(dlg_snapshot(verified_llm=3))  # more LLM-verified trials than verified trials
+        for bad in ({"verified_candidate": "yes", "host_can_finalize": True},
+                    {"verified_candidate": True, "host_can_finalize": 1},
+                    {"verified_candidate": True}):
+            snapshot = dlg_snapshot()
+            snapshot["finalization"] = bad
+            with self.subTest(bad=bad), self.assertRaises(PolicyInputError):
+                dlg_decide(snapshot)
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(dlg_snapshot(), dlg_contract(completion={
+                "required_verified_trials": 1, "allow_unverified": False, "mode": "other"}))
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(dlg_snapshot(), dlg_contract(completion={
+                "required_verified_trials": 1, "allow_unverified": False, "mode": "research_dialogue",
+                "close_when_met": "yes"}))
+
+    def test_instructions_never_delegate_host_finalization(self):
+        failures = [llm_trial(2, accepted=False, verified=False, metric=None, error_kind=kind, error="e")
+                    for kind in policy.ERROR_KINDS]
+        trials = [None, llm_trial(1), llm_trial(1, accepted=False, reason="not_better"),
+                  llm_trial(1, accepted=False, reason="refit_budget"),
+                  llm_trial(1, accepted=False, verified=False, metric=None, reason="no evidence"), *failures]
+        forbidden = ("refit the", "write the final", "final required outputs", "fast baseline", "save the best valid",
+                     "output is saved", "submission.csv", "re-check its columns", "outer")
+        seen = set()
+        for last in trials:
+            for stage in ("inspect", "research", "finalize"):
+                for low in (False, True):
+                    rows = [] if last is None else [last]
+                    snapshot = dlg_snapshot(rows, stage=stage, budget={"remaining_seconds": 40.0 if low else 9000.0})
+                    contract = dlg_contract(pacing={"low_remaining_seconds": 300})
+                    decision = dlg_decide(snapshot, contract)
+                    seen.add(decision.reason)
+                    if decision.action != "continue":
+                        continue
+                    text = decision.instruction.lower()
+                    for phrase in forbidden:
+                        self.assertNotIn(phrase, text, (decision.reason, phrase))
+        self.assertNotIn("finalize_low_resources", seen)
+        self.assertIn("inspect_dialogue", seen)
+        self.assertIn("refit_budget_continue", seen)
+        self.assertIn("repair_execution_error", seen)
+
+    def test_finalize_stage_asks_only_for_a_short_account(self):
+        decision = dlg_decide(dlg_snapshot([llm_trial(1)], stage="finalize"))
+        self.assertEqual((decision.action, decision.reason), ("continue", "ready_to_finish"))
+        self.assertIn("no tool call", decision.instruction)
+        self.assertIn("do not write or train final outputs yourself", decision.instruction)
+        early = dlg_decide(dlg_snapshot([], stage="finalize"))
+        self.assertEqual(early.reason, "finalize_requested")
+
+    def test_contract_text_states_the_new_semantics(self):
+        context = build(contract=dlg_contract(pacing={"low_remaining_seconds": 60, "low_remaining_requests": 0}),
+                        snapshot=dlg_snapshot())
+        text = context.messages[2]["content"]
+        self.assertIn('"mode":"research_dialogue"', text)
+        self.assertIn("completion_mode: research_dialogue", text)
+        self.assertIn("retained_output_valid reports only a CSV that is already saved", text)
+        self.assertIn('pacing: {"low_remaining_seconds":60,"low_remaining_requests":0}', text)
+        state = json.loads(context.messages[-1]["content"].split("\n")[1])
+        self.assertEqual(state["finalization"], {"verified_candidate": False, "host_can_finalize": True,
+                                                 "research_closed": False})
+        self.assertFalse(state["baseline"]["retained_output_valid"])
+
+
+class ResearchBudgetPacingTests(unittest.TestCase):
+    def test_a_short_smoke_budget_is_not_forced_to_finish_before_the_first_trial(self):
+        for seconds, research in ((250.0, 120.0), (90.0, 90.0), (300.0, 200.0)):
+            snapshot = dlg_snapshot([], budget={"remaining_seconds": seconds, "research_seconds_available": research})
+            decision = dlg_decide(snapshot)
+            self.assertEqual((decision.action, decision.reason), ("continue", "first_hypothesis"), seconds)
+            self.assertNotIn("tight", decision.instruction)
+
+    def test_explicit_thresholds_only_add_a_note_for_the_dialogue_contract(self):
+        contract = dlg_contract(pacing={"low_remaining_seconds": 300, "low_remaining_requests": 1})
+        snapshot = dlg_snapshot([], budget={"remaining_seconds": 250.0})
+        decision = dlg_decide(snapshot, contract)
+        self.assertEqual(decision.reason, "first_hypothesis")
+        self.assertIn("time budget is tight", decision.instruction)
+        requests = dlg_decide(dlg_snapshot([], budget={"remaining_requests": 1}), contract)
+        self.assertEqual(requests.reason, "first_hypothesis")
+        self.assertIn("tight", requests.instruction)
+
+    def test_the_host_research_time_replaces_the_total_remaining_time(self):
+        snapshot = dlg_snapshot([llm_trial(1)], budget={"remaining_seconds": 9000.0, "research_seconds_available": 0.0})
+        self.assertEqual(dlg_decide(snapshot).reason, "dialogue_handover_resources")
+        plenty = dlg_snapshot([llm_trial(1)], budget={"remaining_seconds": 5.0, "research_seconds_available": 900.0})
+        self.assertEqual(dlg_decide(plenty).action, "continue")
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(dlg_snapshot(budget={"research_seconds_available": -1.0}))
+        with self.assertRaises(PolicyInputError):
+            dlg_decide(dlg_snapshot(budget={"research_seconds_available": float("nan")}))
+
+    def test_legacy_threshold_is_kept_by_default_and_can_be_made_explicit(self):
+        short = snapshot_with(make_trial(1), verified=1, budget={"remaining_seconds": 120.0})
+        self.assertEqual(decide(short).reason, "finalize_low_resources")
+        explicit = make_contract(pacing={"low_remaining_seconds": 60, "low_remaining_requests": 0})
+        self.assertNotEqual(decide(short, explicit).reason, "finalize_low_resources")
+        shorter = snapshot_with(make_trial(1), verified=1, budget={"remaining_seconds": 30.0})
+        self.assertEqual(decide(shorter, explicit).reason, "finalize_low_resources")
+        for bad in ({"low_remaining_seconds": -1}, {"low_remaining_seconds": True},
+                    {"low_remaining_requests": -1}, {"low_remaining_requests": 1.5}, "no"):
+            with self.subTest(bad=bad), self.assertRaises(PolicyInputError):
+                decide(short, make_contract(pacing=bad))
+
+    def test_policy_does_not_recompute_a_reserve(self):
+        snapshot = dlg_snapshot([llm_trial(1)], budget={"remaining_seconds": 700.0, "research_seconds_available": 100.0})
+        again = dlg_snapshot([llm_trial(1)], budget={"remaining_seconds": 7000.0, "research_seconds_available": 100.0})
+        self.assertEqual(dlg_decide(snapshot), dlg_decide(again))
+
+
+class ResearchRepeatIdentityTests(unittest.TestCase):
+    def snapshot_for(self, first, second, *, dialogue=True):
+        builder = dlg_snapshot if dialogue else (lambda rows, **kw: make_snapshot(
+            last_trial=rows[-1], recent_trials=rows, counts={"verified_trials": 2}))
+        return builder([first, second])
+
+    def test_same_code_with_a_different_recipe_is_a_new_attempt(self):
+        first = llm_trial(1, code_hash="same", hypothesis="Boost trees, depth 3", accepted=False, reason="not_better")
+        second = llm_trial(2, code_hash="same", hypothesis="Boost trees, depth 6", accepted=False,
+                           reason="not_better", recipe_hash="recipe-depth-6")
+        decision = dlg_decide(self.snapshot_for(first, second))
+        self.assertNotEqual(decision.reason, "repeated_code")
+        similar = llm_trial(2, code_hash="same", hypothesis="  boost TREES, depth 3 ", recipe_hash="other",
+                            accepted=False, reason="not_better")
+        self.assertNotEqual(dlg_decide(self.snapshot_for(first, similar)).reason, "repeated_code")
+
+    def test_identical_code_and_recipe_is_a_repeat(self):
+        first = llm_trial(1, code_hash="same", recipe_hash="r1", accepted=False, reason="not_better")
+        second = llm_trial(2, code_hash="same", recipe_hash="r1", hypothesis="completely different words",
+                           accepted=False, reason="not_better")
+        self.assertEqual(dlg_decide(self.snapshot_for(first, second)).reason, "repeated_code")
+
+    def test_a_missing_recipe_hash_in_a_dialogue_contract_claims_no_repeat(self):
+        first = make_trial(1, code_hash="same", hypothesis="Try ridge", accepted=False, reason="not_better")
+        second = make_trial(2, code_hash="same", hypothesis="Try ridge", accepted=False, reason="not_better")
+        for trial in (first, second):
+            trial["origin"] = "llm"
+        snapshot = dlg_snapshot([first, second], verified_llm=2)
+        self.assertNotEqual(dlg_decide(snapshot).reason, "repeated_code")
+
+    def test_legacy_contract_without_recipe_hash_is_explicit(self):
+        first = make_trial(1, code_hash="same", accepted=False, reason="not_better")
+        second = make_trial(2, code_hash="same", accepted=False, reason="not_better", hypothesis="new words")
+        self.assertEqual(decide(self.snapshot_for(first, second, dialogue=False)).reason, "repeated_code")
+        by_text = make_trial(2, code_hash="other", accepted=False, reason="not_better", hypothesis="Hypothesis 1")
+        self.assertEqual(decide(self.snapshot_for(first, by_text, dialogue=False)).reason, "repeated_code")
+        # Recipe hashes present on both sides win even under a legacy contract.
+        with_recipes_a = make_trial(1, code_hash="same", recipe_hash="a", accepted=False, reason="not_better")
+        with_recipes_b = make_trial(2, code_hash="same", recipe_hash="b", accepted=False, reason="not_better")
+        self.assertNotEqual(decide(self.snapshot_for(with_recipes_a, with_recipes_b, dialogue=False)).reason,
+                            "repeated_code")
+
+    def test_recipe_hash_type_is_checked_but_never_invented(self):
+        with self.assertRaises(PolicyInputError):
+            decide(make_snapshot(last_trial=make_trial(1, recipe_hash=5)))
+        trial = decide_next_action(make_snapshot(last_trial=make_trial(1)), contract=make_contract())
+        self.assertIsInstance(trial, PolicyDecision)
+
+
+class HypothesisShapeTests(unittest.TestCase):
+    def feedback(self, selection, budget=6144):
+        return compact_tool_feedback(ok_result(selection=selection), limits=PolicyLimits(
+            max_tool_feedback_bytes=budget), redact=redact)
+
+    def v3_selection(self, **changes):
+        value = lab.v3_selection(True, 3.9, "improved", hypothesis="Use shallower trees", recipe_hash="r1",
+                                 diagnostics=lab.v3_inner_diagnostics(__import__("random").Random(1), 3.9))
+        value.update(changes)
+        return value
+
+    def test_a_string_llm_hypothesis_and_an_object_host_hypothesis_agree(self):
+        text = self.feedback(self.v3_selection())
+        host = self.feedback(self.v3_selection(origin="history", hypothesis={"hypothesis": "Use shallower trees"}))
+        self.assertEqual(text["selection"]["hypothesis"], host["selection"]["hypothesis"])
+        for feedback in (text, host):
+            self.assertEqual((feedback["selection"]["accepted"], feedback["selection"]["verified"]), (True, True))
+            self.assertEqual(feedback["selection"]["metric"], {"name": "RMSE", "value": 3.9, "higher_is_better": False})
+        self.assertEqual((text["selection"]["origin"], host["selection"]["origin"]), ("llm", "history"))
+        self.assertEqual(host["selection"]["scope"], "inner_selection")
+        self.assertEqual(host["selection"]["recipe_family"], "gradient_boosting")
+
+    def test_only_the_hypothesis_text_of_an_object_is_forwarded(self):
+        selection = self.v3_selection(origin="local", hypothesis={"hypothesis": "Host local depth 6",
+                                                                  "nested": {"x": "LEAK-NESTED"}, "extra": "LEAK-EXTRA"})
+        feedback = self.feedback(selection)
+        self.assertEqual(feedback["selection"]["hypothesis"], "Host local depth 6")
+        self.assertNotIn("LEAK", json.dumps(feedback))
+
+    def test_unusable_hypothesis_shapes_never_hide_typed_facts(self):
+        for bad in (5, [1, 2], {"nothing": 1}, {"hypothesis": 7}, True):
+            with self.subTest(bad=repr(bad)):
+                feedback = self.feedback(self.v3_selection(hypothesis=bad))
+                selection = feedback["selection"]
+                self.assertEqual((selection["accepted"], selection["verified"], selection["metric"]["value"]),
+                                 (True, True, 3.9))
+                self.assertNotIn("hypothesis", selection)
+                self.assertGreaterEqual(feedback["dropped_fields"], 1)
+
+    def test_history_tool_content_with_an_object_hypothesis_keeps_structure(self):
+        selection = self.v3_selection(origin="history", hypothesis={"hypothesis": "Blend with past history"})
+        history = make_group(1, result=ok_result(selection=selection))
+        context = build(history, snapshot_with(make_trial(1), verified=1))
+        feedback = json.loads(next(m for m in context.messages if m["role"] == "tool")["content"])
+        self.assertNotIn("unstructured", feedback)
+        self.assertEqual(feedback["selection"]["hypothesis"], "Blend with past history")
+        self.assertEqual(feedback["selection"]["metric"]["value"], 3.9)
+        weird = ok_result(selection=self.v3_selection(hypothesis=[1, 2]))
+        context = build(make_group(1, result=weird), snapshot_with(make_trial(1), verified=1))
+        self.assertNotIn("unstructured", next(m for m in context.messages if m["role"] == "tool")["content"])
+
+    def test_snapshot_trials_accept_the_real_host_forms_and_reject_the_rest(self):
+        for hypothesis in ("text", {"hypothesis": "text"}, None):
+            with self.subTest(hypothesis=hypothesis):
+                decide(make_snapshot(last_trial=make_trial(1, hypothesis=hypothesis)))
+        for bad in (5, ["text"], {"hypothesis": 3}, {"text": "t"}, True):
+            with self.subTest(bad=repr(bad)), self.assertRaises(PolicyInputError):
+                decide(make_snapshot(last_trial=make_trial(1, hypothesis=bad)))
+        with self.assertRaises(PolicyInputError):
+            decide(make_snapshot(last_trial=make_trial(1, origin="outer")))
+
+    def test_object_hypothesis_text_is_redacted_before_it_is_shortened(self):
+        long_secret = {"hypothesis": "x" * 200 + KEY + "y" * 200}
+        context = build(snapshot=snapshot_with(make_trial(1, hypothesis=long_secret), verified=1))
+        self.assertNotIn(KEY, json.dumps(context.messages))
+        self.assertIn("[REDACTED]", context.messages[-1]["content"])
+
+    def test_real_v3_result_shapes_keep_their_typed_facts(self):
+        rng = __import__("random").Random(3)
+        cases = {
+            "improved": lab.v3_result(rng, lab.v3_selection(True, 3.9, "improved", hypothesis="h", recipe_hash="r")),
+            "not_better": lab.v3_result(rng, lab.v3_selection(False, 4.4, "not_better", hypothesis="h", recipe_hash="r")),
+            "refit_budget": lab.v3_result(rng, lab.v3_selection(False, 3.5, "refit_budget", hypothesis="h", recipe_hash="r")),
+            "no_diagnostics": lab.v3_result(rng, lab.v3_selection(True, 3.9, "improved", hypothesis="h", recipe_hash="r",
+                                                                  diagnostics=None)),
+            "diagnostics_unavailable": lab.v3_result(rng, lab.v3_selection(
+                True, 3.9, "improved", hypothesis="h", recipe_hash="r",
+                diagnostics={"scope": "inner_selection", "available": False, "reason": "labels too long"})),
+            "unsupported": lab.v3_result(rng, {"accepted": True, "verified": False, "reason": "host_metric_unsupported",
+                                               "scope": "inner_selection", "hypothesis": "h"}),
+            "execution_failed": lab.v3_failed("Traceback\nValueError: x", extra={
+                "candidate_execution": {"phase": "inner_selection"}}),
+            "analysis": lab.v3_analysis("shape (10, 3)"),
+        }
+        for name, result in cases.items():
+            with self.subTest(name=name):
+                feedback = compact_tool_feedback(result, limits=PolicyLimits(), redact=redact)
+                chosen, original = feedback["selection"], result["selection"]
+                self.assertIs(chosen["accepted"], original["accepted"])
+                self.assertIs(chosen["verified"], original["verified"])
+                expected = original.get("metric")
+                self.assertEqual(chosen["metric"], None if expected is None else
+                                 {key: expected[key] for key in ("name", "value", "higher_is_better")})
+                self.assertEqual(chosen["reason"], original["reason"])
+        self.assertEqual(compact_tool_feedback(cases["improved"], limits=PolicyLimits(), redact=redact)["dropped_fields"], 3)
+        self.assertGreaterEqual(compact_tool_feedback(cases["execution_failed"], limits=PolicyLimits(),
+                                                      redact=redact)["dropped_fields"], 1)
+
+    def test_refit_budget_is_a_resource_problem_not_a_weaker_idea(self):
+        trial = llm_trial(1, accepted=False, verified=True, reason="refit_budget")
+        decision = dlg_decide(dlg_snapshot([trial]))
+        self.assertEqual(decision.reason, "refit_budget_continue")
+        self.assertIn("cheaper to train", decision.instruction)
+        self.assertNotIn("not better", decision.instruction)
+        legacy = decide(snapshot_with(make_trial(1, accepted=False, reason="refit_budget"), verified=1))
+        self.assertEqual(legacy.reason, "refit_budget_continue")
+
+    def test_inner_classification_diagnostics_are_summarised_in_the_v3_shape(self):
+        rng = __import__("random").Random(5)
+        diagnostics = lab.v3_inner_diagnostics(rng, 0.7, classification=True)
+        selection = lab.v3_selection(False, 0.7, "not_better", hypothesis="h", recipe_hash="r", diagnostics=diagnostics)
+        feedback = compact_tool_feedback(lab.v3_result(rng, selection, stdout="ok"),
+                                         limits=PolicyLimits(max_tool_feedback_bytes=2500), redact=redact)
+        summary = feedback["selection"]["diagnostics"]["classification"]
+        self.assertLessEqual(len(summary["per_class"]), 5)
+        self.assertEqual(summary["per_class"][0]["label"], diagnostics["classification"]["per_class"][0]["label"])
+        self.assertEqual(summary["accuracy"], 0.61)
+        self.assertLessEqual(json_size(feedback), 2500)
+        self.assertEqual(feedback["selection"]["metric"]["value"], 0.7)
+
+
+class MessageMetadataTests(unittest.TestCase):
+    def test_normal_identifiers_and_run_python_are_unchanged(self):
+        history = make_group(1, calls=2)
+        history[0]["tool_calls"][0]["id"] = "call_AbC123xyz"
+        history[0]["tool_calls"][1]["id"] = "chatcmpl-tool-7f31"
+        history[1]["tool_call_id"], history[2]["tool_call_id"] = "call_AbC123xyz", "chatcmpl-tool-7f31"
+        context = build(history, snapshot_with(make_trial(1), verified=1))
+        calls = next(m for m in context.messages if m.get("tool_calls"))["tool_calls"]
+        self.assertEqual([call["id"] for call in calls], ["call_AbC123xyz", "chatcmpl-tool-7f31"])
+        self.assertEqual({call["function"]["name"] for call in calls}, {"run_python"})
+        self.assertEqual([m["tool_call_id"] for m in context.messages if m["role"] == "tool"],
+                         ["call_AbC123xyz", "chatcmpl-tool-7f31"])
+
+    def test_a_secret_in_an_id_or_a_tool_name_is_a_safe_input_error(self):
+        def mutate(path):
+            history = make_group(1)
+            if path == "id":
+                history[0]["tool_calls"][0]["id"] = KEY
+                history[1]["tool_call_id"] = KEY
+            elif path == "name":
+                history[0]["tool_calls"][0]["function"]["name"] = KEY
+            else:
+                history[1]["tool_call_id"] = KEY  # also breaks the link, still never echoed
+            return history
+        for path in ("id", "name", "tool_call_id"):
+            with self.subTest(path=path):
+                with self.assertRaises(PolicyInputError) as caught:
+                    build(mutate(path))
+                self.assertNotIn(KEY, str(caught.exception))
+        embedded = make_group(1)
+        embedded[0]["tool_calls"][0]["id"] = f"call_{KEY}_tail"
+        embedded[1]["tool_call_id"] = f"call_{KEY}_tail"
+        with self.assertRaises(PolicyInputError) as caught:
+            build(embedded)
+        self.assertNotIn(KEY, str(caught.exception))
+
+    def test_metadata_is_never_shortened_for_size(self):
+        long_id = "call_" + "x" * 300
+        history = make_group(1)
+        history[0]["tool_calls"][0]["id"] = long_id
+        history[1]["tool_call_id"] = long_id
+        context = build(history, snapshot_with(make_trial(1), verified=1))
+        self.assertEqual(next(m for m in context.messages if m.get("tool_calls"))["tool_calls"][0]["id"], long_id)
+
+    def test_pending_v3_group_is_never_completed_with_a_fake_result(self):
+        pending = make_group(1, calls=2)[:2]  # two calls, one result
+        with self.assertRaises(PolicyInputError) as caught:
+            build(pending)
+        self.assertIn("unfinished", str(caught.exception))
+
+
+class ResearchV3MockHostTests(unittest.TestCase):
+    """Real SYSTEM_V3, a real v3 manifest and the real budget message through the policy."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = lab.v3_fixture()
+
+    def contract(self, **changes):
+        return lab.v3_contract(self.fixture, **changes)
+
+    def test_real_system_prompt_manifest_and_context(self):
+        self.assertIs(self.fixture["system"], SYSTEM_V3)
+        self.assertEqual(self.fixture["manifest"]["version"], 3)
+        self.assertEqual(self.fixture["manifest"]["required_outputs"],
+                         ["research_candidate.py", "research_recipe.json", "research_hypothesis.json"])
+        contract = self.contract()
+        snapshot = lab.v3_snapshot([], stage="inspect", seconds=9000.0, research_seconds=5800.0, requests=12,
+                                   best=self.fixture["baseline_metric"])
+        decision = decide_next_action(snapshot, contract=contract)
+        self.assertEqual((decision.stage, decision.reason), ("inspect", "inspect_dialogue"))
+        context = build_model_messages(
+            system_prompt=SYSTEM_V3, task_text=self.fixture["task_text"], contract=contract, history=[],
+            snapshot=snapshot, limits=PolicyLimits(), redact=lab.redact)
+        self.assertEqual(context.messages[0]["content"], SYSTEM_V3)
+        self.assertEqual(context.messages[1]["content"], self.fixture["task_text"])
+        self.assertIn(self.fixture["context"], context.messages[2]["content"])
+        for path in self.fixture["manifest"]["allowed_inputs"]:
+            self.assertIn(path, context.messages[2]["content"])
+        self.assertNotIn("columns", context.messages[2]["content"].split("required_outputs:")[1].split("\n")[0])
+
+    def test_the_v3_scenarios_hold_their_transitions_facts_and_limits(self):
+        limits = PolicyLimits()
+        for scenario in lab.build_v3_scenarios():
+            with self.subTest(scenario=scenario["name"]):
+                result = lab.run_v3_scenario(self.fixture, scenario, limits)
+                self.assertEqual([t for t in result["transitions"] if not t["ok"]], [])
+                for record in result["facts"]:
+                    self.assertTrue(all(value for key, value in record.items() if key != "step"), record)
+                self.assertTrue(result["static_prefix_stable"])
+                for size in result["policy_sizes"]:
+                    self.assertGreater(size, 0)
+                for diagnostics in result["diagnostics"]:
+                    self.assertLessEqual(diagnostics["after_bytes"], limits.max_messages_bytes)
+
+    def test_outer_and_test_sentinels_cannot_change_messages_or_decisions(self):
+        def project(outer):
+            host = {"rows": [lab.v3_row(1, "code", lab.v3_result(__import__("random").Random(2), lab.v3_selection(
+                True, 3.9, "improved", hypothesis="h", recipe_hash="r")), None, recipe_hash="r")],
+                    "outer_score": outer, "test_labels": [outer], "outer_sentinel": outer}
+            snapshot = lab.v3_snapshot(host["rows"], stage="research", seconds=9000.0, research_seconds=5800.0,
+                                       requests=10, best=self.fixture["baseline_metric"])
+            decision = decide_next_action(snapshot, contract=self.contract())
+            context = build_model_messages(system_prompt=SYSTEM_V3, task_text=self.fixture["task_text"],
+                                           contract=self.contract(), history=[], snapshot=snapshot,
+                                           limits=PolicyLimits(), redact=lab.redact)
+            return decision, context.messages
+        first = project(0.91)
+        second = project(lab.OUTER_SENTINEL)
+        self.assertEqual(first, second)
+        self.assertNotIn(lab.OUTER_SENTINEL, json.dumps(second[1]))
+
+    def test_unknown_outer_like_fields_are_ignored_and_never_reflected(self):
+        clean = dlg_snapshot([llm_trial(1)])
+        noisy = copy.deepcopy(clean)
+        noisy["outer_score"] = {"value": 0.99}
+        noisy["last_trial"]["outer_diagnostics"] = {"secret": "OUTER-LEAK"}
+        noisy["recent_trials"][0]["outer_diagnostics"] = {"secret": "OUTER-LEAK"}
+        self.assertEqual(build(snapshot=clean, contract=dlg_contract()).messages,
+                         build(snapshot=noisy, contract=dlg_contract()).messages)
+        self.assertEqual(dlg_decide(clean), dlg_decide(noisy))
+
+    def test_system_v3_and_contract_that_cannot_fit_give_a_controlled_refusal(self):
+        contract = self.contract()
+        snapshot = lab.v3_snapshot([], stage="inspect", seconds=9000.0, research_seconds=5800.0, requests=12,
+                                   best=self.fixture["baseline_metric"])
+        decision = decide_next_action(snapshot, contract=contract)  # the host can still ask for a decision
+        for limit in (500, 2000, 4500):
+            with self.subTest(limit=limit), self.assertRaises(PolicyBudgetExceeded) as caught:
+                build_model_messages(system_prompt=SYSTEM_V3, task_text=self.fixture["task_text"],
+                                     contract=contract, history=[], snapshot=snapshot,
+                                     limits=PolicyLimits(max_messages_bytes=limit), redact=lab.redact)
+            self.assertNotIsInstance(caught.exception, PolicyInputError)
+        self.assertEqual(decision.stage, "inspect")
+        fits = build_model_messages(system_prompt=SYSTEM_V3, task_text=self.fixture["task_text"], contract=contract,
+                                    history=[], snapshot=snapshot, limits=PolicyLimits(max_messages_bytes=12000),
+                                    redact=lab.redact)
+        self.assertLessEqual(fits.diagnostics["after_bytes"], 12000)
+
+    def test_budget_message_is_part_of_the_measured_request_and_counted(self):
+        message = lab.v3_budget_message(2, 8000.0)
+        self.assertTrue(message["content"].startswith("Current host budget: "))
+        payload = json.loads(message["content"].split(": ", 1)[1])
+        self.assertEqual(payload["remaining_requests"], 10)
+        self.assertEqual(payload["scope"], "inner_selection")
+        result = lab.run_v3_scenario(self.fixture, lab.build_v3_scenarios()[0], PolicyLimits())
+        self.assertGreater(result["control_total_bytes"], result["policy_total_bytes"])
+        self.assertEqual(result["guard_blocked_at_request"]["policy"], None)
+
+    def test_host_history_and_local_trials_keep_separate_counters(self):
+        scenario = next(item for item in lab.build_v3_scenarios() if item["name"] == "history_local_feedback")
+        result = lab.run_v3_scenario(self.fixture, scenario, PolicyLimits())
+        self.assertTrue(all(record["separate_counters"] for record in result["facts"]))
+        self.assertEqual([t["got"][2] for t in result["transitions"]], ["refit_budget_continue", "dialogue_complete"])
+
+
 @contextmanager
 def loopback(handler_factory):
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler_factory)
@@ -924,15 +1514,19 @@ def loopback(handler_factory):
         thread.join(timeout=5)
 
 
+def sdk_client(server):
+    import httpx
+    from openai import OpenAI
+    return OpenAI(api_key="local-policy-placeholder", base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                  timeout=10, max_retries=0, http_client=httpx.Client(trust_env=False, timeout=10))
+
+
 @unittest.skipUnless(HAS_SDK, "Install requirements.txt for the SDK compatibility check")
 class SdkCompatibilityTests(unittest.TestCase):
     """The compact request must be accepted by the real SDK; the server is local and the key fake."""
 
     def client(self, server):
-        import httpx
-        from openai import OpenAI
-        return OpenAI(api_key="local-policy-placeholder", base_url=f"http://127.0.0.1:{server.server_port}/v1",
-                      timeout=10, max_retries=0, http_client=httpx.Client(trust_env=False, timeout=10))
+        return sdk_client(server)
 
     def test_compact_request_reaches_the_server_and_error_snapshot_is_carried_forward(self):
         from agent.llm import TOOL, safe_error_message
@@ -987,6 +1581,109 @@ class SdkCompatibilityTests(unittest.TestCase):
                 client.chat.completions.create(model="m", messages=second.messages, tools=[TOOL], max_tokens=64)
             self.assertEqual(received[2]["messages"], second.messages)
         self.assertEqual(len(received), 3)
+
+
+@unittest.skipUnless(HAS_SDK, "Install requirements.txt for the SDK compatibility check")
+class SdkV3CompatibilityTests(unittest.TestCase):
+    """One localhost POST: the v3 request (policy messages plus the real budget message) through the SDK."""
+
+    def test_v3_request_with_the_budget_message_reaches_the_loopback_server(self):
+        from agent.llm import TOOL
+        import random
+        fixture = lab.v3_fixture()
+        selection = lab.v3_selection(True, 3.9, "improved", hypothesis="Use shallower trees", recipe_hash="r1")
+        result = lab.v3_result(random.Random(4), selection)
+        history = make_group(1, code="print('v3')", result=result)
+        rows = [lab.v3_row(1, "print('v3')", result, None, recipe_hash="r1")]
+        snapshot = lab.v3_snapshot(rows, stage="research", seconds=8000.0, research_seconds=4800.0, requests=10,
+                                   best=rows[0]["metric"])
+        context = build_model_messages(
+            system_prompt=SYSTEM_V3, task_text=fixture["task_text"], contract=lab.v3_contract(fixture),
+            history=history, snapshot=snapshot, limits=PolicyLimits(), redact=lab.redact)
+        messages = context.messages + [lab.v3_budget_message(2, 8000.0)]
+        received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                body = json.dumps({"id": "x", "object": "chat.completion", "created": 1, "model": "m",
+                                   "choices": [{"index": 0, "finish_reason": "stop",
+                                                "message": {"role": "assistant", "content": "ok"}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        with loopback(Handler) as server, sdk_client(server) as client:
+            response = client.chat.completions.create(model="m", messages=messages, tools=[TOOL], max_tokens=64)
+        self.assertEqual(response.choices[0].message.content, "ok")
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["messages"], messages)
+        self.assertEqual(received[0]["messages"][0]["content"], SYSTEM_V3)
+        self.assertTrue(received[0]["messages"][-1]["content"].startswith("Current host budget: "))
+
+
+class LegacyBytesUnchangedTests(unittest.TestCase):
+    """Digests were computed with the version-1 module (PR head 3e10edd) on the same legacy inputs."""
+
+    EXPECTED = {
+        "inspect": "6d512fa1dd58664ecd58e36935bdb7741588e0c34c7d63649f9c9fd22c38d766",
+        "repair": "c4071e1b5e6bd11f96bcfd99b35440c44610958555711ede04823ae372785dd7",
+        "improved": "293dc915f69e82304889b8d5db0bdc8f48b99dac15528e430b99536cead5f7db",
+        "finalize": "093de6f8166d8af5d45cdf15f31bacc431f23342230e84b1048b89f32471fa11",
+        "complete": "586c2e4ecb36b41b97aa15e5de864ee2e590a4b3c6fb704f1a9891c8c4c844b0",
+    }
+
+    def cases(self):
+        failed = make_trial(2, accepted=False, verified=False, metric=None, error_kind="execution",
+                            error="NameError: x", reason="execution_failed")
+        stderr_result = ok_result(exit_code=1, stderr="Traceback\nNameError: x", selection={
+            "accepted": False, "verified": False, "reason": "execution_failed"})
+        return {
+            "inspect": (make_snapshot(stage="inspect"), []),
+            "repair": (snapshot_with(failed, streak=1), make_group(1) + make_group(2, result=stderr_result)),
+            "improved": (snapshot_with(make_trial(2), verified=1), make_group(1) + make_group(2, calls=2)),
+            "finalize": (snapshot_with(make_trial(2), verified=1, stage="finalize"), make_group(1)),
+            "complete": (snapshot_with(make_trial(3), verified=2, finish_requested=True), make_group(1)),
+        }
+
+    def test_legacy_decisions_and_messages_are_byte_identical_to_version_1(self):
+        for name, (snapshot, history) in self.cases().items():
+            with self.subTest(case=name):
+                contract = make_contract()
+                decision = decide_next_action(snapshot, contract=contract)
+                context = build_model_messages(
+                    system_prompt="SYSTEM", task_text="TASK", contract=contract, history=history,
+                    snapshot=snapshot, limits=PolicyLimits(), redact=redact)
+                payload = json.dumps([decision.stage, decision.action, decision.reason, decision.instruction,
+                                      context.messages, context.diagnostics], ensure_ascii=False)
+                self.assertEqual(hashlib.sha256(payload.encode("utf-8")).hexdigest(), self.EXPECTED[name])
+
+
+class InputsStayUntouchedTests(unittest.TestCase):
+    def test_dialogue_inputs_are_not_mutated_and_everything_is_deterministic(self):
+        rng = __import__("random").Random(8)
+        history = make_group(1, calls=2, result=lab.v3_result(rng, lab.v3_selection(
+            False, 4.0, "refit_budget", origin="local", hypothesis={"hypothesis": "local depth 6", "x": {"y": 1}},
+            recipe_hash="r")))
+        rows = [llm_trial(1, hypothesis={"hypothesis": "object text"}), llm_trial(2, accepted=False)]
+        snapshot = dlg_snapshot(rows, finish=True)
+        snapshot["budget"]["research_seconds_available"] = 500.0
+        contract = dlg_contract(pacing={"low_remaining_seconds": 60})
+        before = copy.deepcopy((history, snapshot, contract))
+        first = build(history, snapshot, contract)
+        second = build(history, snapshot, contract)
+        decision = dlg_decide(snapshot, contract)
+        feedback = compact_tool_feedback(json.loads(history[1]["content"]), limits=PolicyLimits(), redact=redact)
+        self.assertEqual((history, snapshot, contract), before)
+        self.assertEqual(first, second)
+        self.assertEqual(decision, dlg_decide(snapshot, contract))
+        self.assertEqual(feedback, compact_tool_feedback(json.loads(history[1]["content"]),
+                                                         limits=PolicyLimits(), redact=redact))
 
 
 if __name__ == "__main__":

@@ -46,6 +46,8 @@ __all__ = [
 ]
 
 SNAPSHOT_STAGES = ("inspect", "research", "finalize")
+ORIGINS = ("llm", "local", "history")  # the words used by the v3 host feedback
+COMPLETION_MODES = ("retained_output", "research_dialogue")
 DECISION_STAGES = ("inspect", "experiment", "repair", "finalize", "finished")
 DECISION_ACTIONS = ("continue", "complete", "fallback", "stop")
 ERROR_KINDS = ("execution", "timeout", "memory", "evidence", "repeated_failure", "api", "unknown")
@@ -59,6 +61,10 @@ REASON_CODES = (
     "contract_fulfilled", "unverified_completion", "contract_unreachable",
     "resources_exhausted_keep_result", "resources_exhausted_no_result",
     "repeated_failures_keep_result", "repeated_failures_no_result",
+    # Added for the research-dialogue completion mode and v3 feedback.
+    "inspect_dialogue", "refit_budget_continue", "dialogue_complete",
+    "dialogue_unverified_complete", "dialogue_closed_by_host", "dialogue_handover_resources",
+    "dialogue_handover_failures", "dialogue_handover_unreachable",
 )
 
 # Advisory thresholds. The host keeps its own deadline and failure guard.
@@ -319,15 +325,32 @@ def _opt_metric(mapping: Mapping, key: str, path: str):
     return None if value is None else _metric(value, f"{path}.{key}")
 
 
+def _hypothesis_text(value, path: str):
+    """Plain text of a hypothesis: a string (LLM) or {"hypothesis": text} (host-local/history).
+
+    Nothing else of an object hypothesis is carried over; other shapes are rejected.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, Mapping) and isinstance(value.get("hypothesis"), str):
+        return value["hypothesis"]
+    _fail(path, "must be a string, an object with a string 'hypothesis' field, or null")
+
+
 def _trial(value, path: str) -> dict:
     mapping = _mapping(value, path)
     kind = mapping.get("error_kind")
     if kind is not None and kind not in ERROR_KINDS:
         _fail(path + ".error_kind", "is not a known error kind")
+    origin = mapping.get("origin")
+    if origin is not None and origin not in ORIGINS:
+        _fail(path + ".origin", "is not a known trial origin")
     trial = {
         "number": _get_int(mapping, "number", path, minimum=1),
         "code_hash": _get_opt_str(mapping, "code_hash", path),
-        "hypothesis": _get_opt_str(mapping, "hypothesis", path),
+        "recipe_hash": _get_opt_str(mapping, "recipe_hash", path),
+        "origin": origin,
+        "hypothesis": _hypothesis_text(mapping.get("hypothesis"), path + ".hypothesis"),
         "accepted": _get_bool(mapping, "accepted", path),
         "verified": _get_bool(mapping, "verified", path),
         "metric": _opt_metric(mapping, "metric", path),
@@ -339,6 +362,10 @@ def _trial(value, path: str) -> dict:
         if mapping.get(key) is not None:
             trial[key] = _json_object(mapping[key], f"{path}.{key}")
     return trial
+
+
+_COUNT_EXTRAS = ("verified_llm_trials", "unverified_llm_trials", "host_local_trials",
+                 "host_history_trials")
 
 
 def _snapshot(value) -> dict:
@@ -353,13 +380,16 @@ def _snapshot(value) -> dict:
     seconds = _need(budget, "remaining_seconds", path + ".budget")
     if not _is_number(seconds) or seconds < 0:
         _fail(path + ".budget.remaining_seconds", "must be a finite non-negative number")
+    research_seconds = budget.get("research_seconds_available")
+    if research_seconds is not None and (not _is_number(research_seconds) or research_seconds < 0):
+        _fail(path + ".budget.research_seconds_available", "must be a finite non-negative number")
     baseline = _mapping(_need(mapping, "baseline", path), path + ".baseline")
     counts = _mapping(_need(mapping, "counts", path), path + ".counts")
     trials = _need(mapping, "recent_trials", path)
     if isinstance(trials, (str, bytes)) or not isinstance(trials, (list, tuple)):
         _fail(path + ".recent_trials", "must be a list")
     last = mapping.get("last_trial")
-    return {
+    result = {
         "version": 1, "stage": stage,
         "budget": {"remaining_seconds": seconds,
                    "remaining_requests": _get_int(budget, "remaining_requests", path + ".budget"),
@@ -375,6 +405,22 @@ def _snapshot(value) -> dict:
             "verified_trials", "unverified_trials", "consecutive_execution_failures")},
         "finish_requested": _get_bool(mapping, "finish_requested", path),
     }
+    if research_seconds is not None:
+        result["budget"]["research_seconds_available"] = research_seconds
+    for name in _COUNT_EXTRAS:  # separate counters by origin; present only when the host sends them
+        if counts.get(name) is not None:
+            result["counts"][name] = _get_int(counts, name, path + ".counts")
+    if result["counts"].get("verified_llm_trials", 0) > result["counts"]["verified_trials"]:
+        _fail(path + ".counts.verified_llm_trials", "cannot exceed verified_trials")
+    final = mapping.get("finalization")
+    if final is not None:
+        final = _mapping(final, path + ".finalization")
+        result["finalization"] = {
+            "verified_candidate": _get_bool(final, "verified_candidate", path + ".finalization"),
+            "host_can_finalize": _get_bool(final, "host_can_finalize", path + ".finalization"),
+            "research_closed": _get_bool(final, "research_closed", path + ".finalization",
+                                         required=False)}
+    return result
 
 
 def _contract(value) -> dict:
@@ -391,19 +437,25 @@ def _contract(value) -> dict:
     completion = _mapping(_need(mapping, "completion", path), path + ".completion")
     allowed = []
     for item in inputs:
+        if isinstance(item, str) and item.strip():  # the v3 manifest lists plain paths
+            allowed.append({"path": item, "purpose": ""})
+            continue
         item = _mapping(item, path + ".allowed_inputs[]")
         allowed.append({"path": _get_str(item, "path", path + ".allowed_inputs[]", nonempty=True),
                         "purpose": _get_str(item, "purpose", path + ".allowed_inputs[]")})
     required = []
     for item in outputs:
+        if isinstance(item, str) and item.strip():
+            required.append({"path": item, "columns": []})
+            continue
         item = _mapping(item, path + ".required_outputs[]")
-        columns = _need(item, "columns", path + ".required_outputs[]")
+        columns = item.get("columns", [])
         if (isinstance(columns, (str, bytes)) or not isinstance(columns, (list, tuple))
                 or any(not isinstance(column, str) for column in columns)):
             _fail(path + ".required_outputs[].columns", "must be a list of strings")
         required.append({"path": _get_str(item, "path", path + ".required_outputs[]", nonempty=True),
                          "columns": list(columns)})
-    return {
+    result = {
         "version": 1,
         "manifest_version": _get_int(mapping, "manifest_version", path, minimum=1),
         "manifest_path": _get_str(mapping, "manifest_path", path, nonempty=True),
@@ -416,6 +468,40 @@ def _contract(value) -> dict:
             completion, "required_verified_trials", path + ".completion", minimum=1),
             "allow_unverified": _get_bool(completion, "allow_unverified", path + ".completion")},
     }
+    mode = completion.get("mode")
+    if mode is not None:
+        if mode not in COMPLETION_MODES:
+            _fail(path + ".completion.mode", "is not a known completion mode")
+        result["completion"]["mode"] = mode
+    if completion.get("close_when_met") is not None:
+        result["completion"]["close_when_met"] = _get_bool(
+            completion, "close_when_met", path + ".completion")
+    pacing = mapping.get("pacing")
+    if pacing is not None:
+        pacing = _mapping(pacing, path + ".pacing")
+        result["pacing"] = {}
+        seconds = pacing.get("low_remaining_seconds")
+        if seconds is not None:
+            if not _is_number(seconds) or seconds < 0:
+                _fail(path + ".pacing.low_remaining_seconds", "must be a finite non-negative number")
+            result["pacing"]["low_remaining_seconds"] = seconds
+        if pacing.get("low_remaining_requests") is not None:
+            result["pacing"]["low_remaining_requests"] = _get_int(
+                pacing, "low_remaining_requests", path + ".pacing")
+    return result
+
+
+def _is_dialogue(contract: Mapping) -> bool:
+    return contract["completion"].get("mode", "retained_output") == "research_dialogue"
+
+
+def _check_pair(snapshot: Mapping, contract: Mapping) -> None:
+    """A research-dialogue contract needs the facts that replace the final-CSV fact."""
+    if _is_dialogue(contract):
+        if "finalization" not in snapshot:
+            _fail("snapshot.finalization", "is required by a research_dialogue contract")
+        if "verified_llm_trials" not in snapshot["counts"]:
+            _fail("snapshot.counts.verified_llm_trials", "is required by a research_dialogue contract")
 
 
 def _check_limits(limits) -> PolicyLimits:
@@ -427,6 +513,8 @@ def _check_limits(limits) -> PolicyLimits:
 
 # ------------------------------------------------------------ tool feedback
 
+_SELECTION_KEYS = frozenset({"accepted", "verified", "metric", "reason", "hypothesis", "diagnostics",
+                             "scope", "origin", "recipe_summary"})
 _RESULT_KEYS = frozenset({
     "stdout", "stderr", "exit_code", "timed_out", "memory_limit_exceeded", "elapsed_seconds",
     "resources", "error", "output_check", "selection", "previous_output_restored",
@@ -447,21 +535,37 @@ def _read_result(result: Mapping, redact) -> dict:
         if value is not None and not isinstance(value, str):
             _fail(f"{path}.{key}", "must be a string or null")
         texts[key] = None if value is None else _clean_text(value, redact)
+    nested_dropped = 0
     selection = result.get("selection")
     if selection is not None:
         selection = _mapping(selection, path + ".selection")
         metric = _opt_metric(selection, "metric", path + ".selection")
         diagnostics = selection.get("diagnostics")
+        raw = selection.get("hypothesis")
+        # The typed host facts must survive any hypothesis shape: an unusable one is dropped, not fatal.
+        hypothesis = raw if isinstance(raw, str) else (
+            raw["hypothesis"] if isinstance(raw, Mapping) and isinstance(raw.get("hypothesis"), str)
+            else None)
+        nested_dropped += raw is not None and hypothesis is None
+        origin = selection.get("origin")
+        nested_dropped += "origin" in selection and origin not in ORIGINS
+        scope = selection.get("scope")
+        summary = selection.get("recipe_summary")
+        family = summary.get("family") if isinstance(summary, Mapping) else None
+        nested_dropped += sum(1 for key in selection if key not in _SELECTION_KEYS)
         selection = {
             "accepted": _get_bool(selection, "accepted", path + ".selection", required=False),
             "verified": _get_bool(selection, "verified", path + ".selection", required=False),
             "metric": metric,
             "reason": _get_opt_str(selection, "reason", path + ".selection"),
-            "hypothesis": _get_opt_str(selection, "hypothesis", path + ".selection"),
+            "hypothesis": hypothesis,
+            "origin": origin if origin in ORIGINS else None,
+            "scope": scope if isinstance(scope, str) else None,
+            "recipe_family": family if isinstance(family, str) else None,
             "diagnostics": None if diagnostics is None else _json_object(
                 diagnostics, path + ".selection.diagnostics"),
         }
-        for key in ("reason", "hypothesis"):
+        for key in ("reason", "hypothesis", "scope", "recipe_family"):
             if selection[key] is not None:
                 selection[key] = _clean_text(selection[key], redact)
         selection["metric"] = _clean(metric, redact)
@@ -486,7 +590,7 @@ def _read_result(result: Mapping, redact) -> dict:
         "restored": (_get_bool(result, "previous_output_restored", path)
                      if "previous_output_restored" in result else None),
         "resources": resources, **texts,
-        "dropped": sum(1 for key in result if key not in _RESULT_KEYS),
+        "dropped": sum(1 for key in result if key not in _RESULT_KEYS) + nested_dropped,
     }
 
 
@@ -568,6 +672,28 @@ def _classification_summary(value: Mapping, worst: int):
         return None
 
 
+def _inner_classification_summary(value: Mapping, worst: int):
+    """The v3 host summary: ``per_class`` rows with labels and ``worst_confusions``."""
+    try:
+        rows, pairs = value["per_class"], value["worst_confusions"]
+        if not (isinstance(rows, list) and isinstance(pairs, list)):
+            return None
+        summary = {key: value[key] for key in ("accuracy", "classes_total", "observed_classes",
+                                               "omitted_classes", "omitted_confusions", "label_rule")
+                   if isinstance(value.get(key), str) or _is_number(value.get(key))}
+        summary["per_class"] = [
+            {"label": _clip(str(row["label"]), 60), "f1": row["f1"], "support": row.get("support")}
+            for row in rows[:worst] if isinstance(row, Mapping) and "label" in row and _is_number(row.get("f1"))]
+        summary["worst_confusions"] = [
+            {"actual_class": _clip(str(row["actual_class"]), 60),
+             "predicted_class": _clip(str(row["predicted_class"]), 60), "count": row["count"]}
+            for row in pairs[:worst] if isinstance(row, Mapping) and _is_number(row.get("count"))
+            and "actual_class" in row and "predicted_class" in row]
+        return summary
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _reduce_json(value, depth: int, items: int, chars: int):
     if isinstance(value, str):
         return _clip(value, chars)
@@ -596,6 +722,8 @@ def _diagnostics_levels(diagnostics: Mapping) -> list:
         for key, value in diagnostics.items():
             if key == "classification" and isinstance(value, Mapping):
                 summary = _classification_summary(value, worst)
+                if summary is None:
+                    summary = _inner_classification_summary(value, worst)
                 reduced[key] = summary if summary is not None else _reduce_json(value, 3, items, chars)
             elif key == "groups" and isinstance(value, (list, tuple)):
                 if groups:
@@ -625,6 +753,12 @@ def _assemble_feedback(facts: dict, budget: int) -> dict:
     feedback = _add_text(feedback, budget, "error", None, facts["error"],
                          cap=min(1500, spare * 30 // 100), mode="tail", label="error")
     if selection is not None:
+        for key in ("origin", "scope"):
+            if selection[key] is not None:
+                feedback = _add_choice(feedback, budget, "selection", key, [selection[key]], cap=60)
+        feedback = _add_text(feedback, budget, "selection", "recipe_family", selection["recipe_family"],
+                             cap=min(160, spare * 5 // 100), mode="head",
+                             label="selection.recipe_family")
         feedback = _add_text(feedback, budget, "selection", "reason", selection["reason"],
                              cap=min(400, spare * 10 // 100), mode="head", label="selection.reason")
         feedback = _add_text(feedback, budget, "selection", "hypothesis", selection["hypothesis"],
@@ -703,9 +837,26 @@ def _normalized(text: str | None) -> str:
     return " ".join((text or "").casefold().split())
 
 
-def _repeats_earlier(snapshot: Mapping, last: Mapping) -> bool:
+def _repeats_earlier(snapshot: Mapping, last: Mapping, dialogue: bool) -> bool:
+    """Identity of an attempt.
+
+    * Both attempts carry ``recipe_hash``: the same experiment means the same
+      ``(code_hash, recipe_hash)``. One source with another recipe (depth 3 and
+      depth 6) is a new attempt, whatever the hypothesis text says.
+    * A research-dialogue contract without a recipe hash on either side: identity
+      is unknown, so no repeat is claimed and no hash is invented.
+    * Legacy contract without recipe hashes: the same ``code_hash`` or the same
+      normalised hypothesis text.
+    """
     for trial in snapshot["recent_trials"]:
         if trial["number"] >= last["number"]:
+            continue
+        if last["recipe_hash"] is not None and trial["recipe_hash"] is not None:
+            if (last["code_hash"] is not None and trial["code_hash"] == last["code_hash"]
+                    and trial["recipe_hash"] == last["recipe_hash"]):
+                return True
+            continue
+        if dialogue:
             continue
         if last["code_hash"] is not None and trial["code_hash"] == last["code_hash"]:
             return True
@@ -715,7 +866,18 @@ def _repeats_earlier(snapshot: Mapping, last: Mapping) -> bool:
 
 
 def _contract_met(snapshot: Mapping, contract: Mapping) -> bool:
+    """Is the completion condition of the contract satisfied by host counters?
+
+    A research-dialogue contract counts only host-verified LLM trials and asks for the
+    host's ability to take over; a final CSV is not part of that condition.
+    """
     counts, completion = snapshot["counts"], contract["completion"]
+    if _is_dialogue(contract):
+        if not snapshot["finalization"]["host_can_finalize"]:
+            return False
+        if contract["validation"]["supported"]:
+            return counts["verified_llm_trials"] >= completion["required_verified_trials"]
+        return completion["allow_unverified"] and counts.get("unverified_llm_trials", 0) >= 1
     if contract["validation"]["supported"]:
         return counts["verified_trials"] >= completion["required_verified_trials"]
     return completion["allow_unverified"] and counts["unverified_trials"] >= 1
@@ -723,6 +885,17 @@ def _contract_met(snapshot: Mapping, contract: Mapping) -> bool:
 
 def _missing(snapshot: Mapping, contract: Mapping) -> str:
     counts, parts = snapshot["counts"], []
+    if _is_dialogue(contract):
+        if contract["validation"]["supported"]:
+            needed, done = contract["completion"]["required_verified_trials"], counts["verified_llm_trials"]
+            if done < needed:
+                parts.append(f"{needed - done} more host-verified LLM experiment(s) needed "
+                             f"({done} of {needed} done)")
+        elif counts.get("unverified_llm_trials", 0) < 1:
+            parts.append("at least one experiment with a valid candidate is needed")
+        if not snapshot["finalization"]["host_can_finalize"]:
+            parts.append("the host cannot take over finalization yet")
+        return "; ".join(parts) or "the host contract is not met"
     if not snapshot["baseline"]["retained_output_valid"]:
         parts.append("no valid output is retained")
     if contract["validation"]["supported"]:
@@ -735,10 +908,20 @@ def _missing(snapshot: Mapping, contract: Mapping) -> str:
     return "; ".join(parts) or "the host contract is not met"
 
 
-def _is_low(snapshot: Mapping) -> bool:
+def _research_seconds(snapshot: Mapping) -> float:
+    """Research time the host allows; the host computes its reserve, the policy never does."""
     budget = snapshot["budget"]
-    return (budget["remaining_seconds"] < LOW_REMAINING_SECONDS
-            or budget["remaining_requests"] <= LOW_REMAINING_REQUESTS)
+    return budget.get("research_seconds_available", budget["remaining_seconds"])
+
+
+def _is_low(snapshot: Mapping, contract: Mapping) -> bool:
+    """Explicit pacing thresholds; a legacy contract keeps 300 s / 1 request, a dialogue contract none."""
+    pacing = contract.get("pacing", {})
+    dialogue = _is_dialogue(contract)
+    seconds = pacing.get("low_remaining_seconds", 0.0 if dialogue else LOW_REMAINING_SECONDS)
+    requests = pacing.get("low_remaining_requests", 0 if dialogue else LOW_REMAINING_REQUESTS)
+    return (_research_seconds(snapshot) < seconds
+            or snapshot["budget"]["remaining_requests"] <= requests)
 
 
 _BASE_STAGE = {"inspect": "inspect", "research": "experiment", "finalize": "finalize"}
@@ -755,13 +938,23 @@ def _repair(snapshot: Mapping, contract: Mapping, last: Mapping) -> PolicyDecisi
                               "The previous request failed on the provider side; no experiment state was "
                               "lost. Continue from the current state shown above.", "retry_after_api_error")
     if kind in ("timeout", "memory"):
-        seconds = int(snapshot["budget"]["remaining_seconds"])
+        seconds = int(_research_seconds(snapshot))
         what = "time" if kind == "timeout" else "memory"
+        tail = (f"About {seconds}s are available for research; size the run to finish well inside that "
+                "and keep the recipe cheap to train." if _is_dialogue(contract) else
+                f"About {seconds}s remain; size the run to finish well inside that "
+                "and keep any final refit cheap.")
         return PolicyDecision("repair", "continue",
                               f"The last run hit the {what} limit. Reduce its cost: fewer rows for exploratory "
                               "fits, smaller models, fewer folds or trees, compact dtypes, at most 8 CPU "
-                              f"threads. About {seconds}s remain; size the run to finish well inside that "
-                              f"and keep any final refit cheap. {resubmit}", "repair_resource_limit")
+                              f"threads. {tail} {resubmit}", "repair_resource_limit")
+    if kind == "evidence" and not any(item["columns"] for item in contract["required_outputs"]):
+        return PolicyDecision("repair", "continue",
+                              "The host could not accept the evidence from the last run (see last_trial.reason). "
+                              f"The contract requires these files, all written fresh in one tool call: {outputs}; "
+                              f"their exact form is described in {contract['manifest_path']}. Do not alter "
+                              "inputs and do not guess missing details: read only the needed keys of "
+                              f"{contract['manifest_path']}. {resubmit}", "repair_evidence_contract")
     if kind == "evidence":
         return PolicyDecision("repair", "continue",
                               "The host could not accept the evidence from the last run (see last_trial.reason). "
@@ -795,26 +988,30 @@ def _repair(snapshot: Mapping, contract: Mapping, last: Mapping) -> PolicyDecisi
 
 def _next(snapshot: Mapping, contract: Mapping) -> PolicyDecision:
     last, stage = snapshot["last_trial"], snapshot["stage"]
+    dialogue = _is_dialogue(contract)
     retained = snapshot["baseline"]["retained_output_valid"]
     outputs = _outputs_text(contract)
     if last is not None and last["error_kind"] is not None:
         return _repair(snapshot, contract, last)
     if stage == "finalize":
-        done = _contract_met(snapshot, contract) and retained
-        text = ("Finalize: refit the selected pipeline only as far as the host instructions allow, write the "
+        done = _contract_met(snapshot, contract) and (retained or dialogue)
+        text = ("Research is closing: stop experimenting and reply with a short factual account and no tool "
+                "call. The host alone runs the remaining checks, full-data fitting and publication; do not "
+                "write or train final outputs yourself." if dialogue else
+                "Finalize: refit the selected pipeline only as far as the host instructions allow, write the "
                 f"final required outputs ({outputs}), re-check columns, row order and missing values, then "
                 "reply with a short factual account and no tool call.")
         if done:
             return PolicyDecision("finalize", "continue", text, "ready_to_finish")
         return PolicyDecision("finalize", "continue", text, "finalize_requested")
-    if _is_low(snapshot):
+    if not dialogue and _is_low(snapshot, contract):
         return PolicyDecision(
             "finalize", "continue",
             "Resources are nearly exhausted: stop exploring. Make sure the best valid output is saved "
             f"({outputs}), re-check its columns and row order, then reply with a short factual account and "
             "no tool call.", "finalize_low_resources")
     if stage == "inspect" and last is not None:  # inspection ran: move on instead of inspecting again
-        if retained:
+        if retained or dialogue:
             return PolicyDecision(
                 "experiment", "continue",
                 "Inspection is done; do not inspect again. Test one concrete hypothesis that differs from the "
@@ -825,6 +1022,15 @@ def _next(snapshot: Mapping, contract: Mapping) -> PolicyDecision:
             "inspect", "continue",
             "Inspection is done; do not inspect again. No valid output is retained yet: train a fast baseline "
             f"and save {outputs} in the format the task requests.", "inspect_without_baseline")
+    if stage == "inspect" and dialogue:
+        return PolicyDecision(
+            "inspect", "continue",
+            "Inspect first. Read the task, the data dictionary and only the allowed_inputs of the contract. "
+            "Print compact summaries only (shapes, dtypes, missing counts, target distribution, a few sample "
+            "rows), never whole tables, the manifest or index arrays. Explore only the data representation the "
+            "contract permits. End with a short schema and plan, then test one concrete hypothesis by writing "
+            "the required_outputs of the contract in the same tool call. The host prepares the baseline and "
+            "owns every final file.", "inspect_dialogue")
     if stage == "inspect":
         base = (f"Inspect first. Read the task, the data dictionary, the submission template and only these "
                 f"allowed inputs: {_inputs_text(contract)}. Print compact summaries only (shapes, dtypes, "
@@ -841,7 +1047,7 @@ def _next(snapshot: Mapping, contract: Mapping) -> PolicyDecision:
             "inspect", "continue",
             base + f"No valid output is retained yet: next train a fast baseline and save {outputs} in the "
             "format the task requests.", "inspect_without_baseline")
-    if last is not None and _repeats_earlier(snapshot, last):
+    if last is not None and _repeats_earlier(snapshot, last, dialogue):
         return PolicyDecision("experiment", "continue",
                               "This code or hypothesis repeats an earlier trial; an unchanged retry is not a new "
                               "idea. Choose a hypothesis that differs in kind (model family, feature handling, "
@@ -859,6 +1065,13 @@ def _next(snapshot: Mapping, contract: Mapping) -> PolicyDecision:
                               "stated and claim nothing beyond it. Next, test a different hypothesis that builds "
                               "on what worked, with all required evidence in the same tool call, or reply with a "
                               "short factual account if no promising hypothesis remains.", "improved_continue")
+    if last["verified"] and last["reason"] == "refit_budget":
+        return PolicyDecision("experiment", "continue",
+                              "The last candidate was measured, but its estimated finalization time did not fit "
+                              "the host's time reserve, so the host did not accept it. Keep the idea if it is "
+                              "promising, but make the recipe cheaper to train and predict (fewer rows or folds, "
+                              "smaller models, fewer trees) and write all required evidence in the same tool "
+                              "call.", "refit_budget_continue")
     if last["verified"]:
         return PolicyDecision("experiment", "continue",
                               "The last candidate was valid but not better; the best result is preserved. Do not "
@@ -879,18 +1092,79 @@ def _next(snapshot: Mapping, contract: Mapping) -> PolicyDecision:
                               "Analysis-only calls are fine but do not count. To evaluate a concrete hypothesis "
                               f"write every required output ({outputs}) in the same tool call, exactly as the "
                               "contract describes.", "no_verified_result")
+    if dialogue:
+        return PolicyDecision("experiment", "continue",
+                              "The host cannot score this metric: quality stays unverified. Report any number as "
+                              "your own measurement; the host owns every final file.", "unverified_continue")
     return PolicyDecision("experiment", "continue",
                           "The host cannot score this metric: quality stays unverified. Design your own "
                           "validation, compare against your best measurement, keep the best output safe and "
                           "report numbers as your own measurements.", "unverified_continue")
 
 
+_TIGHT_NOTE = " The time budget is tight: keep this experiment small and cheap."
+_HANDOVER = ("Control returns to the host, which continues with its own deadline, local continuation, "
+             "full-data fitting and recovery; this policy changes none of them and no research request follows.")
+
+
+def _decide_dialogue(snapshot: dict, contract: dict) -> PolicyDecision:
+    """Close the research dialogue from host facts; a final CSV is never part of the condition."""
+    counts, budget = snapshot["counts"], snapshot["budget"]
+    supported, final = contract["validation"]["supported"], snapshot["finalization"]
+    done = _contract_met(snapshot, contract)
+    resources = (budget["can_request"] and _research_seconds(snapshot) > 0
+                 and budget["remaining_requests"] > 0)
+
+    def complete(reason: str) -> PolicyDecision:
+        if supported:
+            return PolicyDecision(
+                "finished", "complete",
+                f"The research dialogue is complete with {counts['verified_llm_trials']} host-verified LLM "
+                f"experiment(s). {_HANDOVER} This does not mean that a final submission already exists.", reason)
+        return PolicyDecision(
+            "finished", "complete",
+            "The research dialogue is complete, but quality is NOT independently verified: the host cannot "
+            "score this task's metric, so any number printed by the model is the model's own measurement. "
+            f"{_HANDOVER}", reason)
+
+    def hand_over(reason: str, why: str) -> PolicyDecision:
+        return PolicyDecision("finished", "fallback", f"{why} {_HANDOVER}", reason)
+
+    if final["research_closed"]:  # after the host froze the candidate nothing may resume research
+        if done:
+            return complete("dialogue_closed_by_host")
+        return hand_over("dialogue_closed_by_host", "The host closed research before the contract was met.")
+    if done and (snapshot["finish_requested"] or contract["completion"].get("close_when_met", False)):
+        return complete("dialogue_complete" if supported else "dialogue_unverified_complete")
+    if (snapshot["finish_requested"] and not supported
+            and not contract["completion"]["allow_unverified"]):
+        return hand_over("dialogue_handover_unreachable",
+                         "The host cannot verify quality here and does not allow unverified completion.")
+    if counts["consecutive_execution_failures"] >= FAILURE_STOP_STREAK:
+        return hand_over("dialogue_handover_failures",
+                         f"{counts['consecutive_execution_failures']} consecutive execution failures.")
+    if not resources:
+        return hand_over("dialogue_handover_resources", "No research time or model requests remain.")
+    decision = _next(snapshot, contract)
+    if _is_low(snapshot, contract) and decision.stage in ("inspect", "experiment", "repair"):
+        decision = replace(decision, instruction=decision.instruction + _TIGHT_NOTE)
+    if snapshot["finish_requested"]:
+        return PolicyDecision(
+            decision.stage, "continue",
+            f"You asked to finish, but the host contract is not met: {_missing(snapshot, contract)}. "
+            + decision.instruction, "finish_too_early")
+    return decision
+
+
 def _decide(snapshot: dict, contract: dict) -> PolicyDecision:
+    _check_pair(snapshot, contract)
+    if _is_dialogue(contract):
+        return _decide_dialogue(snapshot, contract)
     counts, budget = snapshot["counts"], snapshot["budget"]
     retained = snapshot["baseline"]["retained_output_valid"]
     supported = contract["validation"]["supported"]
     done = _contract_met(snapshot, contract) and retained
-    resources = (budget["can_request"] and budget["remaining_seconds"] > 0
+    resources = (budget["can_request"] and _research_seconds(snapshot) > 0
                  and budget["remaining_requests"] > 0)
 
     def stop(reason_keep: str, reason_none: str, why: str) -> PolicyDecision:
@@ -942,7 +1216,17 @@ def decide_next_action(snapshot: Mapping, *, contract: Mapping) -> PolicyDecisio
 
 # ------------------------------------------------------------------ messages
 
-def _read_history(history) -> list[dict]:
+def _plain_metadata(value: str, path: str, redact) -> None:
+    """Ids and tool names are never shortened or rewritten: a secret in them is an input error.
+
+    Renaming an id would risk collisions and break the assistant/tool link, so the value
+    itself is not echoed and the whole history is rejected.
+    """
+    if _clean_text(value, redact) != value:
+        _fail(path, "an id or tool name would be changed by redaction; it must not contain a secret")
+
+
+def _read_history(history, redact) -> list[dict]:
     """Group assistant/tool messages; an unfinished or inconsistent group is an input error."""
     if isinstance(history, (str, bytes)) or not isinstance(history, Sequence):
         _fail("history", "must be a list of messages")
@@ -981,6 +1265,8 @@ def _read_history(history) -> list[dict]:
                         or not isinstance(function.get("name"), str) or not function["name"].strip()
                         or not isinstance(function.get("arguments"), str)):
                     _fail(path + ".tool_calls", "require unique ids, type 'function', a name and string arguments")
+                _plain_metadata(identifier, path + ".tool_calls[].id", redact)
+                _plain_metadata(function["name"], path + ".tool_calls[].function.name", redact)
                 seen.add(identifier)
                 parsed.append({"id": identifier, "name": function["name"],
                                "arguments": function["arguments"]})
@@ -993,6 +1279,7 @@ def _read_history(history) -> list[dict]:
                 _fail(path, "is a tool result outside a tool group")
             if not isinstance(identifier, str) or not isinstance(content, str):
                 _fail(path, "needs a string tool_call_id and string content")
+            _plain_metadata(identifier, path + ".tool_call_id", redact)
             if identifier not in {call["id"] for call in group["calls"]}:
                 _fail(path, "answers an unknown tool call")
             if identifier not in group["pending"]:
@@ -1005,6 +1292,11 @@ def _read_history(history) -> list[dict]:
     return items
 
 
+def _compact_entries(entries, detail: str) -> list:
+    """An entry without detail (plain v3 manifest paths) is shown as its path only."""
+    return [item if item[detail] else item["path"] for item in entries]
+
+
 def _contract_text(contract: Mapping) -> str:
     return (
         "HOST CONTRACT v1 (authoritative; model output cannot change it). Later HOST STATE messages carry "
@@ -1012,9 +1304,14 @@ def _contract_text(contract: Mapping) -> str:
         "model's own claim; numbers printed by the model never change these facts.\n"
         f"manifest_version: {contract['manifest_version']}\nmanifest_path: {contract['manifest_path']}\n"
         f"host_instructions:\n{contract['host_instructions']}\n"
-        f"allowed_inputs: {_dump(contract['allowed_inputs'])}\n"
-        f"required_outputs: {_dump(contract['required_outputs'])}\n"
-        f"validation: {_dump(contract['validation'])}\ncompletion: {_dump(contract['completion'])}")
+        f"allowed_inputs: {_dump(_compact_entries(contract['allowed_inputs'], 'purpose'))}\n"
+        f"required_outputs: {_dump(_compact_entries(contract['required_outputs'], 'columns'))}\n"
+        f"validation: {_dump(contract['validation'])}\ncompletion: {_dump(contract['completion'])}"
+        + (f"\npacing: {_dump(contract['pacing'])}" if contract.get("pacing") else "")
+        + ("\ncompletion_mode: research_dialogue. The host alone creates the final CSV and runs the "
+           "remaining checks, full-data fitting and publication; retained_output_valid reports only a CSV "
+           "that is already saved, and finalization facts are separate host facts." if _is_dialogue(contract)
+           else ""))
 
 
 def _summary_attempts(trials: int) -> list[tuple[int, int]]:
@@ -1031,6 +1328,8 @@ class _Stats:
 
 def _small_trial(trial: Mapping, hypothesis_chars: int, stats: _Stats) -> dict:
     entry = {"n": trial["number"]}
+    if trial["origin"]:
+        entry["origin"] = trial["origin"]
     if trial["hypothesis"]:
         text = _clip(trial["hypothesis"], hypothesis_chars)
         stats.truncated += text != trial["hypothesis"]
@@ -1100,6 +1399,10 @@ def _render_summary(snapshot: Mapping, contract: Mapping, decision: PolicyDecisi
                        "scope": contract["validation"]["scope"]},
         "recent_trials": entries,
     }
+    if "research_seconds_available" in budget:
+        state["budget"]["research_seconds_available"] = round(budget["research_seconds_available"], 1)
+    if "finalization" in snapshot:
+        state["finalization"] = snapshot["finalization"]
     if removed_groups:
         state["earlier_tool_groups_omitted"] = removed_groups
     text = ("HOST STATE v1\n" + _dump(state)
@@ -1117,7 +1420,7 @@ def build_model_messages(*, system_prompt: str, task_text: str, contract: Mappin
         _fail("prompt", "system_prompt and task_text must be strings")
     contract = _clean(_contract(contract), redact)
     snapshot = _clean(_snapshot(snapshot), redact)
-    items = _read_history(history)
+    items = _read_history(history, redact)
     decision = _decide(snapshot, contract)
 
     static = [{"role": "system", "content": _clean_text(system_prompt, redact)},

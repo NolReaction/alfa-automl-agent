@@ -5,10 +5,27 @@
 истории и не заменяет журнал host, оценку качества или принятие результата. Полная очищенная история
 остаётся у host в файлах.
 
-- Базовый коммит: `ccdf49e333495d496ee3a712571199e493d790d4` (`Merge pull request #9 from NolReaction/work/dima-integration`).
-- Ветка: `work/nika-research-policy`. Менялись только четыре файла: `agent/research_policy.py`,
-  `experiment_research_policy.py`, `tests/test_research_policy.py`, этот отчёт.
+- Исходная база PR #22: `ccdf49e333495d496ee3a712571199e493d790d4`. Проверенный head PR #22 до этой правки:
+  `3e10edd0679b86d1b3dac2ec729c22afd9b50219`.
+- **База версии 2:** `git fetch origin` и `git merge origin/main`; `origin/main` на момент слияния —
+  `a45861d7e5588288db66f9ae088a9726f9597370` (в ТЗ при ревью упоминался `664bd5a…`, `main` с тех пор ушёл
+  вперёд). Merge-коммит `2be55c3e2650988a85d45440363b16897cb61400` (родители: `3e10edd…` и `a45861d…`) сделан
+  без конфликтов, история коммитов ветки сохранена, force push не используется.
+- Ветка: `work/nika-research-policy`. Разрешённые файлы те же четыре: `agent/research_policy.py`,
+  `tests/test_research_policy.py`, `experiment_research_policy.py`, этот отчёт. Runtime, `research_v3.py`,
+  `llm.py`, `research.py`, `research_budget.py`, `execution.py`, зависимости, CI, CLI и default-параметры не
+  менялись. Модуль по-прежнему нигде не вызывается из общего runtime.
 - Зависимости не добавлялись; модуль использует только стандартную библиотеку.
+
+## Что изменилось в версии 2 (ТЗ NIKA_POLICY_V2)
+
+| Пункт | Проблема в версии 1 | Что сделано |
+| --- | --- | --- |
+| P1. Завершение диалога | `complete` требовал `retained_output_valid`, а `finalize`/нехватка времени просили LLM сохранить результат; в v3 итогового CSV до шага host-финализации может не быть | Явный режим `completion.mode = "research_dialogue"`, отдельные факты `finalization.*` и счётчик `verified_llm_trials`; в этом режиме CSV не нужен для завершения, а инструкции не поручают LLM outer, полный refit и публикацию |
+| P1. Формы гипотез | Объект `{"hypothesis": text}` (host-local, host-history) отклонялся в snapshot, а в feedback терял структуру | Явный нормализатор: строка или объект с текстом; origin сохраняется; typed `accepted`/`verified`/`metric` не теряются при любой форме |
+| P2. Повторы | Сравнивался только `code_hash`; один исходник с разными рецептами считался повтором | `recipe_hash` сохраняется; идентичность v3 — `(code_hash, recipe_hash)`; legacy без recipe hash обрабатывается явно |
+| P2. Метаданные | `tool_calls[].id`, имя функции и `tool_call_id` переносились без очистки | Секрет в них даёт безопасный `PolicyInputError` без значения; идентификаторы и имена не изменяются и не обрезаются |
+| P2. Измерения | −80,2 % получены на реконструкции старого runner | Legacy replay сохранён и помечен; добавлена отдельная серия на настоящем `SYSTEM_V3`, его контексте, manifest и бюджетном сообщении |
 
 ## Что решает модуль
 
@@ -71,7 +88,115 @@
 
 Исходных текстов в диагностике нет.
 
+### Расширения контракта v1 для Research v3
+
+Все новые поля **необязательны**, пока контракт работает в прежнем (legacy) режиме: legacy-вход даёт то же
+решение и тот же текст сообщений, что и в версии 1 (регрессии проверены тестами). Для режима
+`research_dialogue` часть полей обязательна.
+
+Контракт (`contract`):
+
+| Поле | Тип | Смысл |
+| --- | --- | --- |
+| `completion.mode` | `"retained_output"` (по умолчанию, legacy) или `"research_dialogue"` | чем закрывается диалог |
+| `completion.close_when_met` | bool, по умолчанию `false` | в режиме диалога закрыть сразу при выполненном условии, без просьбы модели закончить |
+| `pacing.low_remaining_seconds`, `pacing.low_remaining_requests` | число ≥ 0 / целое ≥ 0 | явные пороги «мало ресурсов»; без поля — 300 с и 1 request для legacy и «порогов нет» для диалога |
+| `allowed_inputs[]`, `required_outputs[]` | объект или **строка-путь** | v3 manifest перечисляет пути строками; `purpose` и `columns` необязательны |
+
+Snapshot (`snapshot`):
+
+| Поле | Тип | Смысл |
+| --- | --- | --- |
+| `budget.research_seconds_available` | число ≥ 0 | время для исследования, уже посчитанное host с учётом его резерва; policy резерв **не пересчитывает** и при наличии поля использует его вместо `remaining_seconds` |
+| `counts.verified_llm_trials` | целое ≥ 0 | **только** host-verified LLM trials; обязательно для режима диалога; не больше `verified_trials` |
+| `counts.unverified_llm_trials` | целое ≥ 0 | LLM trials без host-проверки (нужно при неподдерживаемой метрике), по умолчанию 0 |
+| `counts.host_local_trials`, `counts.host_history_trials` | целое ≥ 0 | отдельные счётчики host-local и history-кандидатов; в условие завершения не входят |
+| `finalization.verified_candidate` | bool | у host есть допустимый кандидат, проверенный на INNER |
+| `finalization.host_can_finalize` | bool | host может принять управление (outer, полный refit, проверка, публикация CSV) |
+| `finalization.research_closed` | bool, по умолчанию `false` | кандидат заморожен или диалог закрыт: исследовательские запросы не возобновляются |
+| `last_trial`/`recent_trials[].origin` | `llm`, `local`, `history` | слова v3 (`_assess_candidate`); происхождение policy не угадывает |
+| `last_trial`/`recent_trials[].recipe_hash` | строка или `null` | вторая часть тождества попытки |
+| `last_trial`/`recent_trials[].hypothesis` | строка, `{"hypothesis": строка}` или `null` | см. «Формы гипотез» |
+
+Режим `research_dialogue` требует `snapshot.finalization` и `snapshot.counts.verified_llm_trials`;
+иначе `PolicyInputError`. Факт `baseline.retained_output_valid` остаётся отдельным и описывает только уже
+сохранённый CSV: замороженный рецепт его не делает истинным.
+
+## Семантика завершения research dialogue
+
+Порядок v3: LLM пишет candidate, recipe и hypothesis → host измеряет INNER и фиксирует допустимый рецепт →
+диалог закрывается → host выполняет outer, полный refit, проверку и публикацию CSV. Итогового CSV до последнего
+шага может ещё не быть, поэтому в режиме `research_dialogue`:
+
+- **Условие выполнено** (`done`): при поддерживаемой метрике `counts.verified_llm_trials >=
+  completion.required_verified_trials`; при неподдерживаемой — `allow_unverified` и
+  `counts.unverified_llm_trials >= 1`. Дополнительно нужен факт `finalization.host_can_finalize = true`
+  (host способен принять управление). Сохранённый CSV в условие **не входит**.
+- **Не считаются** ни анализ без trial, ни baseline, ни host-local и history-кандидаты: они не повышают
+  `verified_llm_trials` (отдельные счётчики приходят от host; рассогласование «LLM больше всех verified» —
+  `PolicyInputError`).
+- Порядок решений: `research_closed` → завершение → недостижимый контракт → ≥ 3 сбоев подряд → нет ресурсов →
+  выбор шага. После заморозки `continue` невозможен: `complete` (`dialogue_closed_by_host`, если условие
+  выполнено) либо `fallback` (условие не выполнено).
+- `complete` по-прежнему требует `finish_requested` (или `completion.close_when_met`) и **не обещает готовый
+  submission**: текст решения об этом говорит прямо.
+- «Остановка» в режиме диалога — это передача управления host (`action = "fallback"`; `stop` не используется,
+  потому что отсутствие CSV не причина остановки). Текст такого решения: host продолжает со своим дедлайном,
+  локальным продолжением, полным refit и восстановлением; policy ничего из этого не заменяет и не ослабляет.
+- Инструкции режима диалога не поручают LLM outer, полный refit, публикацию CSV, обучение baseline или
+  сохранение итогового результата. Стадия `finalize` в этом режиме означает «ответь кратким отчётом без
+  вызова инструмента; всё остальное делает host». Правило `finalize_low_resources` для диалога не применяется.
+- **Короткие бюджеты.** Для диалога нет жёсткого порога: 90–300-секундный smoke не заканчивается до первого
+  разрешённого эксперимента. Пороги задаёт host явным `pacing`; при «малых» ресурсах к инструкции лишь
+  добавляется «keep this experiment small and cheap». Исчерпание определяется фактами host: нет `can_request`,
+  `remaining_requests = 0` или `research_seconds_available = 0` (а без этого поля — `remaining_seconds = 0`).
+  Legacy-контракт сохраняет 300 с / 1 request по умолчанию и может задать пороги через `pacing`.
+
+Коды решений режима диалога: `inspect_dialogue`, `dialogue_complete`, `dialogue_unverified_complete`,
+`dialogue_closed_by_host`, `dialogue_handover_resources`, `dialogue_handover_failures`,
+`dialogue_handover_unreachable`; общий для режимов `refit_budget_continue`.
+
+## Формы гипотез и фактические ответы v3
+
+Обычный `read_hypothesis` возвращает **строку**; host-local и host-history передают объект
+`{"hypothesis": text}`. Нормализатор:
+
+- snapshot: строка, `{"hypothesis": строка}` или `null`; остальное — `PolicyInputError`. Из объекта берётся
+  только текст, остальные вложенные поля в prompt не попадают;
+- feedback (`compact_tool_feedback`): те же две формы, а непригодная (число, список, объект без текста)
+  отбрасывается и считается в `dropped_fields` — typed `accepted`/`verified`/`metric` при этом **всегда**
+  сохраняются; в `build_model_messages` такой feedback больше не падает в неструктурированный fallback;
+- `origin` (`llm`/`local`/`history`), `scope` и семейство рецепта (`recipe_summary.family`) сохраняются как
+  короткие host-факты; `code_hash`, `recipe_hash`, `timing` и прочее считаются в `dropped_fields`;
+- очистка секретов выполняется до сокращения.
+
+Проверенные формы (тесты используют конструкторы по коду `_assess_candidate` и `inner_feedback`): улучшение,
+`not_better`, отказ `refit_budget` (`accepted = false`, `verified = true`), отсутствие diagnostics, diagnostics
+`{"available": false, ...}`, неподдержанная метрика (`verified = false`, без `metric`), ошибка исполнения без
+метрики и с `candidate_execution`, анализ вместо trial, а также 12-строчная классификация в форме
+`per_class`/`worst_confusions` (сводка: худшие классы и главные путаницы).
+
+`refit_budget` — не «идея слабее», а проблема цены: инструкция просит сохранить идею и сделать рецепт
+дешевле (код `refit_budget_continue`).
+
+## Идентичность повторов
+
+- Обе попытки имеют `recipe_hash`: повтор — только совпадение `(code_hash, recipe_hash)`; один исходник с
+  другим рецептом (глубина 3 и 6) и похожий текст гипотезы повтором не считаются.
+- Контракт диалога, где хотя бы у одной стороны нет `recipe_hash`: тождество неизвестно, повтор не объявляется
+  и хеш не придумывается.
+- Legacy-контракт без recipe hash: прежнее правило — одинаковый `code_hash` или нормализованный текст гипотезы.
+
+## Метаданные сообщений
+
+`tool_calls[].id`, `function.name` и `tool_call_id` проверяются тем же `redact`. Если очистка их изменила, это
+`PolicyInputError` без значения поля; идентификаторы и имена никогда не преобразуются и не обрезаются ради
+размера (обычный `run_python` и провайдерские ID остаются прежними). Связь assistant/tool и уникальность ID
+сохраняются без переименований, поэтому коллизий после очистки не возникает.
+
 ## Коды решений
+
+(Таблица дополнена кодами версии 2; legacy-коды и их смысл не менялись. Строки `repair_unverified_trial` в таблице нет: этот код заменён на `no_verified_result` ещё в версии 1.)
 
 `PolicyDecision.stage ∈ {inspect, experiment, repair, finalize, finished}`,
 `action ∈ {continue, complete, fallback, stop}`, `reason` — стабильный snake_case. Использованные коды:
@@ -102,6 +227,14 @@
 | `contract_unreachable` | метрика не поддерживается и `allow_unverified = false` | finished / fallback или stop |
 | `repeated_failures_keep_result` / `_no_result` | ≥ 3 сбоев подряд | finished / fallback или stop |
 | `resources_exhausted_keep_result` / `_no_result` | нет запроса, времени или requests | finished / fallback или stop |
+| `inspect_dialogue` | первая инспекция в режиме диалога (без обучения baseline) | inspect / continue |
+| `refit_budget_continue` | эксперимент измерен, но host не принял его из-за времени финализации | experiment / continue |
+| `dialogue_complete` | диалог закрыт, host-verified LLM trials достаточно | finished / complete |
+| `dialogue_unverified_complete` | то же при неподдерживаемой метрике, качество не проверено | finished / complete |
+| `dialogue_closed_by_host` | кандидат заморожен: исследование не возобновляется | finished / complete или fallback |
+| `dialogue_handover_resources` | нет времени исследования, requests или запроса | finished / fallback |
+| `dialogue_handover_failures` | ≥ 3 сбоев подряд | finished / fallback |
+| `dialogue_handover_unreachable` | метрика не поддерживается, `allow_unverified = false` | finished / fallback |
 
 Правила завершения (`complete` возможен только при `finish_requested` и сохранённом валидном результате):
 при поддерживаемой метрике `verified_trials >= required_verified_trials`; при неподдерживаемой нужны
@@ -121,6 +254,7 @@
 `output_check` (`valid`, до трёх ошибок), `previous_output_restored`, числовое подмножество `resources`
 (`peak_rss_bytes`, `cpu_seconds`, `memory_limit_bytes`), `stderr`, `stdout`. Пустые потоки опускаются.
 
+Для v3 дополнительно сохраняются `selection.origin`, `selection.scope` и `selection.recipe_family` (короткие host-факты).
 Добавляются служебные поля: `feedback_version` (1), `truncated` (поле → исходный размер в байтах; также для
 полей, убранных целиком) и `dropped_fields` (число отброшенных неизвестных полей, без их содержимого).
 Обрезанный текст содержит маркер `[…cut: …]` с исходным размером.
@@ -141,18 +275,93 @@ host (в тесте `stdout` с `score=1.0` не влияет на худшую 
 ```text
 git switch work/nika-research-policy
 python -m unittest tests.test_research_policy -v
-python -m unittest tests.test_llm tests.test_research tests.test_research_protocol \
-    tests.test_research_feedback tests.test_research_validation tests.test_research_policy
-python experiment_research_policy.py --label final
+python experiment_research_policy.py --label v3-compat
+python dev_check.py
+python experiment_research_policy.py --series v3 --label v3-only
+python experiment_research_policy.py --series legacy --label legacy-only
 python experiment_research_policy.py --label small-limits --max-messages-bytes 24576 --max-feedback-bytes 3072
 ```
 
-Эксперимент полностью offline: без API, без запуска сгенерированного кода, без данных. Тяжёлые результаты
-сохраняются в `data/experiments/nika-research-policy/` только после `git check-ignore`; если путь не
-игнорируется, используется временный каталог. Окружение измерений: Python 3.12.3, `openai` 1.68.2,
-`pytest` не требуется (тесты на `unittest`).
+Эксперимент полностью offline: без внешних API, без запуска сгенерированного кода, без ML fit и реальных
+данных (серия v3 строит крошечную синтетическую задачу ради настоящего `research_validation.json`).
+Тяжёлые результаты (`results-<label>.json`) сохраняются в `data/experiments/nika-research-policy/` только после
+`git check-ignore`; если путь не игнорируется, используется временный каталог. Модули `agent.research_v3`,
+`agent.research_workspace`, `agent.research_budget` импортируются как есть и не изменяются.
 
-## Измерения
+## Измерения: Research v3 (отдельная серия)
+
+**Что сравнивается.** Одинаковые исходные транскрипты в двух вариантах, размер считается для полного списка
+`messages`, который уходит провайдеру:
+
+- *Контроль* — история так, как её хранит `run_agent_v3` (system `SYSTEM_V3`, task, настоящий текст
+  `_context`, затем все assistant/tool-сообщения и nudge-реплики хоста), плюс последнее бюджетное сообщение
+  `Current host budget: …` (настоящий `V3State.budget_context`), добавленное к **копии** запроса, как в
+  `_request_completion`. Старое накопление сводок не добавляется.
+- *Policy* — проекция того же транскрипта (`build_model_messages`: тот же `SYSTEM_V3` и task, контракт с тем же
+  текстом `_context`, новейшие группы, одна host-сводка) и то же бюджетное сообщение. Фиксированная добавка
+  нового представления контракта и host-сводки входит в стоимость policy.
+- *Абляция* — контроль с тем же дополнительным префиксом (контрактным сообщением policy); показывает чистый
+  эффект сжатия истории и **не** является замером неизменённого текущего runtime.
+
+Размеры — байты UTF-8 компактного JSON; «токены» — оценка хоста `ceil(bytes / 3)` на запрос (без резерва вывода),
+не usage провайдера. Режим диалога: `completion.mode = "research_dialogue"`; контракт строится документированной
+mock-проекцией manifest (`v3_contract`), snapshot — mock-проекцией INNER-фактов (`v3_snapshot`).
+
+| Сценарий | Запросов | Контроль, Б | Абляция, Б | Policy, Б | к контролю | к абляции | Policy больше на запросах | Guard v3 отказал бы (контроль / policy) | Переходы | Факты |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | :---: | :---: | :---: |
+| big_inspection | 4 | 241 877 | 246 377 | 55 753 | −76,9 % | −77,4 % | 1 | 2 / — | 5/5 | 27/27 |
+| several_trials | 7 | 175 245 | 183 120 | 113 933 | −35,0 % | −37,8 % | 1, 2, 3 | 7 / — | 8/8 | 48/48 |
+| traceback_and_fix | 3 | 131 731 | 135 106 | 35 175 | −73,3 % | −74,0 % | 1 | 3 / — | 3/3 | 20/20 |
+| multi_tool_group | 2 | 26 991 | 29 241 | 28 358 | **+5,1 %** | −3,0 % | 1 | — / — | 2/2 | 13/13 |
+| early_finish | 3 | 21 015 | 24 390 | 27 367 | **+30,2 %** | +12,2 % | 1, 2, 3 | — / — | 4/4 | 19/19 |
+| low_time | 2 | 15 677 | 18 067 | 20 281 | **+29,4 %** | +12,3 % | 1, 2 | — / — | 3/3 | 13/13 |
+| api_error | 4 | 43 438 | 47 938 | 50 958 | **+17,3 %** | +6,3 % | 1, 2, 3, 4 | — / — | 4/4 | 27/27 |
+| unsupported_metric | 2 | 14 892 | 17 030 | 19 266 | **+29,4 %** | +13,1 % | 1, 2 | — / — | 3/3 | 13/13 |
+| incomplete_group | 1 | 4 817 | 5 942 | 7 058 | **+46,5 %** | +18,8 % | 1 | — / — | 2/2 | 6/6 |
+| history_local_feedback | 1 | 4 817 | 5 942 | 7 441 | **+54,5 %** | +25,2 % | 1 | — / — | 2/2 | 7/7 |
+| **Серия** | 29 | **680 500** | 713 153 | **365 590** | **−46,3 %** | −48,7 % | | | 36/36 | все |
+
+(В `incomplete_group` и `history_local_feedback` строится один запрос: в первом политика отвечает
+`PolicyInputError` на неполную группу, у второго после второго шага решение — `complete`, запрос не нужен.)
+
+Размер запроса по шагам, `several_trials` (байты):
+
+| Запрос | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Контроль | 4 817 | 10 854 | 18 524 | 24 566 | 32 243 | 38 286 | 45 955 |
+| Policy | 7 058 | 12 954 | 18 612 | 18 199 | 19 062 | 18 581 | 19 467 |
+
+Что видно:
+
+- **Выигрыш появляется только на длинных диалогах.** После третьей группы policy выходит на плато около
+  18–19 КБ, контроль продолжает расти. Это опора для вывода «экономия есть на тяжёлых транскриптах», но не
+  для вывода «экономия везде».
+- **На коротких диалогах policy больше.** Фиксированная добавка: на первом запросе +2 241 Б (7 058 против 4 817,
+  +46,5 %) — JSON контракта (пути входов и выходов, validation, completion), заголовок про host-факты, host-сводка
+  и инструкция. Для коротких сценариев (1–4 запроса) серия суммарно хуже контроля на +5…+55 %. Если типичный
+  v3-диалог короток, байтового выигрыша policy не даёт.
+- **Guard v3.** Настоящий `request_allowed` отказывает, когда запрос больше 64 КиБ или накопленная оценка
+  `ceil(bytes / 3) + 8192` превышает 100 000. В реплее контроль упёрся бы в него на 2-м запросе
+  (`big_inspection`, 72 976 Б), на 3-м (`traceback_and_fix`) и на 7-м (`several_trials`); policy — ни разу.
+  Это воспроизведение формул guard из кода, а не запуск настоящего runtime.
+- Оценочные токены (`ceil(bytes / 3)`, сумма по запросам): контроль 226 844, policy 121 873. В коротких
+  сценариях оценка policy выше, в длинных ниже — как и по байтам.
+- Состав сценариев: `big_inspection` — инспекция с 64-КБ выводом, `several_trials` — 7 запросов с
+  `improved`, `not_better`, `refit_budget`, `multi_tool_group` — три вызова в одной группе.
+
+**Учёт ресурсов.** Байты — измерены. Реальные provider-reported tokens — нет (провайдер не вызывался).
+Оценочные токены — приведены выше. Внешних API attempts/responses — **0**; платного API и ML fit в эксперименте
+нет. Локальных HTTP POST на `127.0.0.1` с фиктивным ключом — **4** (три в одном SDK-тесте и один в тесте
+v3-запроса; эксперимент HTTP не делает). Рубли, качество ML и реальное поведение Qwen остаются неизмеренными;
+повтор сценария исследованием ML не является.
+
+## Legacy replay (реконструкция старого runner)
+
+> **Это не измерение экономии нынешнего Research v3.** Серия получена на реконструкции старого
+> `SYSTEM_PROMPT` и накопления `ResearchLedger.context` в `agent/research.py`: сводка добавлялась в постоянную
+> историю перед каждым запросом. Результаты и ограничения сохранены как были; режим запускается командой
+> `python experiment_research_policy.py --series legacy`. Для v3 смотри предыдущий раздел.
+
 
 «Было» — воспроизведение текущего runner: все результаты инструментов остаются в `messages`, перед каждым
 запросом добавляется новая сводка `ResearchLedger.context`; тексты system, задачи и инструкций одинаковы с
@@ -197,7 +406,7 @@ python experiment_research_policy.py --label small-limits --max-messages-bytes 2
 `actual` и `train.csv`. Префикс `[system, task, contract]` идентичен во всех запросах сценария (удобно для
 кеша префикса, если провайдер его использует).
 
-## Что нашли и что изменили между итерациями
+## История итераций legacy replay (версия 1)
 
 Каждая итерация измерена тем же воспроизведением (таблицы `results-iter1..4.json`).
 
@@ -225,6 +434,21 @@ python experiment_research_policy.py --label small-limits --max-messages-bytes 2
 4. **Группы с несколькими вызовами.** Три крупных результата в одной группе давали 24 КБ; теперь полный
    бюджет получает только последний результат новейшей группы.
 
+## Что нашли и что изменили при переходе к v3 (версия 2)
+
+1. **Накладные расходы контракта.** Первый замер v3 дал около +2,9 КБ на первом запросе. В представлении контракта
+   пустые `purpose` и `columns` для путей из manifest (7 входов, 3 выхода) занимали лишние байты; теперь запись без
+   деталей выводится как путь. Инструкция первой инспекции в режиме диалога ссылается на `allowed_inputs`
+   контракта вместо повторного перечисления путей. Итог: +2 241 Б на первом запросе (первая гипотеза) и +2 434 Б
+   (первая инспекция).
+2. **Стадия по умолчанию в моём эксперименте.** Первый замер показал расхождения переходов из-за неверной
+   стадии в mock-проекции; исправлено в эксперименте, модуль не менялся.
+3. **Порядок вытеснения.** Сначала сжимается feedback, затем сокращаются старые попытки, затем вытесняется
+   новейшая группа (см. «Что решает модуль»).
+4. **Ложные проверки.** Целевые мутации кода (убрать проверку метаданных, потребовать CSV для диалога, считать
+   LLM-счётчик по общему числу, игнорировать recipe, разрешить `continue` после заморозки, всегда 300 с,
+   отклонять объектную гипотезу, смешать `refit_budget` с `not_better`) — 8 из 8 ловятся тестами.
+
 ## Предположения и ограничения
 
 Измерено: байты запросов в воспроизведении, переходы решений, сохранность перечисленных фактов, поведение
@@ -236,7 +460,7 @@ python experiment_research_policy.py --label small-limits --max-messages-bytes 2
   (JSON контракта и host-сводка с инструкцией). Выигрыш появляется со второй–третьей группы
   (`many_experiments`: запрос 2 уже на 44 % меньше).
 - Реальных запросов к Qwen и к платному API не было: **0 API attempts, usage не расходовался**. Проверка
-  совместимости с SDK использует установленный `openai` 1.68.2, loopback-сервер `127.0.0.1`, фиктивный ключ
+  совместимости с SDK использует установленный `openai` 1.68.2, loopback-сервер `127.0.0.1` (три POST в версии 1, четыре в версии 2), фиктивный ключ
   и закрывает сервер и сокеты; возвращённый код не выполняется. Она подтверждает, что сервер получает ровно
   `context.messages` (ответ 200) и что безопасное сообщение после HTTP 429 попадает в следующий компактный
   запрос без тела ответа и ключа. Полноценная проверка host-verified ML-экспериментов возможна только после
@@ -252,54 +476,106 @@ python experiment_research_policy.py --label small-limits --max-messages-bytes 2
   синтетических сценариях; их стоит пересмотреть на реальных журналах.
 - Если у провайдера есть счётчик токенов, лимит в байтах стоит откалибровать по `reported tokens`.
 
-## Подключение (три функции)
+Дополнения версии 2:
 
-Host хранит полную очищенную историю как сейчас, строит компактные messages перед каждым запросом и
-сохраняет собственные guards.
+- **Mock host-проекция.** `v3_contract` и `v3_snapshot` в `experiment_research_policy.py` — документированная
+  проекция фактов, а не код runtime. Настоящий freeze и остановку API, изоляцию outer-данных и восстановление
+  финализации проверит основной ИИ отдельными integration tests общего runtime; в моих тестах outer-поля
+  существуют только в mock host и не передаются policy (проверено на уровне сообщений и решений), а
+  неизвестные outer-подобные ключи игнорируются.
+- Происхождение метрики и гипотезы policy не угадывает: `origin` и `scope` приходят от host; форма гипотезы
+  (строка или объект) происхождение не определяет.
+- Policy ничего не знает про `BudgetPolicy`: если host не передал `research_seconds_available`, используется
+  общий `remaining_seconds`.
+- Реплей v3 воспроизводит формулы guard из кода, а не вызывает `request_allowed`; бюджетное сообщение строится
+  настоящим `V3State.budget_context` на подставном состоянии.
+- Размеры сводки и порогов задаются без калибровки на настоящих журналах Research v3.
+
+## Подключение к текущему v3 (рекомендации для основного ИИ)
+
+Это рекомендации, а не код runtime: подключение и решения о default-параметрах остаются за основным ИИ.
+
+1. **Контракт.** Построить `contract` из `research_validation.json`: `manifest_version`, пути входов и выходов как
+   они есть (строки допустимы), `host_instructions` — текст, который сейчас получает модель третьим сообщением
+   (`_context`), `validation.scope = "inner_selection"`, `completion.mode = "research_dialogue"`,
+   `required_verified_trials` — по правилу host («хотя бы один измеренный trial»). Пороги `pacing` задавать
+   явно только если они нужны.
+2. **Snapshot из INNER-фактов.** `budget.research_seconds_available` брать из ответа `BudgetPolicy`/`research_timeout()`,
+   не вычислять заново; `counts.verified_llm_trials` считать только по LLM trials с `origin = "llm"`,
+   history и local — в отдельные счётчики; `finalization.host_can_finalize` и `verified_candidate` — из состояния
+   host; `research_closed` — после заморозки кандидата (`dialogue_closed`); `baseline.retained_output_valid` —
+   только если итоговый CSV действительно сохранён.
+3. **История.** В `history` — только пары assistant/tool; nudge-реплики хоста («Research is not complete…»)
+   больше не нужны: их роль выполняет `NEXT STEP` host-сводки. Бюджетное сообщение по-прежнему добавляется к
+   копии запроса, как сейчас; в host-сводке policy тоже есть бюджет, поэтому после включения можно убрать
+   дублирование (решение за основным ИИ).
+4. **Guards не менять.** `request_allowed`, дедлайн, `BudgetPolicy`, остановки по API-ошибкам и финализация host
+   остаются как есть; `decision.action != "continue"` — повод передать управление host, а не заменить его
+   механизмы. `PolicyBudgetExceeded` и `PolicyInputError` — управляемые отказы: историю не отправлять, продолжать
+   обычную финализацию.
+5. **Не передавать в policy** outer/test-данные: они не нужны, и policy их не фильтрует.
 
 ```python
 from agent.research_policy import (
     PolicyBudgetExceeded, PolicyInputError, PolicyLimits, build_model_messages, decide_next_action,
 )
 
-LIMITS = PolicyLimits()                                  # значения по умолчанию v1
-
-# ... до запроса: все tool-результаты предыдущей группы уже записаны в history
-snapshot = host_snapshot(state)       # нормализованный v1 из ledger/RunState; error_kind назначает host
-contract = host_contract(state)       # v1: пути и столбцы из manifest, validation.scope, completion
+snapshot = host_snapshot(state)       # INNER-факты v1 (см. таблицы выше)
+contract = host_contract(state)       # completion.mode = "research_dialogue"
 decision = decide_next_action(snapshot, contract=contract)
 if decision.action != "continue":
-    return state.finish_with(decision)    # fallback/stop/complete решает runner, у него свои guards
+    return hand_over_to_host(decision)        # complete / fallback: host продолжает сам
 
 try:
     context = build_model_messages(
-        system_prompt=SYSTEM_PROMPT, task_text=state.task_text, contract=contract,
-        history=state.dialog,             # только assistant/tool; без system/task/host-сводок
-        snapshot=snapshot, limits=LIMITS, redact=state.redact)
-except (PolicyInputError, PolicyBudgetExceeded) as error:
-    return state.fail_safely(error)       # сохранить принятый результат, не отправлять запрос
-
-state.event("context", **context.diagnostics)
-response = client.chat.completions.create(model=get_model(), messages=context.messages, tools=[TOOL], ...)
-# state.dialog дополняется как раньше: assistant с tool_calls и tool-результаты (json очищенного result)
+        system_prompt=SYSTEM_V3, task_text=state.task_text, contract=contract,
+        history=state.dialog, snapshot=snapshot, limits=PolicyLimits(), redact=state.redact)
+except (PolicyInputError, PolicyBudgetExceeded):
+    return hand_over_to_host(None)            # обычная финализация host
+messages = context.messages + [budget_message]    # бюджетное сообщение — как в _request_completion
 ```
 
-Что нужно сделать Диме:
-
-1. Преобразовать `ResearchLedger` в snapshot v1 (`error_kind`: `timeout`/`memory` из флагов результата,
-   `repeated_failure` из блокировки повторного кода, `evidence` из ошибок evidence, `api` из ошибок
-   провайдера, иначе `execution`/`unknown`) и собрать contract из manifest.
-2. Убрать добавление `Host research history:` в `messages` и перестать хранить host-сводки в диалоге; в
-   `state.dialog` писать только пары assistant/tool.
-3. Передать `state.redact` как `redact`; секрет не нужно отдельно передавать в модуль.
-4. Вызывать `build_model_messages` только после завершения всей группы tool calls: незавершённая группа даёт
-   `PolicyInputError`.
-5. Сохранить budget guard, дедлайн, защиту от повторного сбоя и независимую проверку метрики — политика их не
-   заменяет.
-6. Для v3 класть в snapshot только внутренние оценки и записать их происхождение в `validation.scope`.
-7. Реальный прогон Qwen выполнять только после общего guard, в рамках 8 requests.
-
 ## Проверки
+
+Команды и фактические результаты. Версия 2 проверена на **закреплённых зависимостях** `requirements.txt`
+(отдельное виртуальное окружение: Python 3.12.3, scikit-learn 1.5.2, numpy 1.26.4, pandas 2.2.3, openai 1.68.2,
+catboost 1.2.8, lightgbm 4.6.0, optuna 4.2.1, Linux).
+
+| Команда | Результат |
+| --- | --- |
+| `python -m unittest tests.test_research_policy -v` | `Ran 120 tests`, `OK`; SDK-тесты не пропущены |
+| `python experiment_research_policy.py --label v3-compat` | код выхода 0. Legacy replay: −80,2 %, переходы 38/38, ошибок фактов нет. Серия v3: −46,3 % к контролю (−48,7 % к абляции), переходы 36/36, ошибок фактов нет |
+| `python solution.py --check` (первый шаг `dev_check.py`) | код выхода 0, `api_called: false` |
+| `python -m unittest discover -s tests` (второй шаг `dev_check.py`): 89 модулей в пяти последовательных кусках | `Ran 1278 tests` (462 + 202 + 211 + 236 + 167), все `OK`, 2 пропущенных теста проекта (не из `test_research_policy`) |
+| связанные наборы: `test_llm`, `test_research`, `test_research_protocol`, `test_research_feedback`, `test_research_validation`, `test_research_policy` | `Ran 164 tests`, `OK` |
+| наборы v3: `test_research_v3_archive`, `test_research_workspace`, `test_research_budget`, `test_inner_feedback` | `Ran 43 tests`, `OK` (1 пропущен) |
+| дифференциальная проверка legacy: все 11 сценариев legacy replay через модуль версии 1 (`3e10edd`) и текущий | 76 записей (38 решений, 37 сборок сообщений, 1 отказ), **0 различий**; 5 SHA-256 зафиксированы в `LegacyBytesUnchangedTests` |
+| целевые мутации кода (8 штук, см. «Что нашли и что изменили при переходе к v3») | 8 из 8 пойманы тестами |
+
+**Честная оговорка про `dev_check.py`.** Единым запуском `python dev_check.py` пройти не удалось: в среде проверки
+фоновый процесс дважды исчезал без traceback на тяжёлом CLI-тесте (тот же тест проходит отдельно за ≈ 40 с). Поэтому
+шаги выполнены раздельно с теми же командами: `solution.py --check` и `unittest discover` по тем же 89 модулям пятью
+кусками. Отказов тестов нет; единый запуск `dev_check.py` остаётся не подтверждённым в этой среде.
+
+**ML fits.** Полный набор содержит штатные ML fits из регрессионных тестов проекта; их количество не измерялось,
+поэтому «ноль fits» для всего набора не заявляется. Тесты и эксперимент этой работы ничего не обучают, не исполняют
+сгенерированный код и не обращаются к внешним API (локальных HTTP POST на `127.0.0.1` — 4).
+
+Тесты проверяют: границы размера и точное `after_bytes`; Unicode и одиночные суррогаты; очистку секрета до
+обрезки и секрет на границе; кавычки, обратные слэши, переводы строк; неизменность входов и детерминизм;
+группы tool calls (неделимость, неполная группа, неизвестный и повторный id); сохранение host-фактов и
+невозможность изменить их текстом модели; несовместимые версии, типы, `NaN`, `bool` вместо числа;
+невозможность вместить контракт (в том числе настоящий `SYSTEM_V3` с контрактом) — контролируемый
+`PolicyBudgetExceeded`; правила завершения для обоих режимов; завершение диалога без итогового CSV; невозможность
+ложного `complete` при отсутствии trial и при анализе вместо trial; раздельные счётчики LLM, local и history;
+отсутствие поручений host-финализации в инструкциях диалога; `recipe_hash` и legacy-идентичность; формы
+гипотез (строка и объект) и реальные формы feedback v3; очистку метаданных сообщений; пороги бюджета и
+`research_seconds_available`; невозможность возобновить исследование после заморозки; игнорирование
+outer-подобных полей; чистоту модуля (только стандартная библиотека, без `open`/`exec`/`eval`); совместимость с
+настоящим SDK через localhost-сервер.
+
+### История проверок версии 1 (сохранена)
+
 
 Команды и фактические результаты (Python 3.12.3, Linux, scikit-learn 1.8.0; `catboost`, `lightgbm`, `optuna`
 при первом полном прогоне не были установлены). Полный набор `python dev_check.py` в этой среде не запускался: нужны закреплённые версии из `requirements.txt`.
