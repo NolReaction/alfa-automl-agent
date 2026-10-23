@@ -418,9 +418,28 @@ class ConclusionTests(unittest.TestCase):
                      "custom_invocations": [{"variant": "oof"}]}]
             with patch.object(native, "load_manifest", return_value=manifest), patch.object(native, "audit_arm", side_effect=rows):
                 report = native.audit(output)
-            self.assertEqual(report["status"], "promising_opt_in")
+            self.assertEqual(report["status"], "rejected")
+            self.assertAlmostEqual(report["on_minus_off_macro_f1"], .003)
+            self.assertFalse(report["oof_model_published"])
             self.assertFalse(report["oof_model_quality_claim"])
             self.assertEqual(report["quality_attribution"], "model_plus_scheduling_plus_paid_probe_bundle")
+
+    def test_positive_bundle_delta_with_published_oof_is_promising(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            native.write_json(output / "run_manifest.json", {})
+            for mode in native.ORDER:
+                native.write_json(output / mode / "execution.json", {})
+            manifest = {"source": {"sha": "s", "tree": "t"}, "minimum_absolute_gain": .002}
+            rows = [{"status": "completed", "scores": {"macro_f1": .6}, "oof_published": False, "custom_invocations": []},
+                    {"status": "completed", "scores": {"macro_f1": .603}, "oof_published": True,
+                     "custom_invocations": [{"variant": "oof"}]}]
+            with patch.object(native, "load_manifest", return_value=manifest), patch.object(native, "audit_arm", side_effect=rows):
+                report = native.audit(output)
+            self.assertEqual(report["status"], "promising_opt_in")
+            self.assertAlmostEqual(report["on_minus_off_macro_f1"], .003)
+            self.assertTrue(report["oof_model_published"])
+            self.assertTrue(report["oof_model_quality_claim"])
 
 
 if __name__ == "__main__":

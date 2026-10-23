@@ -1,12 +1,12 @@
 # Round 5: воспроизведение
 
-**Статус: интерфейсы реализованы; native measurements pending.** Команды ниже соответствуют CLI/harness; они не означают, что smoke или пара уже завершены. Исходная база `66e9481cb61cb83cfecab53be6984d7d2bf829b3`, ветка `work/round5-oof-host-v1`; default всегда OFF.
+**Статус: smoke пройден; native-пара остановлена с `incomplete`.** OFF опубликован и независимо проверен; два startup timeout запрещают ON. Δ null, default OFF. Команды ниже документируют интерфейс и исходный план; уже начатую серию повторять нельзя. Исходная база `66e9481cb61cb83cfecab53be6984d7d2bf829b3`, ветка `work/round5-oof-host-v1`; default всегда OFF.
 
 Код, полный `docs/round5_classification_host_recipe.json` и preregistered plan коммитятся до первого большого fit. `prepare` требует чистый checkout и записывает фактический integration SHA/tree, plan/package/source/dependency/input hashes в ignored `run_manifest.json` + `manifest_seal.json`. Самоссылки SHA внутри плана нет. Обе arms используют один snapshot; documentation-only evidence commit после пары не меняет tested runtime.
 
 ## Linux: одна управляемая пара
 
-Из корня `/workspace/scratch/df1d37ea75a8/alfa-round5-oof-host`, после focused tests и коммита, с ещё не существующими evidence/workspace directories:
+Ниже сохранён интерфейс исходного запуска. Он не является разрешением повторить остановленную пару. Для иной отдельно разрешённой серии нужны новый preregistered plan, clean commit и новые directories. Из корня `/workspace/scratch/df1d37ea75a8/alfa-round5-oof-host`:
 
 ```bash
 classification_python=/workspace/scratch/df1d37ea75a8/alfa-automl-agent/.venv/bin/python
@@ -72,6 +72,25 @@ if ($LASTEXITCODE -ne 0) { throw 'native pair stopped; no retry' }
 
 ## Evidence и решение
 
-Основные точки входа: `run_manifest.json`, `frozen_identity.json`, `off/report.json`, `on/report.json`, итоговый `report.json`; ниже — `run.json`, execution/cleanup, receipts, split/group audit, child events и independently rescored outer CSV. Full TRAIN/TEST delivery подтверждается только если lifecycle реально дошёл до нового verified full refit; TEST labels отсутствуют, качество неизвестно.
+Фактические точки входа: `run_manifest.json`, `frozen_identity.json`, `off/report.json`, `stop.json`, итоговый `report.json`. `on/report.json` отсутствует, поскольку ON не запускался; ниже — `run.json`, execution/cleanup, receipts, split/group audit, child events и independently rescored outer CSV. Full TRAIN/TEST delivery подтверждается только если lifecycle реально дошёл до нового verified full refit; TEST labels отсутствуют, качество неизвестно.
 
 Тип сравнения `model_plus_scheduling_plus_paid_probe`. `promising_opt_in` требует ON−OFF ≥.002 и опубликованного OOF; иначе reached OOF получает `rejected`, отсутствие достигнутого OOF — `not_reached`, незавершённая/невалидная пара — `incomplete`. Ordinary winner в ON относится к bundle, не к доказанной пользе OOF. Результат и bounded raw archive исключают модели/исходные большие datasets. Merge, default ON, конкурсный релиз и платформенная отправка не выполняются. Полный протокол — `docs/round5_classification_host_plan.md`, контракт — `docs/round5_classification_host_integration.md`.
+
+
+## Проверка сохранённого архива без обучения
+
+Распаковать `round5-classification-host-evidence.zip` в новый короткий путь. Из каталога распакованного evidence:
+
+```bash
+python3 portable_verify.py . > independent_verification.json
+```
+
+PowerShell (здесь не проверен):
+
+```powershell
+& C:\Windows\py.exe -3.12 .\portable_verify.py . | Set-Content -Encoding utf8 .\independent_verification.json
+```
+
+Verifier использует stdlib, повторяет 57 completed INNER CSV и published outer score, проверяет TEST format/ID/classes, source/recipe/receipt bindings, отдельный smoke и deterministic fit accounting. Он сохраняет `incomplete`, Δ null и отсутствие OOF quality claim. Архив не содержит full datasets/models/request objects; проверка исходных feature rows выполнена original host auditor и отдельно corrected auditor с теми же source/package/input hashes. INNER label projection доверяет SHA-verified original TRAIN provenance, поскольку TRAIN исключён.
+
+Original auditor сохранён в `source_tested/experiment_round5_classification_native.py`; исправленный — в `postrun_audit/experiment_round5_classification_native.py`; их reports/hashes/provenance — в `evidence/postrun_audit/`. Direct `audit --output data/round5-oof` с текущего postrun HEAD намеренно отклоняет старый source seal: native guard не ослаблялся. Для переданного архива использовать portable verifier, а не изменять manifest и не повторять обучение.

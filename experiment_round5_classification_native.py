@@ -578,7 +578,7 @@ def audit(output):
     delta = results[1]["scores"]["macro_f1"] - results[0]["scores"]["macro_f1"] if complete else None
     reached = bool(complete and any(row["variant"] == "oof" for row in results[1]["custom_invocations"]))
     status = ("incomplete" if not complete else "not_reached" if not reached else
-              "promising_opt_in" if delta >= manifest["minimum_absolute_gain"] else "rejected")
+              "promising_opt_in" if delta >= manifest["minimum_absolute_gain"] and results[1]["oof_published"] else "rejected")
     result = {"version": 1, "status": status, "comparison_type": COMPARISON, "manifest_sha256": file_hash(output / "run_manifest.json"),
               "source_sha": manifest["source"]["sha"], "source_tree": manifest["source"]["tree"], "arms": results,
               "on_minus_off_macro_f1": delta, "engineering_threshold": manifest["minimum_absolute_gain"],

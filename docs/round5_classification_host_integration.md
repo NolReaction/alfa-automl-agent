@@ -1,6 +1,6 @@
 # Round 5: контракт host-интеграции
 
-**Статус: реализованный контракт до seal; native evidence pending.** Документ сверён с helper, CLI/dispatcher, host и harness на базе `66e9481cb61cb83cfecab53be6984d7d2bf829b3`. Фактический допуск к native требует focused tests, clean commit/manifest и отдельный flat-package smoke; наличие кода не означает достигнутый OOF или прирост качества.
+**Статус: реализовано, default OFF; native-пара завершена как `incomplete`.** Документ сверён с helper, CLI/dispatcher, host и harness на базе `66e9481cb61cb83cfecab53be6984d7d2bf829b3`. До native прошли 186 fit-free tests и отдельный flat-package smoke (2 fresh fits); чистый SHA/tree и manifest запечатаны. OFF опубликовал проверенный результат, но два startup timeout остановили серию до ON. Полный native OOF и его польза не измерены. Итоговые evidence — в `round5_classification_host_results.md` и JSON/CSV.
 
 Round 5 заменяет предложение старого `round4_classification_integration.md` о переносе CB в обеих arms: **OFF сохраняет прежний порядок полностью**. Только ON добавляет раннюю замену и оплаченный probe. Тип сравнения — `model_plus_scheduling_plus_paid_probe`; прирост не приписывается одной калибровке. Принятый regression rescue-v1 сохраняется.
 
@@ -46,8 +46,8 @@ OOF сохраняет invocation 600 с, callback 90 с, reserve calibration 12
 
 В каждом достигнутом этапе нужны code/recipe/nonce/phase/input/output identity, receipt, fit/predict rows, `fresh_full_refit`, split/group hashes, child event started/completed/cancelled, trained/accepted/applied и причины guard. Raw callback count не равен physical fit count. При неполных events неизвестные counts не превращаются в нули. Published winner подтверждается outer/refit receipts и совпадением final CSV hash; валидный emergency CSV не означает квалификацию OOF.
 
-## Отчёт и оставшиеся gates
+## Отчёт и фактически достигнутые gates
 
 `classification_round4` хранит `manifest`, `preflight`, `probe`, `admission`, `oof`, `invocations`, `used_invocations`, `ordinary_remaining_trial_cap`, `ordinary_slot_removed`, `replaced_ordinary_key`. `invocation_evidence` собирает частичные child events; `verify_result` связывает успешный result с context/receipt/frozen identity и child artifacts. Отказ callback с допустимым fresh identity fallback должен отличаться от integrity mismatch; итоговая проверка этого пути обязательна до seal.
 
-Pending: итоговые focused-test proofs, успешный flat-package smoke и чистый preregistered manifest. Реальные команды и environment caps приведены в `round5_classification_host_reproduce.md`; результаты native ещё отсутствуют. Пара OFF → audit → ON по 3 600 с запускается один раз. `promising_opt_in` требует threshold +.002 и действительно опубликованного OOF; другой ordinary winner отражается как bundle result без заявления пользы OOF. Любой положительный итог оставляет default OFF до решения капитана.
+Фактически выполнена одна OFF arm из preregistered пары: native completed, outer Macro F1 0.6469928093378587 независимо подтверждён. Два startup CatBoost timeout делают qualification `incomplete`; ON не начат, Δ null, OOF/probe/rules trained/accepted/applied 0. OFF победитель — прежний frequency_candidate_v1, не новый OOF. Runtime не менялся; после остановки исправлены только audit-only затенение identity и qualification gate опубликованного OOF; добавлены два regression tests (30 native tests PASS), original/corrected audit дали один OFF result. Команды и ограничения — в `round5_classification_host_reproduce.md`; результаты — в MD/JSON/CSV. Повторных fits, default ON и merge нет.
