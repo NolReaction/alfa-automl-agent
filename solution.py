@@ -23,6 +23,11 @@ from validation import validate_predictions
 REQUIRED_PACKAGES = ("openai", "dotenv", "numpy", "pandas", "sklearn", "catboost",
                      "lightgbm", "optuna", "psutil")
 DEFAULT_TIME_BUDGET = 10500
+# Run artifacts nest below the task folder (.agent_runs/<id>/workspace/.agent_runs/...).
+# On a full public regression run the deepest file was 161 characters below it.
+# Classic Windows file APIs stop at 259 characters without LongPathsEnabled.
+RUN_PATH_DEPTH = 170
+WINDOWS_PATH_LIMIT = 259
 
 
 def select_mode(requested: str) -> str:
@@ -67,6 +72,45 @@ def check_setup() -> bool:
     return python_ok and all(packages.values()) and worker_ok
 
 
+def _windows_long_paths_enabled() -> bool | None:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            return winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1
+    except (ImportError, OSError):
+        return None
+
+
+def _warn_long_task_path(task_path: Path, *, windows: bool = os.name == "nt") -> None:
+    """A deep task folder makes every model run fail with WinError 206, leaving only the emergency CSV."""
+    if not windows:
+        return
+    folder = len(str(Path(task_path).resolve().parent))
+    if folder + RUN_PATH_DEPTH <= WINDOWS_PATH_LIMIT or _windows_long_paths_enabled():
+        return
+    print(f"Warning: the task folder path has {folder} characters and run artifacts go about {RUN_PATH_DEPTH} deeper, "
+          f"beyond the {WINDOWS_PATH_LIMIT}-character Windows limit (LongPathsEnabled is off). Model runs may fail "
+          "with WinError 206 and leave only the unverified emergency CSV. Move the task to a shorter folder.",
+          file=sys.stderr, flush=True)
+
+
+def _warn_unverified_output(directory) -> None:
+    """Say plainly when no newly verified model replaced the existing submission.csv."""
+    try:
+        report = json.loads((Path(directory) / "run.json").read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return
+    publication = report.get("publication") if isinstance(report, dict) else None
+    if not isinstance(publication, dict) or publication.get("new_result_published") is not False:
+        return
+    provenance = report.get("best_metric_provenance")
+    verified = isinstance(provenance, dict) and provenance.get("quality_verified") is True
+    print(f"Warning: no newly verified model was published (reason: {publication.get('reason')}); submission.csv "
+          + ("keeps the earlier accepted checkpoint." if verified
+             else "keeps an earlier output whose quality is unverified."), file=sys.stderr, flush=True)
+
+
 def _remaining(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -93,6 +137,7 @@ def _offline_solution(task_path, *, deadline, validation, quality_options, autom
         directory = _dispatch_research(task_path, None, deadline=deadline, quality_options=quality_options,
                                        automatic_rescue=automatic_rescue, local_only=True)
         print(f"Host-local research report: {directory / 'run.json'}. API calls: 0.")
+        _warn_unverified_output(directory)
         return
     from agent.automl import run_automl
 
@@ -254,6 +299,7 @@ def main() -> int:
             and quality_options.get("adaptive_search") is True
             and parsed_metric is not None and parsed_metric.name == "RMSE")
         dispatch_options = {"automatic_rescue": True} if automatic_rescue else {}
+        _warn_long_task_path(task_path)
         deadline = time.monotonic() + time_budget
         checkpoint = _prepare_emergency(task_path, deadline)
         # Hold a small part of the same deadline for checking and restoring a
@@ -276,9 +322,10 @@ def main() -> int:
             try:
                 with make_client() as client:
                     research_started = True
-                    _dispatch_research(task_path, client, max_steps=args.max_steps,
-                                       deadline=work_deadline, quality_options=quality_options, **dispatch_options)
+                    directory = _dispatch_research(task_path, client, max_steps=args.max_steps, deadline=work_deadline,
+                                                   quality_options=quality_options, **dispatch_options)
                     solver_completed = True
+                _warn_unverified_output(directory)
             except Exception as error:
                 if checkpoint is not None:
                     checkpoint.check_inputs(deadline=deadline)
