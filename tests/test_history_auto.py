@@ -275,13 +275,28 @@ class DiscoveryHostGuardTests(unittest.TestCase):
     def test_input_preparation_uses_discovery_deadline_before_starting_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             state, _ = self.make_state(directory)
-            readings = iter((0.0, 0.0, 0.0, 9.0, 9.0))
+            late = discovery_host.DISCOVERY_SECONDS + 1
+            readings = iter((0.0, 0.0, 0.0, late, late))
             with patch.object(discovery_host, "_now", side_effect=lambda: next(readings)), \
                     patch.object(discovery_host, "run_python") as worker:
                 self.assertIsNone(discovery_host.discover_history_options(state))
             self.assertEqual((state.report["history_discovery"]["status"], state.report["history_discovery"]["reason"]),
                              ("limited", "preparation_time_limit"))
             worker.assert_not_called()
+
+    def test_worker_allowance_covers_a_cold_start_but_never_the_host_reserve(self):
+        # A cold Python + pandas start alone took 11 s on a loaded laptop; 8 s lost the schema.
+        for research_seconds, low, high in ((90, 30, discovery_host.DISCOVERY_SECONDS), (10, 0, 10)):
+            with self.subTest(research_seconds=research_seconds), tempfile.TemporaryDirectory() as directory:
+                state, _ = self.make_state(directory)
+                state.research_timeout.return_value = research_seconds
+                with patch.object(discovery_host, "run_python",
+                                  return_value={"exit_code": None, "timed_out": True}) as worker:
+                    self.assertIsNone(discovery_host.discover_history_options(state))
+                timeout = worker.call_args.kwargs["timeout"]
+                self.assertGreater(timeout, low)
+                self.assertLessEqual(timeout, high)
+                self.assertEqual(state.report["history_discovery"]["reason"], "worker_time_limit")
 
     def test_worker_error_does_not_swallow_source_or_baseline_integrity_failure(self):
         for target in ("source", "baseline"):
