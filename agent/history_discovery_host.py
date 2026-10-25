@@ -13,7 +13,11 @@ from agent.history_runtime import normalize_history_options
 from agent.llm import ROOT, safe_error_message
 
 
-DISCOVERY_SECONDS = 8.0
+# One allowance covers CSV staging, a cold Python/pandas start and the search.
+# The search itself takes about 2-4 s on public regression, but on a loaded
+# Windows laptop the imports alone took 11 s and an 8 s allowance silently lost
+# the schema (worker_time_limit). The host research timeout still binds first.
+DISCOVERY_SECONDS = 60.0
 DISCOVERY_MEMORY_BYTES = 1024 ** 3
 MAX_ROWS = 250_000
 MAX_FEATURES = 128
